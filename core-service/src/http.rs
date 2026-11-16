@@ -239,3 +239,25 @@ fn mime_type(path:&PathBuf)->&'static str{
         _=>"application/octet-stream"
     }
 }
+
+#[cfg(test)]
+mod domain_tests {
+    use super::valid_local_hostname;
+
+    #[test]
+    fn accepts_reserved_local_suffixes() {
+        assert!(valid_local_hostname("portfolio.localhost"));
+        assert!(valid_local_hostname("shop.example.test"));
+        assert!(valid_local_hostname("my-site.localhost"));
+    }
+
+    #[test]
+    fn rejects_public_or_malformed_hostnames() {
+        assert!(!valid_local_hostname("example.com"));
+        assert!(!valid_local_hostname("localhost"));
+        assert!(!valid_local_hostname("-bad.localhost"));
+        assert!(!valid_local_hostname("bad-.localhost"));
+        assert!(!valid_local_hostname("bad name.localhost"));
+        assert!(!valid_local_hostname("a..localhost"));
+    }
+}
