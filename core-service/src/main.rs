@@ -1,7 +1,7 @@
 mod db;
 mod http;
 
-use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}};
+use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
 
 #[derive(Clone)]
@@ -17,6 +17,50 @@ fn data_dir() -> PathBuf {
     env::var("LOCALAPPDATA").map(PathBuf::from)
         .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         .join("WebDynamite")
+}
+
+fn supervise_processes(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            let mut exited = Vec::new();
+            {
+                let mut processes = match state.processes.lock() {
+                    Ok(value) => value,
+                    Err(_) => break,
+                };
+                for (id, child) in processes.iter_mut() {
+                    match child.try_wait() {
+                        Ok(Some(status)) => exited.push((id.clone(), status.success())),
+                        Ok(None) => {}
+                        Err(_) => exited.push((id.clone(), false)),
+                    }
+                }
+                for (id, _) in &exited { processes.remove(id); }
+            }
+            if !exited.is_empty() {
+                if let Ok(db) = state.db.lock() {
+                    for (id, success) in exited {
+                        let status = if success { "stopped" } else { "crashed" };
+                        let _ = db.execute(
+                            "UPDATE websites SET status=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+                            rusqlite::params![status, id],
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn stop_all_processes(state: &AppState) {
+    if let Ok(mut processes) = state.processes.lock() {
+        for (_, mut child) in processes.drain() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[tokio::main]
@@ -38,11 +82,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         processes: Arc::new(Mutex::new(HashMap::new())),
         logs_dir,
     };
-    let app = http::router(state, token);
+    supervise_processes(state.clone());
+    let app = http::router(state.clone(), token);
     let address = SocketAddr::from(([127, 0, 0, 1], 47821));
     let listener = tokio::net::TcpListener::bind(address).await?;
     println!("WebDynamite Core Service listening on http://{address}");
-    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
+    let result = axum::serve(listener, app).with_graceful_shutdown(shutdown()).await;
+    stop_all_processes(&state);
+    result?;
     Ok(())
 }
 

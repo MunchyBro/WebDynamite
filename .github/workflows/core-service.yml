@@ -1,23 +1,49 @@
-name: Core Service
+name: Windows CI
 
 on:
   push:
-    branches: [main, phase-1-core-service, phase-2-website-management]
+    branches: [main, phase-1-core-service, phase-2-website-management, phase-3-desktop-service-integration]
     paths:
       - "Cargo.toml"
       - "core-service/**"
-      - ".github/workflows/core-service.yml"
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "vite.config.ts"
+      - ".github/workflows/**"
   pull_request:
     paths:
       - "Cargo.toml"
       - "core-service/**"
-      - ".github/workflows/core-service.yml"
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "vite.config.ts"
+      - ".github/workflows/**"
 
 jobs:
-  test:
+  frontend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install frontend dependencies
+        run: npm install
+      - name: Build frontend
+        run: npm run build
+
+  rust:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Test Core Service
         run: cargo test --manifest-path core-service/Cargo.toml
+      - name: Check Tauri desktop backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml
