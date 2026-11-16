@@ -10,7 +10,7 @@ use axum::{
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::File, io::Read, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}};
+use std::{fs::File, io::Read, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}};
 use uuid::Uuid;
 
 use crate::AppState;
