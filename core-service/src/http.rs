@@ -151,11 +151,13 @@ async fn website_logs(State(state):State<AppState>,Path(id):Path<String>)->Resul
     if !path.exists(){return Ok(Json(json!({"id":id,"logs":"","message":"No process log has been created yet."})));}
     let mut file=File::open(path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_read_error",e.to_string()))?;
     let mut data=String::new(); file.read_to_string(&mut data).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_read_error",e.to_string()))?;
-    let tail=if data.len()>24000 {data[data.len()-24000..].to_string()} else {data};
+    let tail: String = data.chars().rev().take(24000).collect::<String>().chars().rev().collect();
     Ok(Json(json!({"id":id,"logs":tail})))
 }
 async fn serve_static(State(state):State<AppState>,Path((id,relative)):Path<(String,String)>)->Response{
     let project=match project_details(&state,&id){Ok((p,r)) if r=="static"=>p,_=>return StatusCode::NOT_FOUND.into_response()};
+    let is_running=state.db.lock().ok().and_then(|db|db.query_row("SELECT status FROM websites WHERE id=?1",params![id],|row|row.get::<_,String>(0)).ok()).map(|s|s=="running").unwrap_or(false);
+    if !is_running{return StatusCode::NOT_FOUND.into_response();}
     let root=match std::fs::canonicalize(&project){Ok(p)=>p,Err(_)=>return StatusCode::NOT_FOUND.into_response()};
     let requested=match std::fs::canonicalize(root.join(relative.trim_start_matches('/'))){Ok(p)=>p,Err(_)=>return StatusCode::NOT_FOUND.into_response()};
     if !requested.starts_with(&root)||!requested.is_file(){return StatusCode::NOT_FOUND.into_response();}
