@@ -2,7 +2,7 @@ name: Core Service
 
 on:
   push:
-    branches: [main, phase-1-core-service]
+    branches: [main, phase-1-core-service, phase-2-website-management]
     paths:
       - "Cargo.toml"
       - "core-service/**"

@@ -1,5 +1,14 @@
 use rusqlite::{Connection, Result};
 
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in columns {
+        if name? == column { return Ok(true); }
+    }
+    Ok(false)
+}
+
 pub fn initialize(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.execute_batch(
@@ -8,7 +17,6 @@ pub fn initialize(connection: &Connection) -> Result<()> {
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-
         CREATE TABLE IF NOT EXISTS websites (
             id TEXT PRIMARY KEY NOT NULL,
             name TEXT NOT NULL,
@@ -18,11 +26,19 @@ pub fn initialize(connection: &Connection) -> Result<()> {
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-
         CREATE INDEX IF NOT EXISTS idx_websites_name ON websites(name);
         INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
         "
     )?;
+
+    // Version 2 adds per-project launch configuration without discarding existing rows.
+    if !has_column(connection, "websites", "start_command")? {
+        connection.execute("ALTER TABLE websites ADD COLUMN start_command TEXT", [])?;
+    }
+    if !has_column(connection, "websites", "port")? {
+        connection.execute("ALTER TABLE websites ADD COLUMN port INTEGER", [])?;
+    }
+    connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)", [])?;
     Ok(())
 }
 
@@ -35,15 +51,11 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
-
-        let version: i64 = connection
-            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 1);
-
-        let count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0))
-            .unwrap();
+        let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 2);
+        assert!(has_column(&connection, "websites", "start_command").unwrap());
+        assert!(has_column(&connection, "websites", "port").unwrap());
+        let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
 }
