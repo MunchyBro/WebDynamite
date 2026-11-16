@@ -10,8 +10,26 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "WebDynamite", "width": 1440, "height": 900, "minWidth": 1000, "minHeight": 680, "center": true }],
-    "security": { "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'" }
+    "windows": [
+      {
+        "title": "WebDynamite",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1000,
+        "minHeight": 680,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
   },
-  "bundle": { "active": true, "targets": ["nsis"], "category": "DeveloperTool" }
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "category": "DeveloperTool",
+    "icon": []
+  }
 }
