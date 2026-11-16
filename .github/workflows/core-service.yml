@@ -4,10 +4,12 @@ on:
   push:
     branches: [main, phase-1-core-service]
     paths:
+      - "Cargo.toml"
       - "core-service/**"
       - ".github/workflows/core-service.yml"
   pull_request:
     paths:
+      - "Cargo.toml"
       - "core-service/**"
       - ".github/workflows/core-service.yml"
 
