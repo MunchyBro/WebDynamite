@@ -39,6 +39,18 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         connection.execute("ALTER TABLE websites ADD COLUMN port INTEGER", [])?;
     }
     connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)", [])?;
+    // Version 3 introduces explicit domain-to-website assignments.
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS domains (
+            id TEXT PRIMARY KEY NOT NULL,
+            website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+            hostname TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            access_mode TEXT NOT NULL DEFAULT 'local' CHECK (access_mode IN ('local')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_domains_website ON domains(website_id);
+        INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);"
+    )?;
     Ok(())
 }
 
