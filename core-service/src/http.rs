@@ -111,10 +111,10 @@ async fn export_caddyfile(State(state): State<AppState>) -> Result<Json<serde_js
     let mut count=0usize;
     for row in rows {
         let (host,id)=row.map_err(database_error)?;
-        config.push_str(&format!("{host} {{\n    rewrite * /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n"));
+        config.push_str(&format!("http://{host} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n"));
         count+=1;
     }
-    Ok(Json(json!({"config":config,"routes":count,"status":"generated_not_applied","note":"Caddy must be installed and started separately. This endpoint only exports a validated Caddyfile; WebDynamite does not yet modify the Windows hosts file or control a Caddy process."})))
+    Ok(Json(json!({"config":config,"routes":count,"status":"generated_not_applied","note":"Caddy must be installed and started separately. This endpoint only exports a generated Caddyfile; WebDynamite does not yet modify the Windows hosts file or control a Caddy process."})))
 }
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"status":"ok","service":"webdynamite-core","api_version":1}))
