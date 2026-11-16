@@ -111,7 +111,14 @@ fn set_status(state:&AppState,id:&str,status:&str)->Result<(),ApiError>{
 }
 fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
-    if let Some(mut child)=map.remove(id){let _=child.kill();let _=child.wait();}
+    if let Some(mut child)=map.remove(id){
+        let pid=child.id();
+        #[cfg(windows)]
+        { let _=Command::new("taskkill").args(["/PID",&pid.to_string(),"/T","/F"]).output(); }
+        #[cfg(not(windows))]
+        { let _=child.kill(); }
+        let _=child.wait();
+    }
     Ok(())
 }
 async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
