@@ -3,6 +3,8 @@ use serde_json::Value;
 const CORE_URL: &str = "http://127.0.0.1:47821";
 #[derive(Debug, Serialize, Deserialize)]
 struct Website { id:String, name:String, project_path:String, runtime:String, status:String, created_at:String, updated_at:String }
+#[derive(Debug, Serialize, Deserialize)]
+struct Domain { id:String, website_id:String, website_name:String, hostname:String, access_mode:String, created_at:String }
 fn api_error(context:&str,error:impl std::fmt::Display)->String{format!("{context}: {error}")}
 async fn authorized_request(token:&str,method:reqwest::Method,path:&str,body:Option<Value>)->Result<reqwest::Response,String>{
  if token.trim().len()<32{return Err("API token must contain at least 32 characters.".into());}
@@ -40,5 +42,17 @@ async fn website_logs(token:String,id:String)->Result<Value,String>{
 }
 #[tauri::command]
 async fn delete_website(token:String,id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/websites/{id}"),None).await?;Ok(())}
+
+#[tauri::command]
+async fn list_domains(token:String)->Result<Vec<Domain>,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/domains",None).await?.json().await.map_err(|e|api_error("Could not read domain registry",e))}
+#[tauri::command]
+async fn create_domain(token:String,website_id:String,hostname:String)->Result<Domain,String>{
+ let body=serde_json::json!({"website_id":website_id,"hostname":hostname});
+ authorized_request(&token,reqwest::Method::POST,"/api/v1/domains",Some(body)).await?.json().await.map_err(|e|api_error("Could not read created domain",e))
+}
+#[tauri::command]
+async fn delete_domain(token:String,id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/domains/{id}"),None).await?;Ok(())}
+#[tauri::command]
+async fn export_caddyfile(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/domains/caddyfile",None).await?.json().await.map_err(|e|api_error("Could not export Caddyfile",e))}
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,export_caddyfile]).run(tauri::generate_context!()).expect("error while running WebDynamite");}

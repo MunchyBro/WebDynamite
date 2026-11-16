@@ -39,6 +39,18 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         connection.execute("ALTER TABLE websites ADD COLUMN port INTEGER", [])?;
     }
     connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)", [])?;
+    // Version 3 introduces explicit domain-to-website assignments.
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS domains (
+            id TEXT PRIMARY KEY NOT NULL,
+            website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+            hostname TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            access_mode TEXT NOT NULL DEFAULT 'local' CHECK (access_mode IN ('local')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_domains_website ON domains(website_id);
+        INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);"
+    )?;
     Ok(())
 }
 
@@ -52,9 +64,11 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
+        let domains: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='domains'", [], |row| row.get(0)).unwrap();
+        assert_eq!(domains, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
