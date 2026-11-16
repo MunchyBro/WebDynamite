@@ -1,0 +1,21 @@
+name: Core Service
+
+on:
+  push:
+    branches: [main, phase-1-core-service]
+    paths:
+      - "core-service/**"
+      - ".github/workflows/core-service.yml"
+  pull_request:
+    paths:
+      - "core-service/**"
+      - ".github/workflows/core-service.yml"
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Core Service
+        run: cargo test --manifest-path core-service/Cargo.toml
