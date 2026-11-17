@@ -104,6 +104,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/databases", get(list_databases).post(create_database))
         .route("/api/v1/databases/:id", axum::routing::delete(delete_database))
         .route("/api/v1/databases/:id/test", axum::routing::post(test_database))
+        .route("/api/v1/databases/:id/query", axum::routing::post(query_database))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .merge(crate::deploy::router())
@@ -477,6 +478,53 @@ async fn test_database(State(state): State<AppState>, Path(id): Path<String>) ->
         .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"database_connection_failed",e.to_string()))?;
     let result:String=connection.query_row("PRAGMA integrity_check",[],|r|r.get(0)).map_err(database_error)?;
     Ok(Json(json!({"database_id":id,"connected":result=="ok","integrity":result})))
+}
+
+#[derive(Debug, Deserialize)]
+struct DatabaseQuery { sql: String }
+async fn query_database(State(state): State<AppState>, Path(id): Path<String>, Json(input): Json<DatabaseQuery>) -> Result<Json<serde_json::Value>,ApiError> {
+    let sql=input.sql.trim();
+    if sql.is_empty() || sql.len()>64*1024 {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_query","Enter a SQL statement up to 64 KiB.".into()));
+    }
+    let path:String={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT file_path FROM managed_databases WHERE id=?1 AND engine='sqlite'",[&id],|r|r.get(0))
+            .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"database_not_found","Managed SQLite database was not found.".into())}else{database_error(e)})?
+    };
+    let connection=rusqlite::Connection::open_with_flags(&path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"database_connection_failed",e.to_string()))?;
+    let mut statement=connection.prepare(sql).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"sql_query_failed",e.to_string()))?;
+    if !statement.readonly() {
+        return Err(ApiError(StatusCode::FORBIDDEN,"read_only_query_required","The SQL console only permits read-only statements. Use your application's own database connection for writes.".into()));
+    }
+    let column_count=statement.column_count();
+    if column_count>100 {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"too_many_columns","Queries may return at most 100 columns.".into()));
+    }
+    let columns:Vec<String>=(0..column_count).map(|i|statement.column_name(i).unwrap_or("column").to_string()).collect();
+    let mut rows=statement.query([]).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"sql_query_failed",e.to_string()))?;
+    let mut values=Vec::new();
+    let mut truncated=false;
+    let mut estimated_bytes=0usize;
+    while let Some(row)=rows.next().map_err(|e|ApiError(StatusCode::BAD_REQUEST,"sql_query_failed",e.to_string()))? {
+        if values.len()>=200 {truncated=true;break;}
+        let mut cells=Vec::with_capacity(column_count);
+        for index in 0..column_count {
+            let value=match row.get_ref(index).map_err(database_error)? {
+                rusqlite::types::ValueRef::Null=>serde_json::Value::Null,
+                rusqlite::types::ValueRef::Integer(v)=>json!(v),
+                rusqlite::types::ValueRef::Real(v)=>json!(v),
+                rusqlite::types::ValueRef::Text(v)=>json!(String::from_utf8_lossy(v).chars().take(8192).collect::<String>()),
+                rusqlite::types::ValueRef::Blob(v)=>json!({"type":"blob","base64":encode_base64(&v[..v.len().min(8192)]),"truncated":v.len()>8192}),
+            };
+            estimated_bytes+=value.to_string().len();
+            cells.push(value);
+        }
+        values.push(cells);
+        if estimated_bytes>1024*1024 {truncated=true;break;}
+    }
+    Ok(Json(json!({"database_id":id,"columns":columns,"rows":values,"row_count":values.len(),"truncated":truncated,"read_only":true})))
 }
 
 async fn delete_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<StatusCode,ApiError> {
