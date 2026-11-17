@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header::AUTHORIZATION, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -10,7 +10,7 @@ use axum::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::File, io::Read, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::TcpListener};
+use std::{fs::File, io::{Read, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::TcpListener};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -83,6 +83,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/files", get(list_website_files))
         .route("/api/v1/websites/:id/storage", get(website_storage_usage))
         .route("/api/v1/websites/:id/file", get(read_website_file).put(write_website_file).delete(delete_website_file))
+        .route("/api/v1/websites/:id/files/upload", axum::routing::post(upload_website_file))
+        .route("/api/v1/websites/:id/files/download", get(download_website_file))
         .route("/api/v1/websites/:id/files/rename", axum::routing::post(rename_website_file))
         .route("/api/v1/websites/:id/files/directory", axum::routing::post(create_website_directory))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
@@ -105,6 +107,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .merge(crate::git::router())
         .merge(crate::backup::router())
         .merge(crate::settings::router())
+        .layer(DefaultBodyLimit::max(24 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(token, require_bearer));
     Router::new()
         .route("/api/v1/health", get(health))
@@ -233,6 +236,44 @@ async fn write_website_file(State(state):State<AppState>,Path(id):Path<String>,J
     std::fs::write(&target,input.content.as_bytes()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_write_failed",e.to_string()))?;
     Ok(Json(json!({"website_id":id,"path":input.path,"size_bytes":input.content.len(),"saved":true})))
 }
+
+#[derive(Debug, Deserialize)]
+struct UploadWebsiteFile { path: String, content_base64: String }
+fn base64_value(byte:u8)->Option<u8>{match byte {b'A'..=b'Z'=>Some(byte-b'A'),b'a'..=b'z'=>Some(byte-b'a'+26),b'0'..=b'9'=>Some(byte-b'0'+52),b'+'=>Some(62),b'/'=>Some(63),_=>None}}
+fn decode_base64(value:&str)->Result<Vec<u8>,ApiError>{
+ let bytes=value.as_bytes();
+ if bytes.len()%4!=0||bytes.len()>23*1024*1024{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_data","The uploaded file data is invalid or too large.".into()));}
+ let mut output=Vec::with_capacity(bytes.len()/4*3);
+ for (index,chunk) in bytes.chunks_exact(4).enumerate(){
+  let last=index==bytes.len()/4-1;let a=base64_value(chunk[0]);let b=base64_value(chunk[1]);let c=if chunk[2]==b'='{None}else{base64_value(chunk[2])};let d=if chunk[3]==b'='{None}else{base64_value(chunk[3])};
+  if a.is_none()||b.is_none()||(!last&&(chunk[2]==b'='||chunk[3]==b'='))||(chunk[2]==b'='&&chunk[3]!=b'=')||(chunk[2]!=b'='&&c.is_none())||(chunk[3]!=b'='&&d.is_none()){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_data","The uploaded file data is not valid Base64.".into()));}
+  let a=a.unwrap();let b=b.unwrap();let c=c.unwrap_or(0);let d=d.unwrap_or(0);output.push((a<<2)|(b>>4));if chunk[2]!=b'='{output.push((b<<4)|(c>>2));}if chunk[3]!=b'='{output.push((c<<6)|d);}
+ }
+ if output.len()>16*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"file_too_large","File uploads are limited to 16 MiB.".into()));}Ok(output)
+}
+fn encode_base64(bytes:&[u8])->String{
+ const TABLE:&[u8;64]=b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";let mut output=String::with_capacity((bytes.len()+2)/3*4);
+ for chunk in bytes.chunks(3){let a=chunk[0];let b=*chunk.get(1).unwrap_or(&0);let c=*chunk.get(2).unwrap_or(&0);output.push(TABLE[(a>>2) as usize] as char);output.push(TABLE[(((a&3)<<4)|(b>>4)) as usize] as char);output.push(if chunk.len()>1{TABLE[(((b&15)<<2)|(c>>6)) as usize] as char}else{'='});output.push(if chunk.len()>2{TABLE[(c&63) as usize] as char}else{'='});}output
+}
+async fn upload_website_file(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<UploadWebsiteFile>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
+ let bytes=decode_base64(&input.content_base64)?;let root=website_root(&state,&id)?;let relative=safe_relative_path(&input.path)?;
+ if relative.as_os_str().is_empty(){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A file name is required.".into()));}
+ let parent_relative=relative.parent().unwrap_or_else(||FsPath::new(""));let parent_text=parent_relative.to_string_lossy();let parent=if parent_text.is_empty(){root.clone()}else{contained_existing(&root,&parent_text)?};
+ if !parent.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"parent_not_directory","The parent path is not a directory.".into()));}
+ let name=relative.file_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A file name is required.".into()))?;let target=parent.join(name);
+ let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e|if e.kind()==std::io::ErrorKind::AlreadyExists{ApiError(StatusCode::CONFLICT,"destination_exists","A file or folder already exists at this path; uploads never overwrite.".into())}else{ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_upload_failed",e.to_string())})?;
+ file.write_all(&bytes).map_err(|e|{let _=std::fs::remove_file(&target);ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_upload_failed",e.to_string())})?;
+ Ok((StatusCode::CREATED,Json(json!({"website_id":id,"path":input.path,"size_bytes":bytes.len(),"uploaded":true}))))
+}
+async fn download_website_file(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<Json<serde_json::Value>,ApiError>{
+ let root=website_root(&state,&id)?;let relative=query.path.as_deref().unwrap_or("");let target=contained_existing(&root,relative)?;
+ if !target.is_file(){return Err(ApiError(StatusCode::BAD_REQUEST,"not_a_file","The requested path is not a regular file.".into()));}
+ let metadata=std::fs::metadata(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_metadata_failed",e.to_string()))?;
+ if metadata.len()>32*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"file_too_large","Downloads through the File Manager are limited to 32 MiB.".into()));}
+ let bytes=std::fs::read(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_read_failed",e.to_string()))?;
+ Ok(Json(json!({"website_id":id,"path":relative,"size_bytes":bytes.len(),"content_base64":encode_base64(&bytes)})))
+}
+
 async fn create_website_directory(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<CreateWebsiteDirectory>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
     let root=website_root(&state,&id)?;
     let relative=safe_relative_path(&input.path)?;
