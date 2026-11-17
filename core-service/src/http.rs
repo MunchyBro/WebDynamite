@@ -29,6 +29,8 @@ struct CreateWebsite {
 struct Domain { id: String, website_id: String, website_name: String, hostname: String, access_mode: String, created_at: String }
 #[derive(Debug, Deserialize)]
 struct CreateDomain { website_id: String, hostname: String }
+#[derive(Debug, Deserialize)]
+struct SetLanAccess { enabled: bool }
 fn valid_local_hostname(value: &str) -> bool {
     let host = value.trim().trim_end_matches('.').to_ascii_lowercase();
     if !(host.ends_with(".localhost") || host.ends_with(".test")) || host.len() > 253 { return false; }
@@ -66,6 +68,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/domains", get(list_domains).post(create_domain))
         .route("/api/v1/domains/:id", axum::routing::delete(delete_domain))
         .route("/api/v1/domains/caddyfile", get(export_caddyfile))
+        .route("/api/v1/networking/status", get(networking_status))
+        .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .layer(middleware::from_fn_with_state(token, require_bearer));
     Router::new()
@@ -73,6 +77,50 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/hosted/:id/*path", get(serve_static))
         .merge(protected)
         .with_state(state)
+}
+
+async fn networking_status(State(state): State<AppState>) -> Result<Json<serde_json::Value>,ApiError> {
+    let lan_ip=crate::network::lan_ipv4().map(|ip|ip.to_string());
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let mut q=db.prepare("SELECT id,name,runtime,status,lan_enabled,lan_port FROM websites ORDER BY name").map_err(database_error)?;
+    let rows=q.query_map([],|r|Ok(json!({
+        "id":r.get::<_,String>(0)?,
+        "name":r.get::<_,String>(1)?,
+        "runtime":r.get::<_,String>(2)?,
+        "status":r.get::<_,String>(3)?,
+        "lan_enabled":r.get::<_,i64>(4)? != 0,
+        "lan_port":r.get::<_,Option<u16>>(5)?
+    }))).map_err(database_error)?;
+    let websites=rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    Ok(Json(json!({"lan_ipv4":lan_ip,"websites":websites,"management_api":"loopback_only","public_exposure_enabled":false})))
+}
+
+async fn set_lan_access(
+    State(state):State<AppState>,
+    Path(id):Path<String>,
+    Json(input):Json<SetLanAccess>
+)->Result<Json<serde_json::Value>,ApiError>{
+    let lan_ip=crate::network::lan_ipv4().map(|ip|ip.to_string());
+    if input.enabled && lan_ip.is_none() {
+        return Err(ApiError(StatusCode::CONFLICT,"lan_address_unavailable","No private IPv4 address was found on the default network route. Connect to a private network and retry.".into()));
+    }
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let (runtime,existing_port):(String,Option<u16>)=db.query_row(
+        "SELECT runtime,lan_port FROM websites WHERE id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?))
+    ).map_err(|e|match e { rusqlite::Error::QueryReturnedNoRows => ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()), other => database_error(other) })?;
+    if input.enabled && runtime!="static" && runtime!="node" {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"lan_runtime_unsupported","LAN publishing currently supports static and Node.js websites.".into()));
+    }
+    let port=if input.enabled {
+        Some(match existing_port {Some(value)=>value,None=>crate::network::allocate_lan_port(&db).map_err(|e|ApiError(StatusCode::CONFLICT,"lan_port_unavailable",e))?})
+    } else {existing_port};
+    db.execute("UPDATE websites SET lan_enabled=?1,lan_port=?2,updated_at=CURRENT_TIMESTAMP WHERE id=?3",
+        rusqlite::params![if input.enabled {1} else {0},port,id]).map_err(database_error)?;
+    Ok(Json(json!({
+        "website_id":id,"enabled":input.enabled,"lan_ipv4":lan_ip,"port":port,
+        "url":if input.enabled {format!("http://{}:{}",lan_ip.unwrap_or_default(),port.unwrap_or_default())} else {String::new()},
+        "note":"Reload Caddy to apply this change. Windows Firewall may need a private-profile inbound rule for this website port."
+    })))
 }
 
 async fn list_domains(State(state): State<AppState>) -> Result<Json<Vec<Domain>>, ApiError> {
@@ -105,21 +153,9 @@ async fn delete_domain(State(state): State<AppState>, Path(id): Path<String>) ->
     Ok(StatusCode::NO_CONTENT)
 }
 async fn export_caddyfile(State(state): State<AppState>) -> Result<Json<serde_json::Value>,ApiError> {
-    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-    let mut q=db.prepare("SELECT d.hostname,d.website_id,w.runtime,w.port FROM domains d JOIN websites w ON w.id=d.website_id ORDER BY d.hostname").map_err(database_error)?;
-    let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<u16>>(3)?))).map_err(database_error)?;
-    let mut config=String::from("# Generated by WebDynamite. Do not edit manually.\n");
-    let mut count=0usize; let mut pending=0usize;
-    for row in rows {
-        let (host,id,runtime,port)=row.map_err(database_error)?;
-        if runtime=="node" {
-            if let Some(port)=port { config.push_str(&format!("http://{host} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n\n")); count+=1; }
-            else { pending+=1; }
-        } else {
-            config.push_str(&format!("http://{host} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n")); count+=1;
-        }
-    }
-    Ok(Json(json!({"config":config,"routes":count,"pending":pending,"status":"generated_not_applied","note":"Start Node.js websites before exporting their routes. Caddy must be installed and reloaded separately; this endpoint does not control Caddy or edit Windows networking settings."})))
+    let (config,routes,pending)=crate::proxy::generate_config(&state)
+        .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"caddy_config_failed",e))?;
+    Ok(Json(json!({"config":config,"routes":routes,"pending":pending,"status":"generated_not_applied","note":"Validate and reload Caddy to apply domain and LAN routes. LAN routes bind only to the detected private IPv4 address; firewall access remains under your control."})))
 }
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"status":"ok","service":"webdynamite-core","api_version":1}))

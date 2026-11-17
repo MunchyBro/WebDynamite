@@ -1,5 +1,6 @@
 mod db;
 mod http;
+mod network;
 mod proxy;
 
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
