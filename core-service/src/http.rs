@@ -84,6 +84,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/storage", get(website_storage_usage))
         .route("/api/v1/websites/:id/file", get(read_website_file).put(write_website_file).delete(delete_website_file))
         .route("/api/v1/websites/:id/files/rename", axum::routing::post(rename_website_file))
+        .route("/api/v1/websites/:id/files/directory", axum::routing::post(create_website_directory))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
         .route("/api/v1/domains/diagnose", axum::routing::post(diagnose_domain))
         .route("/api/v1/public-domains", get(list_public_domains).post(create_public_domain))
@@ -119,6 +120,8 @@ struct FilePathQuery { path: Option<String> }
 struct WriteWebsiteFile { path: String, content: String }
 #[derive(Debug, Deserialize)]
 struct RenameWebsiteFile { source_path: String, new_path: String }
+#[derive(Debug, Deserialize)]
+struct CreateWebsiteDirectory { path: String }
 
 fn website_root(state:&AppState,id:&str)->Result<PathBuf,ApiError>{
     let project:String={
@@ -229,6 +232,24 @@ async fn write_website_file(State(state):State<AppState>,Path(id):Path<String>,J
     }
     std::fs::write(&target,input.content.as_bytes()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_write_failed",e.to_string()))?;
     Ok(Json(json!({"website_id":id,"path":input.path,"size_bytes":input.content.len(),"saved":true})))
+}
+async fn create_website_directory(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<CreateWebsiteDirectory>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
+    let root=website_root(&state,&id)?;
+    let relative=safe_relative_path(&input.path)?;
+    if relative.as_os_str().is_empty(){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_directory_path","A folder name is required.".into()));}
+    let parent_relative=relative.parent().unwrap_or_else(||FsPath::new(""));
+    let parent_text=parent_relative.to_string_lossy();
+    let parent=if parent_text.is_empty(){root.clone()}else{contained_existing(&root,&parent_text)?};
+    if !parent.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"parent_not_directory","The parent path is not a directory.".into()));}
+    let name=relative.file_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"invalid_directory_path","A folder name is required.".into()))?;
+    let target=parent.join(name);
+    match std::fs::symlink_metadata(&target){
+        Ok(_)=>return Err(ApiError(StatusCode::CONFLICT,"destination_exists","A file or folder already exists at this path.".into())),
+        Err(e) if e.kind()!=std::io::ErrorKind::NotFound=>return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR,"directory_check_failed",e.to_string())),
+        Err(_)=>{}
+    }
+    std::fs::create_dir(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"directory_create_failed",e.to_string()))?;
+    Ok((StatusCode::CREATED,Json(json!({"website_id":id,"path":input.path,"created":true}))))
 }
 async fn rename_website_file(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<RenameWebsiteFile>)->Result<Json<serde_json::Value>,ApiError>{
     let root=website_root(&state,&id)?;
