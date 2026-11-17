@@ -65,6 +65,7 @@ fn tree_checksum(root:&FsPath)->Result<(String,u64,u64),BackupError>{
    if kind.is_dir(){walk(root,&entry.path(),hash,files,size)?;}
    else if kind.is_file(){
     let relative=entry.path().strip_prefix(root).unwrap_or(FsPath::new("")).to_string_lossy();
+    if relative=="manifest.json"{continue;}
     *hash=fnv_hash(relative.as_bytes(),*hash);
     let bytes=fs::read(entry.path()).map_err(|e|io_error("backup_read_failed",e))?;
     *files+=1;*size=size.saturating_add(bytes.len() as u64);*hash=fnv_hash(&bytes,*hash);
