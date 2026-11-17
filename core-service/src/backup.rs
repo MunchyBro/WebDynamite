@@ -185,9 +185,9 @@ fn restore_sync(state:&AppState,id:&str)->Result<Value,BackupError>{
  let path=backup_path(state,id)?;let manifest=verify_sync(&path)?;
  let metadata:Value=serde_json::from_slice(&fs::read(path.join("metadata.json")).map_err(|e|io_error("backup_metadata_missing",e))?).map_err(|e|BackupError(StatusCode::UNPROCESSABLE_ENTITY,"backup_metadata_invalid",e.to_string()))?;
  {
-  let db=state.db.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
-  let active:i64=db.query_row("SELECT COUNT(*) FROM websites WHERE status!='stopped'",[],|r|r.get(0)).map_err(db_error)?;
-  if active>0||!state.processes.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Website process registry is unavailable."))?.is_empty(){return Err(BackupError(StatusCode::CONFLICT,"websites_must_be_stopped","Stop every website before restoring a full-system backup."));}
+  let active:i64={let db=state.db.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;db.query_row("SELECT COUNT(*) FROM websites WHERE status!='stopped'",[],|r|r.get(0)).map_err(db_error)?};
+  let has_processes=!state.processes.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Website process registry is unavailable."))?.is_empty();
+  if active>0||has_processes{return Err(BackupError(StatusCode::CONFLICT,"websites_must_be_stopped","Stop every website before restoring a full-system backup."));}
  }
  let safety=create_backup_sync(state)?;
  let sites=metadata["websites"].as_array().cloned().unwrap_or_default();
@@ -209,6 +209,7 @@ fn restore_sync(state:&AppState,id:&str)->Result<Value,BackupError>{
   let target=db_dir.join(format!("{id}.sqlite3"));
   if !source.is_file(){return Err(BackupError(StatusCode::UNPROCESSABLE_ENTITY,"backup_database_missing","Backup is missing a managed database file."));}
   let temporary=db_dir.join(format!("{id}.restore.tmp"));fs::copy(&source,&temporary).map_err(|e|io_error("restore_database_copy_failed",e))?;
+  let _=fs::remove_file(db_dir.join(format!("{id}.sqlite3-wal")));let _=fs::remove_file(db_dir.join(format!("{id}.sqlite3-shm")));
   if target.exists(){fs::remove_file(&target).map_err(|e|io_error("restore_database_replace_failed",e))?;}
   fs::rename(&temporary,&target).map_err(|e|io_error("restore_database_replace_failed",e))?;
  }
