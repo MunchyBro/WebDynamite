@@ -4,7 +4,7 @@ use axum::{
     http::{header::AUTHORIZATION, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, put},
+    routing::get,
     Json, Router,
 };
 use rusqlite::params;
