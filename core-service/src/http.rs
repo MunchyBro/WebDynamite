@@ -294,18 +294,19 @@ fn add_archive_directory(
         if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) { continue; }
         *count+=1;
         if *count>1000 { return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_entry_limit","ZIP creation is limited to 1,000 files and folders.".into())); }
-        let relative=entry.path().strip_prefix(root).map_err(|_|ApiError(StatusCode::FORBIDDEN,"archive_path_forbidden","An archive entry escaped the selected folder.".into()))?;
+        let entry_path=entry.path();
+        let relative=entry_path.strip_prefix(root).map_err(|_|ApiError(StatusCode::FORBIDDEN,"archive_path_forbidden","An archive entry escaped the selected folder.".into()))?;
         let name=relative.to_string_lossy().replace('\\',"/");
         if metadata.is_dir() {
             writer.add_directory(format!("{name}/"),SimpleFileOptions::default())
                 .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_write_failed",e.to_string()))?;
-            add_archive_directory(writer,root,&entry.path(),count,total_bytes)?;
+            add_archive_directory(writer,root,&entry_path,count,total_bytes)?;
         } else {
             *total_bytes=total_bytes.saturating_add(metadata.len());
             if *total_bytes>256*1024*1024 { return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_size_limit","ZIP creation is limited to 256 MiB of uncompressed files.".into())); }
             writer.start_file(name,SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated))
                 .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_write_failed",e.to_string()))?;
-            let mut file=File::open(entry.path()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_read_failed",e.to_string()))?;
+            let mut file=File::open(&entry_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_read_failed",e.to_string()))?;
             let mut buffer=[0u8;64*1024];
             loop {
                 let read=file.read(&mut buffer).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_read_failed",e.to_string()))?;
