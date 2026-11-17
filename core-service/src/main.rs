@@ -7,6 +7,7 @@ mod deploy;
 mod git;
 mod backup;
 mod settings;
+mod tunnel;
 
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
@@ -21,6 +22,9 @@ pub struct AppState {
     pub config_dir: PathBuf,
     pub caddy_bin: PathBuf,
     pub proxy_process: Arc<Mutex<Option<Child>>>,
+    pub tunnel_processes: Arc<Mutex<HashMap<String, Child>>>,
+    pub tunnel_urls: Arc<Mutex<HashMap<String, String>>>,
+    pub cloudflared_bin: PathBuf,
     pub started_at: std::time::Instant,
 }
 
@@ -105,6 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config_dir,
         caddy_bin: env::var_os("CADDY_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("caddy")),
         proxy_process: Arc::new(Mutex::new(None)),
+        tunnel_processes: Arc::new(Mutex::new(HashMap::new())),
+        tunnel_urls: Arc::new(Mutex::new(HashMap::new())),
+        cloudflared_bin: env::var_os("CLOUDFLARED_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cloudflared")),
         started_at: std::time::Instant::now(),
     };
     supervise_processes(state.clone());
@@ -115,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("WebDynamite Core Service listening on http://{address}");
     let result = axum::serve(listener, app).with_graceful_shutdown(shutdown()).await;
     stop_all_processes(&state);
+    tunnel::stop_all(&state);
     proxy::stop_on_shutdown(&state);
     result?;
     Ok(())
