@@ -520,7 +520,7 @@ async fn import_database(State(state): State<AppState>, Json(input): Json<serde_
     if bytes.is_empty() || bytes.len()>16*1024*1024 {
         return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"database_import_limit","SQLite imports must be between 1 byte and 16 MiB.".into()));
     }
-    if !bytes.starts_with(b"SQLite format 3\\0") {
+    if !bytes.starts_with(b"SQLite format 3\0") {
         return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_sqlite_file","The selected file is not a SQLite database.".into()));
     }
     {
