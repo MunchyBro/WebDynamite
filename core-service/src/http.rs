@@ -86,6 +86,9 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/domains/caddyfile", get(export_caddyfile))
         .route("/api/v1/networking/status", get(networking_status))
         .route("/api/v1/monitoring/metrics", get(system_metrics))
+        .route("/api/v1/databases", get(list_databases).post(create_database))
+        .route("/api/v1/databases/:id", axum::routing::delete(delete_database))
+        .route("/api/v1/databases/:id/test", axum::routing::post(test_database))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .layer(middleware::from_fn_with_state(token, require_bearer));
@@ -94,6 +97,64 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/hosted/:id/*path", get(serve_static))
         .merge(protected)
         .with_state(state)
+}
+
+async fn list_databases(State(state): State<AppState>) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let db = state.db.lock().map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let mut q = db.prepare("SELECT id,name,engine,file_path,created_at FROM managed_databases ORDER BY name").map_err(database_error)?;
+    let rows = q.query_map([], |r| {
+        let id:String=r.get(0)?; let name:String=r.get(1)?; let engine:String=r.get(2)?;
+        let path:String=r.get(3)?; let created_at:String=r.get(4)?;
+        let size=std::fs::metadata(&path).map(|m|m.len()).unwrap_or(0);
+        Ok(json!({"id":id,"name":name,"engine":engine,"size_bytes":size,"created_at":created_at}))
+    }).map_err(database_error)?;
+    Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?))
+}
+
+async fn create_database(State(state): State<AppState>, Json(input): Json<serde_json::Value>) -> Result<(StatusCode,Json<serde_json::Value>),ApiError> {
+    let name=input.get("name").and_then(|v|v.as_str()).unwrap_or("").trim();
+    if name.is_empty() || name.len()>48 || !name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-') {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_database_name","Use 1–48 letters, numbers, underscores or hyphens for the database name.".into()));
+    }
+    let id=Uuid::new_v4().to_string();
+    let directory=state.config_dir.join("databases");
+    std::fs::create_dir_all(&directory).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_storage_unavailable",e.to_string()))?;
+    let path=directory.join(format!("{id}.sqlite3"));
+    let path_text=path.to_string_lossy().to_string();
+    let mut connection=rusqlite::Connection::open(&path).map_err(database_error)?;
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").map_err(database_error)?;
+    connection.close().map_err(|(_,e)|database_error(e))?;
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE name=?1)",[name],|r|r.get::<_,bool>(0)).map_err(database_error)? {
+        let _=std::fs::remove_file(&path);
+        return Err(ApiError(StatusCode::CONFLICT,"database_name_in_use","A managed database with that name already exists.".into()));
+    }
+    db.execute("INSERT INTO managed_databases(id,name,engine,file_path) VALUES (?1,?2,'sqlite',?3)",params![id,name,path_text]).map_err(database_error)?;
+    Ok((StatusCode::CREATED,Json(json!({"id":id,"name":name,"engine":"sqlite","size_bytes":0,"file_path":path_text,"created_at":""}))))
+}
+
+async fn test_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>,ApiError> {
+    let path:String={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT file_path FROM managed_databases WHERE id=?1",[&id],|r|r.get(0))
+            .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"database_not_found","Managed database was not found.".into())}else{database_error(e)})?
+    };
+    let connection=rusqlite::Connection::open_with_flags(&path,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"database_connection_failed",e.to_string()))?;
+    let result:String=connection.query_row("PRAGMA integrity_check",[],|r|r.get(0)).map_err(database_error)?;
+    Ok(Json(json!({"database_id":id,"connected":result=="ok","integrity":result})))
+}
+
+async fn delete_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<StatusCode,ApiError> {
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let path: String=db.query_row("SELECT file_path FROM managed_databases WHERE id=?1",[&id],|r|r.get(0))
+        .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"database_not_found","Managed database was not found.".into())}else{database_error(e)})?;
+    db.execute("DELETE FROM managed_databases WHERE id=?1",[&id]).map_err(database_error)?;
+    drop(db);
+    let _=std::fs::remove_file(&path);
+    let _=std::fs::remove_file(format!("{path}-wal"));
+    let _=std::fs::remove_file(format!("{path}-shm"));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn system_metrics()->Result<Json<serde_json::Value>,ApiError>{
