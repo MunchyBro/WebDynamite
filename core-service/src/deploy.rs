@@ -164,18 +164,3 @@ async fn rollback_release(State(state):State<AppState>,Path((website_id,release_
  tx.commit().map_err(db_error)?;
  Ok(Json(json!({"website_id":website_id,"active_release_id":release_id,"message":"Previous release activated. Static requests now serve this snapshot."})))
 }
-
-function content(value) {
-    const iterate =
-      typeof value === "string" ? undefined : value?.[iteratorKey];
-    if (typeof iterate !== "function") {
-      return emitBlock(value);
-    }
-
-    // Reuse the method from a potentially stateful getter, with its original
-    // receiver. The for-of loop closes the iterator if the host rejects a block.
-    const blocks = { [iteratorKey]: () => apply(iterate, value, []) };
-    for (const block of blocks) {
-      emitBlock(block);
-    }
-  }
