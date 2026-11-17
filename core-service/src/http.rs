@@ -107,6 +107,9 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/databases/:id/query", axum::routing::post(query_database))
         .route("/api/v1/databases/:id/export", get(export_database))
         .route("/api/v1/databases/import", axum::routing::post(import_database))
+        .route("/api/v1/postgres-connections", get(list_postgres_connections).post(create_postgres_connection))
+        .route("/api/v1/postgres-connections/:id", axum::routing::delete(delete_postgres_connection))
+        .route("/api/v1/postgres-connections/:id/test", axum::routing::post(test_postgres_connection))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .merge(crate::deploy::router())
@@ -433,6 +436,49 @@ async fn delete_website_file(State(state):State<AppState>,Path(id):Path<String>,
     if target.is_dir(){std::fs::remove_dir(&target).map_err(|e|ApiError(StatusCode::CONFLICT,"directory_not_empty",format!("Only empty directories can be deleted: {e}")))?;}
     else{std::fs::remove_file(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_delete_failed",e.to_string()))?;}
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatePostgresConnection { name:String, host:String, port:u16, database_name:String, username:String }
+#[derive(Debug, Deserialize)]
+struct TestPostgresConnection { password:String }
+fn validate_pg_field(value:&str,max:usize)->bool { !value.trim().is_empty() && value.len()<=max && !value.chars().any(|c|c.is_control()) }
+async fn list_postgres_connections(State(state):State<AppState>)->Result<Json<Vec<serde_json::Value>>,ApiError>{
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let mut q=db.prepare("SELECT id,name,host,port,database_name,username,created_at FROM postgres_connections ORDER BY name").map_err(database_error)?;
+ let rows=q.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"host":r.get::<_,String>(2)?,"port":r.get::<_,u16>(3)?,"database_name":r.get::<_,String>(4)?,"username":r.get::<_,String>(5)?,"engine":"postgresql","created_at":r.get::<_,String>(6)?}))).map_err(database_error)?;
+ Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?))
+}
+async fn create_postgres_connection(State(state):State<AppState>,Json(input):Json<CreatePostgresConnection>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
+ let host=input.host.trim().to_ascii_lowercase();
+ if !["localhost","127.0.0.1","::1"].contains(&host.as_str()){return Err(ApiError(StatusCode::BAD_REQUEST,"postgres_host_not_allowed","For this initial release, PostgreSQL connections are restricted to this PC (localhost, 127.0.0.1, or ::1).".into()));}
+ if !validate_pg_field(&input.name,48)||!input.name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-')||!validate_pg_field(&input.database_name,63)||!validate_pg_field(&input.username,63){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_postgres_profile","Profile name, database name, or username is invalid.".into()));}
+ if input.port==0{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_postgres_port","PostgreSQL port must be between 1 and 65535.".into()));}
+ let id=Uuid::new_v4().to_string();
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ db.execute("INSERT INTO postgres_connections(id,name,host,port,database_name,username) VALUES(?1,?2,?3,?4,?5,?6)",params![id,input.name.trim(),host,input.port,input.database_name.trim(),input.username.trim()]).map_err(|e|if matches!(e,rusqlite::Error::SqliteFailure(ref x,_) if x.code==rusqlite::ErrorCode::ConstraintViolation){ApiError(StatusCode::CONFLICT,"postgres_profile_exists","A PostgreSQL profile with that name already exists.".into())}else{database_error(e)})?;
+ let created_at:String=db.query_row("SELECT created_at FROM postgres_connections WHERE id=?1",[&id],|r|r.get(0)).map_err(database_error)?;
+ Ok((StatusCode::CREATED,Json(json!({"id":id,"name":input.name.trim(),"host":host,"port":input.port,"database_name":input.database_name.trim(),"username":input.username.trim(),"engine":"postgresql","created_at":created_at}))))
+}
+async fn delete_postgres_connection(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,ApiError>{
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let changed=db.execute("DELETE FROM postgres_connections WHERE id=?1",[id]).map_err(database_error)?;
+ if changed==0{return Err(ApiError(StatusCode::NOT_FOUND,"postgres_profile_not_found","PostgreSQL connection profile was not found.".into()));}
+ Ok(StatusCode::NO_CONTENT)
+}
+async fn test_postgres_connection(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<TestPostgresConnection>)->Result<Json<serde_json::Value>,ApiError>{
+ if input.password.len()>1024{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_postgres_password","Password is too long.".into()));}
+ let profile={
+  let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  db.query_row("SELECT host,port,database_name,username FROM postgres_connections WHERE id=?1",[&id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u16>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))
+   .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"postgres_profile_not_found","PostgreSQL connection profile was not found.".into())}else{database_error(e)})?
+ };
+ let (host,port,database_name,username)=profile;
+ let mut config=tokio_postgres::Config::new();config.host(&host).port(port).dbname(&database_name).user(&username).password(&input.password).connect_timeout(std::time::Duration::from_secs(5));
+ let (client,connection)=config.connect(tokio_postgres::NoTls).await.map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_connection_failed",format!("PostgreSQL connection failed: {e}")))?;
+ tokio::spawn(async move{let _=connection.await;});
+ let row=client.query_one("SELECT current_database(), current_user, version()", &[]).await.map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_query_failed",e.to_string()))?;
+ Ok(Json(json!({"id":id,"connected":true,"database":row.get::<_,String>(0),"username":row.get::<_,String>(1),"server_version":row.get::<_,String>(2),"password_persisted":false})))
 }
 
 async fn list_databases(State(state): State<AppState>) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
