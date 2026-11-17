@@ -532,7 +532,13 @@ async fn serve_static(State(state):State<AppState>,Path((id,relative)):Path<(Str
     let project=match project_details(&state,&id){Ok((p,r)) if r=="static"=>p,_=>return StatusCode::NOT_FOUND.into_response()};
     let is_running=state.db.lock().ok().and_then(|db|db.query_row("SELECT status FROM websites WHERE id=?1",params![id],|row|row.get::<_,String>(0)).ok()).map(|s|s=="running").unwrap_or(false);
     if !is_running{return StatusCode::NOT_FOUND.into_response();}
-    let root=match std::fs::canonicalize(&project){Ok(p)=>p,Err(_)=>return StatusCode::NOT_FOUND.into_response()};
+    let active_release=state.db.lock().ok().and_then(|db|db.query_row("SELECT release_path FROM releases WHERE website_id=?1 AND active=1",params![id],|row|row.get::<_,String>(0)).ok());
+    let candidate=active_release.map(PathBuf::from).unwrap_or_else(||PathBuf::from(project));
+    let root=match std::fs::canonicalize(&candidate){Ok(p)=>p,Err(_)=>return StatusCode::NOT_FOUND.into_response()};
+    if active_release.is_some(){
+        let releases_root=match state.releases_dir.canonicalize(){Ok(p)=>p,Err(_)=>return StatusCode::NOT_FOUND.into_response()};
+        if !root.starts_with(releases_root){return StatusCode::NOT_FOUND.into_response();}
+    }
     let requested=match std::fs::canonicalize(root.join(relative.trim_start_matches('/'))){Ok(p)=>p,Err(_)=>return StatusCode::NOT_FOUND.into_response()};
     if !requested.starts_with(&root)||!requested.is_file(){return StatusCode::NOT_FOUND.into_response();}
     let bytes=match std::fs::read(&requested){Ok(b)=>b,Err(_)=>return StatusCode::INTERNAL_SERVER_ERROR.into_response()};
