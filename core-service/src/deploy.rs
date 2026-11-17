@@ -21,7 +21,9 @@ struct RunsQuery{website_id:Option<String>}
 #[derive(Serialize)]
 struct Profile{id:String,website_id:String,website_name:String,program:String,args:Vec<String>,output_dir:String,updated_at:String}
 #[derive(Serialize)]
-struct BuildRun{id:String,website_id:String,website_name:String,program:String,status:String,exit_code:Option<i32>,duration_ms:i64,logs:String,created_at:String}\n#[derive(Serialize)]\nstruct Release{id:String,website_id:String,website_name:String,source:String,commit_hash:Option<String>,active:bool,file_count:u64,size_bytes:u64,created_at:String}
+struct BuildRun{id:String,website_id:String,website_name:String,program:String,status:String,exit_code:Option<i32>,duration_ms:i64,logs:String,created_at:String}
+#[derive(Serialize)]
+struct Release{id:String,website_id:String,website_name:String,source:String,commit_hash:Option<String>,active:bool,file_count:u64,size_bytes:u64,created_at:String}
 fn allowed_program(program:&str)->bool{matches!(program,"node"|"python"|"php"|"cargo"|"dotnet")}
 fn safe_output_dir(value:&str)->bool{
  let p=FsPath::new(value);
@@ -30,7 +32,10 @@ fn safe_output_dir(value:&str)->bool{
 pub fn router()->Router<AppState>{
  Router::new()
   .route("/api/v1/deployments/profiles",get(list_profiles).put(save_profile))
-  .route("/api/v1/deployments/runs",get(list_runs))\n  .route("/api/v1/deployments/releases",get(list_releases))\n  .route("/api/v1/deployments/:website_id/release",axum::routing::post(create_release))\n  .route("/api/v1/deployments/:website_id/rollback/:release_id",axum::routing::post(rollback_release))
+  .route("/api/v1/deployments/runs",get(list_runs))
+  .route("/api/v1/deployments/releases",get(list_releases))
+  .route("/api/v1/deployments/:website_id/release",axum::routing::post(create_release))
+  .route("/api/v1/deployments/:website_id/rollback/:release_id",axum::routing::post(rollback_release))
   .route("/api/v1/deployments/:website_id/run",axum::routing::post(run_build))
 }
 async fn list_profiles(State(state):State<AppState>)->Result<Json<Vec<Profile>>,DeployError>{
