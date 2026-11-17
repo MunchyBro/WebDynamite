@@ -92,5 +92,35 @@ async fn set_lan_access(token:String,id:String,enabled:bool)->Result<Value,Strin
 async fn proxy_status(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/proxy/status",None).await?.json().await.map_err(|e|api_error("Could not read Caddy status",e))}
 #[tauri::command]
 async fn proxy_action(token:String,action:String)->Result<Value,String>{if !["start","stop","reload","validate"].contains(&action.as_str()){return Err("Unsupported Caddy action.".into());} authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/proxy/{action}"),None).await?.json().await.map_err(|e|api_error("Caddy operation failed",e))}
+
+fn encode_query_value(value:&str)->String{
+    let mut encoded=String::new();
+    for byte in value.bytes(){
+        if byte.is_ascii_alphanumeric()||b"-_.~".contains(&byte){encoded.push(byte as char);}
+        else{encoded.push_str(&format!("%{byte:02X}"));}
+    }
+    encoded
+}
+#[tauri::command]
+async fn list_website_files(token:String,id:String,path:String)->Result<Value,String>{
+ let url_path=format!("/api/v1/websites/{id}/files?path={}",encode_query_value(&path));
+ authorized_request(&token,reqwest::Method::GET,&url_path,None).await?.json().await.map_err(|e|api_error("Could not list website files",e))
+}
+#[tauri::command]
+async fn read_website_file(token:String,id:String,path:String)->Result<Value,String>{
+ let url_path=format!("/api/v1/websites/{id}/file?path={}",encode_query_value(&path));
+ authorized_request(&token,reqwest::Method::GET,&url_path,None).await?.json().await.map_err(|e|api_error("Could not read website file",e))
+}
+#[tauri::command]
+async fn write_website_file(token:String,id:String,path:String,content:String)->Result<Value,String>{
+ let body=serde_json::json!({"path":path,"content":content});
+ authorized_request(&token,reqwest::Method::PUT,&format!("/api/v1/websites/{id}/file"),Some(body)).await?.json().await.map_err(|e|api_error("Could not save website file",e))
+}
+#[tauri::command]
+async fn delete_website_file(token:String,id:String,path:String)->Result<(),String>{
+ let url_path=format!("/api/v1/websites/{id}/file?path={}",encode_query_value(&path));
+ authorized_request(&token,reqwest::Method::DELETE,&url_path,None).await?;Ok(())
+}
+
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
