@@ -24,6 +24,12 @@ fn generate_config(state:&AppState)->Result<(String,usize,usize),String>{
  }
  Ok((config,routes,pending))
 }
+fn caddy_output(state:&AppState,args:&[&str])->Result<String,String>{
+ let output=Command::new(&state.caddy_bin).args(args).output().map_err(|e|format!("Caddy was not found. Install Caddy or set CADDY_BIN to its executable path: {e}"))?;
+ let mut text=String::from_utf8_lossy(&output.stdout).to_string(); text.push_str(&String::from_utf8_lossy(&output.stderr));
+ if !output.status.success(){return Err(format!("Caddy exited with {}: {}",output.status,text.trim()));}
+ Ok(text.trim().to_string())
+}
 fn validate_config(state:&AppState)->Result<String,String>{
  let (config,_,_)=generate_config(state)?;
  let path=config_path(state); let temp=path.with_extension("candidate");
@@ -36,7 +42,7 @@ fn validate_config(state:&AppState)->Result<String,String>{
  Ok(output)
 }
 async fn status(State(state):State<AppState>)->Json<Value>{
- let installed=Command::new(&state.caddy_bin).arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
+ let installed=Command::new(&state.caddy_bin).arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|result|result.success()).unwrap_or(false);
  let running=if let Ok(mut slot)=state.proxy_process.lock(){let exited=match slot.as_mut(){Some(child)=>matches!(child.try_wait(),Ok(Some(_))),None=>false};if exited{*slot=None;false}else{slot.is_some()}}else{false};
  Json(json!({"installed":installed,"running":running,"binary":state.caddy_bin,"config_path":config_path(&state),"admin_endpoint":"http://127.0.0.1:2019","note":"Caddy listens on the ports declared by your domain routes. Public exposure and HTTPS require DNS, firewall and domain configuration."}))
 }
@@ -61,7 +67,7 @@ async fn stop(State(state):State<AppState>)->Result<Json<Value>,(axum::http::Sta
  Ok(Json(json!({"running":false,"message":"Caddy stopped"})))
 }
 async fn reload(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
- if let Err(e)=write_config(&state){return Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_config_failed","message":e}}))));}
+ if let Err(e)=validate_config(&state){return Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_config_failed","message":e}}))));}
  let path=config_path(&state);let p=path.to_string_lossy().to_string();
  match caddy_output(&state,&["reload","--config",&p,"--adapter","caddyfile"]){Ok(output)=>Ok(Json(json!({"running":true,"reloaded":true,"output":output}))),Err(e)=>Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_reload_failed","message":e}}))))}
 }
