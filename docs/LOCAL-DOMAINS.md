@@ -102,3 +102,15 @@ Open **Databases** to create a separate SQLite database for an application. WebD
 - Deleting a managed database permanently removes its database file and associated SQLite WAL/SHM sidecars. Export or back it up before deletion.
 - The internal WebDynamite registry database is not listed as an application database.
 - This phase supports SQLite file creation, listing, size reporting, integrity testing and deletion only. PostgreSQL/MySQL discovery, protected credentials, database users/permissions, SQL console, import/export and website connection injection are not implemented yet.
+
+
+## Website File Manager (Phase 14)
+
+The desktop **File Manager** browses files under a registered website's project folder. It can list directories, create UTF-8 text files, open/edit/save UTF-8 text files up to 1 MiB, and delete files or empty directories.
+
+- File operations are authenticated through the Core Service API.
+- Paths must be relative to the registered website root; absolute paths and parent-directory traversal are rejected.
+- Existing targets are canonicalized and checked to remain inside the website root. Symbolic links are shown but not followed or edited.
+- The website root itself cannot be deleted. Non-empty directories cannot be deleted.
+- Binary files and text files larger than 1 MiB are not opened in the built-in editor. Use an external editor for those files.
+- This phase does not provide upload/download, drag-and-drop, archive extraction, permission editing, or multi-file operations.
