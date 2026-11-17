@@ -114,6 +114,19 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_one_active ON releases(website_id) WHERE active=1;")?;
     }
     connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)", [])?;
+    // Version 9 stores verified full-system backup inventory.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS backups (
+        id TEXT PRIMARY KEY NOT NULL,
+        backup_path TEXT NOT NULL UNIQUE,
+        checksum TEXT NOT NULL,
+        file_count INTEGER NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        website_count INTEGER NOT NULL,
+        database_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_backups_created ON backups(created_at DESC);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);")?;
     Ok(())
 }
 
@@ -127,7 +140,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
@@ -142,6 +155,8 @@ mod tests {
         assert_eq!(releases, 1);
         assert!(has_column(&connection, "releases", "file_count").unwrap());
         assert!(has_column(&connection, "releases", "size_bytes").unwrap());
+        let backups: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='backups'", [], |row| row.get(0)).unwrap();
+        assert_eq!(backups, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
