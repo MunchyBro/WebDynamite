@@ -106,6 +106,8 @@ pub fn initialize(connection: &Connection) -> Result<()> {
             source TEXT NOT NULL DEFAULT 'build',
             commit_hash TEXT,
             active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),
+            file_count INTEGER NOT NULL DEFAULT 0,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_releases_website_created ON releases(website_id,created_at DESC);
