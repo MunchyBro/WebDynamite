@@ -31,6 +31,8 @@ struct Domain { id: String, website_id: String, website_name: String, hostname: 
 struct CreateDomain { website_id: String, hostname: String }
 #[derive(Debug, Deserialize)]
 struct SetLanAccess { enabled: bool }
+#[derive(Debug, Deserialize)]
+struct DiagnoseDomain { hostname: String, expected_ipv4: Option<String> }
 fn valid_local_hostname(value: &str) -> bool {
     let host = value.trim().trim_end_matches('.').to_ascii_lowercase();
     if !(host.ends_with(".localhost") || host.ends_with(".test")) || host.len() > 253 { return false; }
@@ -66,6 +68,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/restart", axum::routing::post(restart_website))
         .route("/api/v1/websites/:id/logs", get(website_logs))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
+        .route("/api/v1/domains/diagnose", axum::routing::post(diagnose_domain))
         .route("/api/v1/domains/:id", axum::routing::delete(delete_domain))
         .route("/api/v1/domains/caddyfile", get(export_caddyfile))
         .route("/api/v1/networking/status", get(networking_status))
@@ -121,6 +124,34 @@ async fn set_lan_access(
         "url":if input.enabled {format!("http://{}:{}",lan_ip.unwrap_or_default(),port.unwrap_or_default())} else {String::new()},
         "note":"Reload Caddy to apply this change. Windows Firewall may need a private-profile inbound rule for this website port."
     })))
+}
+
+async fn diagnose_domain(Json(input): Json<DiagnoseDomain>) -> Result<Json<serde_json::Value>, ApiError> {
+    let hostname=input.hostname.trim().trim_end_matches('.').to_ascii_lowercase();
+    if hostname.len()>253 || !hostname.contains('.') || hostname.ends_with(".localhost") || hostname.ends_with(".test")
+        || hostname.parse::<std::net::IpAddr>().is_ok()
+        || !hostname.split('.').all(|label| !label.is_empty() && label.len()<=63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len()-1].is_ascii_alphanumeric()
+            && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b==b'-')) {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_public_hostname","Enter a valid public domain name, not an IP address or a .localhost/.test name.".into()));
+    }
+    let expected=match input.expected_ipv4.as_deref().map(str::trim).filter(|v|!v.is_empty()) {
+        Some(value)=>Some(value.parse::<std::net::Ipv4Addr>().map_err(|_|ApiError(StatusCode::BAD_REQUEST,"invalid_expected_ipv4","Expected IPv4 must be a valid IPv4 address.".into()))?),
+        None=>None
+    };
+    let resolved=tokio::net::lookup_host((hostname.as_str(),80)).await
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"dns_lookup_failed",format!("DNS lookup failed: {e}")))?;
+    let mut addresses=resolved.map(|a|a.ip()).collect::<Vec<_>>();
+    addresses.sort(); addresses.dedup();
+    let ipv4=addresses.iter().filter_map(|a|if let std::net::IpAddr::V4(v)=a {Some(v.to_string())}else{None}).collect::<Vec<_>>();
+    let ipv6=addresses.iter().filter_map(|a|if let std::net::IpAddr::V6(v)=a {Some(v.to_string())}else{None}).collect::<Vec<_>>();
+    let matches=expected.map(|ip|ipv4.iter().any(|a|a==&ip.to_string()));
+    Ok(Json(json!({"hostname":hostname,"resolved":!addresses.is_empty(),"ipv4":ipv4,"ipv6":ipv6,
+        "expected_ipv4":expected.map(|v|v.to_string()),"matches_expected_ipv4":matches,
+        "ready_for_https":!addresses.is_empty() && matches.unwrap_or(true),
+        "https_note":"DNS resolution is only a readiness signal. HTTPS issuance still requires the domain to reach this machine publicly and Caddy's ACME challenge to succeed.",
+        "public_exposure_enabled":false})))
 }
 
 async fn list_domains(State(state): State<AppState>) -> Result<Json<Vec<Domain>>, ApiError> {
