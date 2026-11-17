@@ -8,7 +8,7 @@ WebDynamite stores local domain assignments in SQLite. Hostnames must end in `.l
 2. Assign a hostname in **Domains**, for example `portfolio.localhost`.
 3. Start a Node.js website before exporting its route. WebDynamite allocates a loopback port and supplies it through the `PORT` environment variable (and `HOST=127.0.0.1`). Your app must listen on that environment-provided port.
 4. Generate the Caddyfile in **Domains**. The export reports ready routes and Node.js routes waiting for a port.
-5. Install Caddy separately and load/reload the generated configuration using your Caddy service setup.
+5. Install Caddy and configure its executable path (the Core Service uses `caddy` from `PATH`, or `CADDY_BIN` when set).\n5. In WebDynamite, use **Validate**, then **Start Caddy**. When domains or website ports change, use **Reload Caddy** to apply the latest generated configuration.
 
 Static routes proxy to the Core Service static-file endpoint. Node.js routes proxy directly to the website's assigned loopback port.
 
