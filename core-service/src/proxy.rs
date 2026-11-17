@@ -53,7 +53,7 @@ async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::St
  if let Err(e)=validate_config(&state){return Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_validation_failed","message":e}}))));}
  let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
  let already_running=match slot.as_mut(){Some(child)=>match child.try_wait(){Ok(None)=>true,Ok(Some(_))=>false,Err(_)=>true},None=>false};
- if already_running {let pid=slot.as_ref().and_then(|child|child.as_ref().map(|process|process.id())).unwrap_or_default();return Ok(Json(json!({"running":true,"pid":pid,"message":"Caddy is already running"})));}
+ if already_running {let pid=slot.as_ref().map(|process|process.id()).unwrap_or_default();return Ok(Json(json!({"running":true,"pid":pid,"message":"Caddy is already running"})));}
  if slot.is_some(){*slot=None;}
  let path=config_path(&state);
  let child=Command::new(&state.caddy_bin).args(["run","--config"]).arg(&path).args(["--adapter","caddyfile"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e|(axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_start_failed","message":format!("Could not start Caddy: {e}")}}))))?;
