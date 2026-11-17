@@ -81,3 +81,14 @@ Public domains are separate from local `.localhost`/`.test` assignments. In **Pu
 - Configure DNS A/AAAA records, router forwarding (if behind NAT), Windows Firewall rules and ISP ingress support yourself. Never expose the Core Service management API.
 - Removing a public domain removes its generated route on the next Caddy reload; it does not delete website files or domain DNS records.
 - Public hosting is not a hardened production deployment environment. Review application security, updates, backups and access controls before exposing any service.
+
+
+## System monitoring (Phase 12)
+
+The Monitoring page and Overview health panel read live host metrics from the authenticated Core Service endpoint `/api/v1/monitoring/metrics`.
+
+- CPU usage is sampled over a short interval; memory reports used and total physical memory.
+- Disk usage aggregates the total and available space of detected mounted volumes.
+- Network received/transmitted values are cumulative interface counters since boot or interface reset; they are not instantaneous bandwidth speeds.
+- The desktop refreshes metrics every five seconds while Overview or Monitoring is open.
+- The endpoint is protected by the same bearer-token middleware as the other management APIs and remains bound to the Core Service loopback listener.
