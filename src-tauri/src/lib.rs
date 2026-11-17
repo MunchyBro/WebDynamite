@@ -55,8 +55,15 @@ async fn delete_domain(token:String,id:String)->Result<(),String>{authorized_req
 #[tauri::command]
 async fn export_caddyfile(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/domains/caddyfile",None).await?.json().await.map_err(|e|api_error("Could not export Caddyfile",e))}
 #[tauri::command]
+async fn networking_status(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/networking/status",None).await?.json().await.map_err(|e|api_error("Could not read network status",e))}
+#[tauri::command]
+async fn set_lan_access(token:String,id:String,enabled:bool)->Result<Value,String>{
+ let body=serde_json::json!({"enabled":enabled});
+ authorized_request(&token,reqwest::Method::PUT,&format!("/api/v1/websites/{id}/lan"),Some(body)).await?.json().await.map_err(|e|api_error("Could not change LAN access",e))
+}
+#[tauri::command]
 async fn proxy_status(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/proxy/status",None).await?.json().await.map_err(|e|api_error("Could not read Caddy status",e))}
 #[tauri::command]
 async fn proxy_action(token:String,action:String)->Result<Value,String>{if !["start","stop","reload","validate"].contains(&action.as_str()){return Err("Unsupported Caddy action.".into());} authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/proxy/{action}"),None).await?.json().await.map_err(|e|api_error("Caddy operation failed",e))}
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,export_caddyfile,proxy_status,proxy_action]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,export_caddyfile,proxy_status,proxy_action,networking_status,set_lan_access]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
