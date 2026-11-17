@@ -117,7 +117,7 @@ async fn list_releases(State(state):State<AppState>,Query(query):Query<RunsQuery
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let sql=if query.website_id.is_some(){"SELECT r.id,r.website_id,w.name,r.source,r.commit_hash,r.active,r.file_count,r.size_bytes,r.created_at FROM releases r JOIN websites w ON w.id=r.website_id WHERE r.website_id=?1 ORDER BY r.created_at DESC LIMIT 50"}else{"SELECT r.id,r.website_id,w.name,r.source,r.commit_hash,r.active,r.file_count,r.size_bytes,r.created_at FROM releases r JOIN websites w ON w.id=r.website_id ORDER BY r.created_at DESC LIMIT 100"};
  let mut q=db.prepare(sql).map_err(db_error)?;
- let map=|r:&rusqlite::Row<'_>|Ok(Release{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,source:r.get(3)?,commit_hash:r.get(4)?,active:r.get::<_,i64>(5)?==1,file_count:r.get(6)?,size_bytes:r.get(7)?,created_at:r.get(8)?});
+ let map=|r:&rusqlite::Row<'_>|Ok(Release{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,source:r.get(3)?,commit_hash:r.get(4)?,active:r.get::<_,i64>(5)?==1,file_count:r.get::<_,i64>(6)? as u64,size_bytes:r.get::<_,i64>(7)? as u64,created_at:r.get(8)?});
  let rows=if let Some(id)=query.website_id{q.query_map(params![id],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map([],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(Json(rows))
 }
@@ -144,7 +144,7 @@ async fn create_release(State(state):State<AppState>,Path(website_id):Path<Strin
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let tx=db.unchecked_transaction().map_err(db_error)?;
  tx.execute("UPDATE releases SET active=0 WHERE website_id=?1",params![website_id]).map_err(db_error)?;
- tx.execute("INSERT INTO releases(id,website_id,release_path,source,commit_hash,active,file_count,size_bytes) VALUES(?1,?2,?3,'build',?4,1,?5,?6)",params![id,website_id,release_path,commit,counts.0,counts.1]).map_err(db_error)?;
+ tx.execute("INSERT INTO releases(id,website_id,release_path,source,commit_hash,active,file_count,size_bytes) VALUES(?1,?2,?3,'build',?4,1,?5,?6)",params![id,website_id,release_path,commit,counts.0 as i64,counts.1 as i64]).map_err(db_error)?;
  let created_at:String=tx.query_row("SELECT created_at FROM releases WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
  tx.commit().map_err(db_error)?;
  Ok((StatusCode::CREATED,Json(Release{id,website_id,website_name,source:"build".into(),commit_hash:commit,active:true,file_count:counts.0,size_bytes:counts.1,created_at})))
