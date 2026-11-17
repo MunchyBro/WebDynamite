@@ -1,7 +1,7 @@
 # Cloudflare Quick Tunnel reliability
 
-WebDynamite captures Quick Tunnel URLs from both `cloudflared` stdout and stderr because CLI versions and log configurations may emit the generated URL on either stream. Both streams are drained concurrently to avoid blocking the child process on a full pipe.
+Tunnel metadata from a previous process is cleared before stdout/stderr reader threads for a replacement process are started. This ordering prevents a fast `cloudflared` URL announcement from being overwritten by stale-state cleanup.
 
-The Networking view reports the actual in-memory tunnel start timestamp instead of resetting it whenever the status list is refreshed. When a tunnel process exits, its URL and start metadata are cleared from the live registry.
+Both stdout and stderr are drained concurrently because CLI versions and logging configurations may emit the generated URL on either stream. Start timestamps are held in the live process registry and remain stable across status refreshes. Exited or stopped processes have URL and start metadata cleared.
 
-The generated hostname remains temporary and is not persisted across Core Service restarts. `cloudflared` must still be installed separately or selected with `CLOUDFLARED_BIN`.
+Quick Tunnel hostnames remain temporary and are not persisted across Core Service restarts. `cloudflared` must be installed separately or selected with `CLOUDFLARED_BIN`.
