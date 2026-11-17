@@ -528,7 +528,9 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
                 Some((file,"flask")) => {
                     c.args(["-m","flask","--app",file,"run","--host","127.0.0.1","--port",&port.to_string()]);
                 }
-                _ => c.args(["-m","http.server",&port.to_string(),"--bind","127.0.0.1","--directory",&project]),
+                _ => {
+                    c.args(["-m","http.server",&port.to_string(),"--bind","127.0.0.1","--directory",&project]);
+                }
             }
         }
         c
