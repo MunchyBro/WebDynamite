@@ -11,9 +11,11 @@ WebDynamite delegates public HTTPS certificate issuance and renewal to Caddy. Pu
 
 DNS resolution or a running Caddy process alone does not prove that a certificate has been issued or that HTTPS is reachable.
 
-## Current visibility limitation
+## Live HTTPS verification
 
-The current SSL & Security screen is a readiness dashboard only. It does not yet inspect Caddy's certificate storage, perform a live TLS handshake, report certificate issuer or expiry dates, or detect failed renewal attempts. Users must verify the public HTTPS endpoint independently until certificate telemetry is implemented.
+The SSL & Security screen can run an on-demand HTTPS check for each registered public hostname. It invokes `curl` with certificate verification enabled, performs a HEAD request, records the HTTP status and elapsed time, and reports whether the TLS handshake and certificate validation succeeded. Redirects are not followed. `curl` must be installed and available on PATH. A failed check can indicate DNS, routing, Caddy, remote-server, or certificate trouble; inspect the displayed error and server logs.
+
+This is a point-in-time probe, not continuous monitoring. It does not currently report certificate issuer, exact expiry date, renewal history, or automatically alert on future failures. A successful HEAD request also does not verify application routes or content.
 
 ## Local development domains
 
