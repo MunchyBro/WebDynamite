@@ -76,6 +76,27 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);")?;
+    // Version 7 adds per-website build profiles and immutable build history.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS build_profiles (
+        id TEXT PRIMARY KEY NOT NULL,
+        website_id TEXT NOT NULL UNIQUE REFERENCES websites(id) ON DELETE CASCADE,
+        program TEXT NOT NULL CHECK (program IN ('node','python','php','cargo','dotnet')),
+        args_json TEXT NOT NULL,
+        output_dir TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS build_runs (
+        id TEXT PRIMARY KEY NOT NULL,
+        website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+        program TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('success','failed')),
+        exit_code INTEGER,
+        duration_ms INTEGER NOT NULL,
+        logs TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_build_runs_website_created ON build_runs(website_id,created_at DESC);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);")?;
     Ok(())
 }
 
@@ -89,7 +110,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
