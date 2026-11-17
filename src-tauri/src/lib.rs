@@ -182,6 +182,7 @@ async fn diagnostics_report(token:String)->Result<Value,String>{authorized_reque
 #[tauri::command]
 async fn recover_website_states(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,"/api/v1/recovery/reconcile",Some(serde_json::json!({}))).await?.json().await.map_err(|e|api_error("Recovery reconciliation failed",e))}
 
+#[tauri::command]
 async fn list_runtime_profiles(token:String)->Result<Vec<Value>,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/runtime-profiles",None).await?.json().await.map_err(|e|api_error("Could not read runtime profiles",e))}
 #[tauri::command]
 async fn save_runtime_profile(token:String,website_id:String,program:String,args:Vec<String>)->Result<Value,String>{authorized_request(&token,reqwest::Method::PUT,"/api/v1/runtime-profiles",Some(serde_json::json!({"website_id":website_id,"program":program,"args":args}))).await?.json().await.map_err(|e|api_error("Could not save runtime profile",e))}
