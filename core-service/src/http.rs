@@ -96,6 +96,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .merge(crate::deploy::router())
         .merge(crate::git::router())
         .merge(crate::backup::router())
+        .merge(crate::settings::router())
         .layer(middleware::from_fn_with_state(token, require_bearer));
     Router::new()
         .route("/api/v1/health", get(health))
