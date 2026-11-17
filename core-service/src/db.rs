@@ -51,6 +51,14 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_domains_website ON domains(website_id);
         INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);"
     )?;
+    // Version 4 adds opt-in LAN publishing. Existing websites remain private by default.
+    if !has_column(connection, "websites", "lan_enabled")? {
+        connection.execute("ALTER TABLE websites ADD COLUMN lan_enabled INTEGER NOT NULL DEFAULT 0 CHECK (lan_enabled IN (0,1))", [])?;
+    }
+    if !has_column(connection, "websites", "lan_port")? {
+        connection.execute("ALTER TABLE websites ADD COLUMN lan_port INTEGER", [])?;
+    }
+    connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)", [])?;
     Ok(())
 }
 
@@ -64,7 +72,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         let domains: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='domains'", [], |row| row.get(0)).unwrap();
