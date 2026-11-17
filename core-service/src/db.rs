@@ -127,7 +127,7 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_backups_created ON backups(created_at DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);")?;
-    connection.execute_batch("CREATE TABLE IF NOT EXISTS runtime_profiles (\n        id TEXT PRIMARY KEY NOT NULL,\n        website_id TEXT NOT NULL UNIQUE REFERENCES websites(id) ON DELETE CASCADE,\n        program TEXT NOT NULL,\n        args_json TEXT NOT NULL,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    );\n    INSERT OR IGNORE INTO schema_migrations(version) VALUES (11);")?;\n    connection.execute_batch("CREATE TABLE IF NOT EXISTS settings (
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY NOT NULL,
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

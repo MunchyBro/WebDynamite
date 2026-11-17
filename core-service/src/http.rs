@@ -529,8 +529,55 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
     let mut command=if let Some((program,args))=custom_profile {
         let mut c=Command::new(program);
         let expanded=args.into_iter().map(|arg|arg.replace("{project}",&project).replace("{port}",&port.to_string())).collect::<Vec<_>>();
-        c.args(expanded);c
-    } else if runtime=="php" {    let child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).spawn()
+        c.args(expanded);
+        c
+    } else if runtime=="php" {
+        let php=crate::settings::setting_string(&state,"php_executable","php");
+        let artisan=FsPath::new(&project).join("artisan");
+        let public_index=FsPath::new(&project).join("public").join("index.php");
+        let mut c=Command::new(php);
+        if artisan.is_file() && public_index.is_file() {
+            c.args(["artisan","serve","--host","127.0.0.1","--port",&port.to_string()]);
+        } else {
+            c.args(["-S",&format!("127.0.0.1:{port}"),"-t",&project]);
+        }
+        c
+    } else if runtime=="python" {
+        let python=crate::settings::setting_string(&state,"python_executable","python");
+        let root=FsPath::new(&project);
+        let mut c=Command::new(python);
+        if root.join("manage.py").is_file() {
+            c.args(["manage.py","runserver",&format!("127.0.0.1:{port}")]);
+        } else {
+            let candidates=["main.py","app.py","wsgi.py"];
+            let detected=candidates.iter().find_map(|name|{
+                let path=root.join(name);
+                let source=std::fs::read_to_string(&path).ok()?;
+                if source.contains("FastAPI(") { Some((*name,"fastapi")) }
+                else if source.contains("Flask(") { Some((*name,"flask")) }
+                else { None }
+            });
+            match detected {
+                Some((file,"fastapi")) => {
+                    let module=file.trim_end_matches(".py");
+                    c.args(["-m","uvicorn",&format!("{module}:app"),"--host","127.0.0.1","--port",&port.to_string()]);
+                }
+                Some((file,"flask")) => {
+                    c.args(["-m","flask","--app",file,"run","--host","127.0.0.1","--port",&port.to_string()]);
+                }
+                _ => {
+                    c.args(["-m","http.server",&port.to_string(),"--bind","127.0.0.1","--directory",&project]);
+                }
+            }
+        }
+        c
+    } else {
+        #[cfg(windows)]
+        { let mut c=Command::new("cmd");c.args(["/C","npm run start"]);c }
+        #[cfg(not(windows))]
+        { let mut c=Command::new("npm");c.args(["run","start"]);c }
+    };
+    let child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).spawn()
       .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"runtime_start_failed",if runtime=="php"{format!("Could not start PHP. Verify PHP is installed and available on PATH: {e}")}else if runtime=="python"{format!("Could not start Python. Verify Python is installed and available as `python` on PATH: {e}")}else{format!("Could not start npm. Verify Node.js and npm are installed: {e}")}))?;
     let pid=child.id();
     state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?.insert(id.clone(),child);
