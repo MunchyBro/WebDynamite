@@ -3,7 +3,7 @@ mod http;
 mod network;
 mod monitor;
 mod proxy;
-mod deploy;
+mod deploy;\nmod git;
 
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
@@ -12,7 +12,7 @@ use rusqlite::Connection;
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
-    pub logs_dir: PathBuf,
+    pub logs_dir: PathBuf,\n    pub releases_dir: PathBuf,
     pub config_dir: PathBuf,
     pub caddy_bin: PathBuf,
     pub proxy_process: Arc<Mutex<Option<Child>>>,
@@ -79,17 +79,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = data_dir();
     let database_dir = root.join("database");
     let logs_dir = root.join("logs");
-    let config_dir = root.join("config");
+    let config_dir = root.join("config");\n    let releases_dir = root.join("releases");
     std::fs::create_dir_all(&database_dir)?;
     std::fs::create_dir_all(&logs_dir)?;
-    std::fs::create_dir_all(&config_dir)?;
+    std::fs::create_dir_all(&config_dir)?;\n    std::fs::create_dir_all(&releases_dir)?;
     let connection = Connection::open(database_dir.join("webdynamite.sqlite3"))?;
     db::initialize(&connection)?;
 
     let state = AppState {
         db: Arc::new(Mutex::new(connection)),
         processes: Arc::new(Mutex::new(HashMap::new())),
-        logs_dir,
+        logs_dir,\n        releases_dir,
         config_dir,
         caddy_bin: env::var_os("CADDY_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("caddy")),
         proxy_process: Arc::new(Mutex::new(None)),
