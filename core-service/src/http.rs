@@ -33,6 +33,17 @@ struct CreateDomain { website_id: String, hostname: String }
 struct SetLanAccess { enabled: bool }
 #[derive(Debug, Deserialize)]
 struct DiagnoseDomain { hostname: String, expected_ipv4: Option<String> }
+#[derive(Debug, Serialize)]
+struct PublicDomain { id:String, website_id:String, website_name:String, hostname:String, runtime:String, port:Option<u16>, created_at:String }
+#[derive(Debug, Deserialize)]
+struct CreatePublicDomain { website_id:String, hostname:String }
+fn valid_public_hostname(value:&str)->bool {
+    let host=value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.len()>253 || !host.contains('.') || host.ends_with(".localhost") || host.ends_with(".test") || host.parse::<std::net::IpAddr>().is_ok(){return false;}
+    host.split('.').all(|label|!label.is_empty()&&label.len()<=63&&label.as_bytes()[0].is_ascii_alphanumeric()
+        &&label.as_bytes()[label.len()-1].is_ascii_alphanumeric()
+        &&label.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'))
+}
 fn valid_local_hostname(value: &str) -> bool {
     let host = value.trim().trim_end_matches('.').to_ascii_lowercase();
     if !(host.ends_with(".localhost") || host.ends_with(".test")) || host.len() > 253 { return false; }
@@ -69,6 +80,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/logs", get(website_logs))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
         .route("/api/v1/domains/diagnose", axum::routing::post(diagnose_domain))
+        .route("/api/v1/public-domains", get(list_public_domains).post(create_public_domain))
+        .route("/api/v1/public-domains/:id", axum::routing::delete(delete_public_domain))
         .route("/api/v1/domains/:id", axum::routing::delete(delete_domain))
         .route("/api/v1/domains/caddyfile", get(export_caddyfile))
         .route("/api/v1/networking/status", get(networking_status))
@@ -181,6 +194,32 @@ async fn delete_domain(State(state): State<AppState>, Path(id): Path<String>) ->
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     let n=db.execute("DELETE FROM domains WHERE id=?1",params![id]).map_err(database_error)?;
     if n==0 { return Err(ApiError(StatusCode::NOT_FOUND,"domain_not_found","No domain exists with that ID.".into())); }
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn list_public_domains(State(state):State<AppState>)->Result<Json<Vec<PublicDomain>>,ApiError>{
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let mut q=db.prepare("SELECT p.id,p.website_id,w.name,p.hostname,w.runtime,w.port,p.created_at FROM public_domains p JOIN websites w ON w.id=p.website_id ORDER BY p.hostname").map_err(database_error)?;
+    let rows=q.query_map([],|r|Ok(PublicDomain{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,hostname:r.get(3)?,runtime:r.get(4)?,port:r.get(5)?,created_at:r.get(6)?})).map_err(database_error)?;
+    Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?))
+}
+async fn create_public_domain(State(state):State<AppState>,Json(input):Json<CreatePublicDomain>)->Result<(StatusCode,Json<PublicDomain>),ApiError>{
+    let hostname=input.hostname.trim().trim_end_matches('.').to_ascii_lowercase();
+    if !valid_public_hostname(&hostname){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_public_hostname","Enter a valid public DNS hostname, not an IP address or a .localhost/.test name.".into()));}
+    let id=Uuid::new_v4().to_string();
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let (runtime,port):(String,Option<u16>)=db.query_row("SELECT runtime,port FROM websites WHERE id=?1",params![input.website_id],|r|Ok((r.get(0)?,r.get(1)?)))
+      .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","Select an existing website.".into())}else{database_error(e)})?;
+    let used:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM public_domains WHERE hostname=?1 UNION SELECT 1 FROM domains WHERE hostname=?1)",params![hostname],|r|r.get(0)).map_err(database_error)?;
+    if used{return Err(ApiError(StatusCode::CONFLICT,"hostname_in_use","That hostname is already assigned to a local or public website.".into()));}
+    db.execute("INSERT INTO public_domains(id,website_id,hostname) VALUES (?1,?2,?3)",params![id,input.website_id,hostname]).map_err(database_error)?;
+    let website_name:String=db.query_row("SELECT name FROM websites WHERE id=?1",params![input.website_id],|r|r.get(0)).map_err(database_error)?;
+    let created_at:String=db.query_row("SELECT created_at FROM public_domains WHERE id=?1",params![id],|r|r.get(0)).map_err(database_error)?;
+    Ok((StatusCode::CREATED,Json(PublicDomain{id,website_id:input.website_id,website_name,hostname,runtime,port,created_at})))
+}
+async fn delete_public_domain(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,ApiError>{
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let n=db.execute("DELETE FROM public_domains WHERE id=?1",params![id]).map_err(database_error)?;
+    if n==0{return Err(ApiError(StatusCode::NOT_FOUND,"public_domain_not_found","No public domain exists with that ID.".into()));}
     Ok(StatusCode::NO_CONTENT)
 }
 async fn export_caddyfile(State(state): State<AppState>) -> Result<Json<serde_json::Value>,ApiError> {

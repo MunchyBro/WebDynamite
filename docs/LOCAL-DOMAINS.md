@@ -69,3 +69,15 @@ The PHP built-in server is intended for local development and testing, not produ
 4. Assign a local domain or explicitly enable LAN access as needed; Python sites use the same Caddy reverse-proxy routing as Node.js and PHP sites.
 
 Python's built-in HTTP server is a simple static file server for development and testing. It does not execute Python web frameworks (such as Django, Flask or FastAPI), and is not a production-grade public hosting server. Python must be installed separately; WebDynamite does not bundle the runtime.
+
+
+## Public domain publishing (Phase 11)
+
+Public domains are separate from local `.localhost`/`.test` assignments. In **Public Hosting**, select a registered website and assign a public DNS hostname. WebDynamite stores that assignment and includes a hostname-based route in the generated Caddyfile. Caddy can then obtain and renew HTTPS certificates automatically after public DNS resolves to the correct ingress and inbound TCP ports 80 and 443 reach this machine.
+
+- Public publishing is an explicit per-domain action; DNS diagnostics alone never publish a site.
+- Static websites proxy to the Core Service static-file endpoint. Node.js, PHP and Python sites proxy to their assigned loopback application port; start the website before expecting its route to serve traffic.
+- Use **Start Caddy with public routes** or **Apply & reload Caddy** to apply the generated configuration. A successful config validation does not prove public reachability or certificate issuance.
+- Configure DNS A/AAAA records, router forwarding (if behind NAT), Windows Firewall rules and ISP ingress support yourself. Never expose the Core Service management API.
+- Removing a public domain removes its generated route on the next Caddy reload; it does not delete website files or domain DNS records.
+- Public hosting is not a hardened production deployment environment. Review application security, updates, backups and access controls before exposing any service.

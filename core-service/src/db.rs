@@ -59,6 +59,14 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         connection.execute("ALTER TABLE websites ADD COLUMN lan_port INTEGER", [])?;
     }
     connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)", [])?;
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS public_domains (
+        id TEXT PRIMARY KEY NOT NULL,
+        website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+        hostname TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_public_domains_website ON public_domains(website_id);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);")?;
     Ok(())
 }
 
@@ -72,7 +80,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());

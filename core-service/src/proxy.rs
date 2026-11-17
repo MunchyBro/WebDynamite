@@ -22,6 +22,22 @@ pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),Stri
   if runtime=="node" || runtime=="php" || runtime=="python" { if let Some(port)=port { config.push_str(&format!("http://{host} {{\n    bind 127.0.0.1\n    reverse_proxy 127.0.0.1:{port}\n}}\n\n")); routes+=1; } else {pending+=1;} }
   else {config.push_str(&format!("http://{host} {{\n    bind 127.0.0.1\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n")); routes+=1;}
  }
+ // Public domains are explicit opt-ins. Caddy automatically provisions HTTPS when
+ // public DNS and inbound HTTP/HTTPS reachability are correctly configured.
+ let public_sites={
+  let mut q=db.prepare("SELECT p.hostname,p.website_id,w.runtime,w.port FROM public_domains p JOIN websites w ON w.id=p.website_id ORDER BY p.hostname").map_err(|e|e.to_string())?;
+  let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<u16>>(3)?))).map_err(|e|e.to_string())?;
+  rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
+ };
+ for (host,id,runtime,port) in public_sites {
+  if runtime=="static" {
+   config.push_str(&format!("{host} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n"));
+   routes+=1;
+  } else if let Some(upstream)=port {
+   config.push_str(&format!("{host} {{\n    reverse_proxy 127.0.0.1:{upstream}\n}}\n\n"));
+   routes+=1;
+  } else {pending+=1;}
+ }
  // LAN publishing is opt-in per website and binds to the private interface only.
  let lan_sites={
   let mut q=db.prepare("SELECT id,runtime,port,lan_port FROM websites WHERE lan_enabled=1 ORDER BY name").map_err(|e|e.to_string())?;
