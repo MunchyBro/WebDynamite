@@ -85,12 +85,12 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/domains/:id", axum::routing::delete(delete_domain))
         .route("/api/v1/domains/caddyfile", get(export_caddyfile))
         .route("/api/v1/networking/status", get(networking_status))
+        .route("/api/v1/monitoring/metrics", get(system_metrics))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .layer(middleware::from_fn_with_state(token, require_bearer));
     Router::new()
         .route("/api/v1/health", get(health))
-        .route("/api/v1/monitoring/metrics", get(system_metrics))
         .route("/hosted/:id/*path", get(serve_static))
         .merge(protected)
         .with_state(state)
