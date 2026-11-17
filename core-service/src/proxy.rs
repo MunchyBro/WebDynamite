@@ -12,7 +12,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/proxy/reload", axum::routing::post(reload))
 }
 fn config_path(state:&AppState)->std::path::PathBuf { state.config_dir.join("Caddyfile") }
-fn generate_config(state:&AppState)->Result<(String,usize,usize),String>{
+pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),String>{
  let db=state.db.lock().map_err(|_|"Database lock is unavailable".to_string())?;
  let mut q=db.prepare("SELECT d.hostname,d.website_id,w.runtime,w.port FROM domains d JOIN websites w ON w.id=d.website_id ORDER BY d.hostname").map_err(|e|e.to_string())?;
  let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<u16>>(3)?))).map_err(|e|e.to_string())?;
@@ -21,6 +21,25 @@ fn generate_config(state:&AppState)->Result<(String,usize,usize),String>{
  for row in rows { let(host,id,runtime,port)=row.map_err(|e|e.to_string())?;
   if runtime=="node" { if let Some(port)=port { config.push_str(&format!("http://{host} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n\n")); routes+=1; } else {pending+=1;} }
   else {config.push_str(&format!("http://{host} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n")); routes+=1;}
+ }
+ // LAN publishing is opt-in per website and binds to the private interface only.
+ let lan_sites={
+  let mut q=db.prepare("SELECT id,runtime,port,lan_port FROM websites WHERE lan_enabled=1 ORDER BY name").map_err(|e|e.to_string())?;
+  let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<u16>>(2)?,r.get::<_,Option<u16>>(3)?))).map_err(|e|e.to_string())?;
+  rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
+ };
+ if !lan_sites.is_empty() {
+  let ip=crate::network::lan_ipv4().ok_or_else(||"LAN websites are enabled, but no private IPv4 address is available. Connect to a private network and retry.".to_string())?;
+  for (id,runtime,node_port,lan_port) in lan_sites {
+   let Some(port)=lan_port else {pending+=1;continue;};
+   if runtime=="node" {
+    let Some(upstream)=node_port else {pending+=1;continue;};
+    config.push_str(&format!("http://{ip}:{port} {{\\n    reverse_proxy 127.0.0.1:{upstream}\\n}}\\n\\n"));
+   } else {
+    config.push_str(&format!("http://{ip}:{port} {{\\n    @root path /\\n    rewrite @root /hosted/{id}/index.html\\n    @assets not path /\\n    rewrite @assets /hosted/{id}{{uri}}\\n    reverse_proxy 127.0.0.1:47821\\n}}\\n\\n"));
+   }
+   routes+=1;
+  }
  }
  Ok((config,routes,pending))
 }
