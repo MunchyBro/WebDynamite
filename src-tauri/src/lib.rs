@@ -168,5 +168,15 @@ async fn restore_backup(token:String,id:String)->Result<Value,String>{authorized
 #[tauri::command]
 async fn delete_backup(token:String,id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/backups/{id}"),None).await?;Ok(())}
 
+
+#[tauri::command]
+async fn get_app_settings(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/settings",None).await?.json().await.map_err(|e|api_error("Could not load settings",e))}
+#[tauri::command]
+async fn save_app_settings(token:String,settings:Value)->Result<Value,String>{authorized_request(&token,reqwest::Method::PUT,"/api/v1/settings",Some(settings)).await?.json().await.map_err(|e|api_error("Could not save settings",e))}
+#[tauri::command]
+async fn diagnostics_report(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/diagnostics",None).await?.json().await.map_err(|e|api_error("Could not run diagnostics",e))}
+#[tauri::command]
+async fn recover_website_states(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,"/api/v1/recovery/reconcile",Some(serde_json::json!({}))).await?.json().await.map_err(|e|api_error("Recovery reconciliation failed",e))}
+
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file,list_build_profiles,save_build_profile,run_build,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file,list_build_profiles,save_build_profile,run_build,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
