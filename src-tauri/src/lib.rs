@@ -8,7 +8,7 @@ struct Domain { id:String, website_id:String, website_name:String, hostname:Stri
 fn api_error(context:&str,error:impl std::fmt::Display)->String{format!("{context}: {error}")}
 async fn authorized_request(token:&str,method:reqwest::Method,path:&str,body:Option<Value>)->Result<reqwest::Response,String>{
  if token.trim().len()<32{return Err("API token must contain at least 32 characters.".into());}
- let client=reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(2)).timeout(std::time::Duration::from_secs(15)).build().map_err(|e|api_error("Could not initialize HTTP client",e))?;
+ let client=reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(2)).timeout(std::time::Duration::from_secs(600)).build().map_err(|e|api_error("Could not initialize HTTP client",e))?;
  let mut request=client.request(method,format!("{CORE_URL}{path}")).bearer_auth(token.trim());
  if let Some(json)=body{request=request.json(&json);}
  let response=request.send().await.map_err(|e|api_error("Could not reach WebDynamite Core Service at 127.0.0.1:47821",e))?;
@@ -122,5 +122,23 @@ async fn delete_website_file(token:String,id:String,path:String)->Result<(),Stri
  authorized_request(&token,reqwest::Method::DELETE,&url_path,None).await?;Ok(())
 }
 
+
+#[tauri::command]
+async fn list_build_profiles(token:String)->Result<Vec<Value>,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/deployments/profiles",None).await?.json().await.map_err(|e|api_error("Could not read build profiles",e))}
+#[tauri::command]
+async fn save_build_profile(token:String,website_id:String,program:String,args:Vec<String>,output_dir:String)->Result<Value,String>{
+ let body=serde_json::json!({"website_id":website_id,"program":program,"args":args,"output_dir":output_dir});
+ authorized_request(&token,reqwest::Method::PUT,"/api/v1/deployments/profiles",Some(body)).await?.json().await.map_err(|e|api_error("Could not save build profile",e))
+}
+#[tauri::command]
+async fn run_build(token:String,website_id:String)->Result<Value,String>{
+ authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/deployments/{website_id}/run"),None).await?.json().await.map_err(|e|api_error("Build failed",e))
+}
+#[tauri::command]
+async fn list_build_runs(token:String,website_id:String)->Result<Vec<Value>,String>{
+ let suffix=if website_id.is_empty(){String::new()}else{format!("?website_id={website_id}")};
+ authorized_request(&token,reqwest::Method::GET,&format!("/api/v1/deployments/runs{suffix}"),None).await?.json().await.map_err(|e|api_error("Could not read build history",e))
+}
+
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file,list_build_profiles,save_build_profile,run_build,list_build_runs]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
