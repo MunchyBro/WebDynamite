@@ -56,7 +56,7 @@ async fn list_runs(State(state):State<AppState>,Query(query):Query<RunsQuery>)->
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let sql=if query.website_id.is_some(){"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id WHERE r.website_id=?1 ORDER BY r.created_at DESC LIMIT 50"}else{"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id ORDER BY r.created_at DESC LIMIT 50"};
  let mut q=db.prepare(sql).map_err(db_error)?;
- let map=|r:&rusqlite::Row<'_>|Ok(Release{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,source:r.get(3)?,commit_hash:r.get(4)?,active:r.get::<_,i64>(5)?==1,file_count:r.get(6)?,size_bytes:r.get(7)?,created_at:r.get(8)?});
+ let map=|r:&rusqlite::Row<'_>|Ok(BuildRun{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,program:r.get(3)?,status:r.get(4)?,exit_code:r.get(5)?,duration_ms:r.get(6)?,logs:r.get(7)?,created_at:r.get(8)?});
  let rows=if let Some(id)=query.website_id{q.query_map(params![id],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map([],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(Json(rows))
 }
@@ -117,7 +117,7 @@ async fn list_releases(State(state):State<AppState>,Query(query):Query<RunsQuery
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let sql=if query.website_id.is_some(){"SELECT r.id,r.website_id,w.name,r.source,r.commit_hash,r.active,r.file_count,r.size_bytes,r.created_at FROM releases r JOIN websites w ON w.id=r.website_id WHERE r.website_id=?1 ORDER BY r.created_at DESC LIMIT 50"}else{"SELECT r.id,r.website_id,w.name,r.source,r.commit_hash,r.active,r.file_count,r.size_bytes,r.created_at FROM releases r JOIN websites w ON w.id=r.website_id ORDER BY r.created_at DESC LIMIT 100"};
  let mut q=db.prepare(sql).map_err(db_error)?;
- let map=|r:&rusqlite::Row<'_>|{let path:String=r.get(6)?;let (file_count,size_bytes)=directory_stats(FsPath::new(&path));Ok(Release{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,source:r.get(3)?,commit_hash:r.get(4)?,active:r.get::<_,i64>(5)?==1,file_count,size_bytes,created_at:r.get(7)?})};
+ let map=|r:&rusqlite::Row<'_>|Ok(Release{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,source:r.get(3)?,commit_hash:r.get(4)?,active:r.get::<_,i64>(5)?==1,file_count:r.get(6)?,size_bytes:r.get(7)?,created_at:r.get(8)?});
  let rows=if let Some(id)=query.website_id{q.query_map(params![id],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map([],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(Json(rows))
 }
