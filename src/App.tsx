@@ -16,6 +16,8 @@ export default function App(){
  const removeDomain=async(id:string)=>{try{await invoke("delete_domain",{token,id});await refreshDomains();}catch(e){setError(String(e));}};
  const exportCaddy=async()=>{try{const r=await invoke<{config:string;routes:number;status:string;note:string}>("export_caddyfile",{token});setCaddyText(r.config+"\
 # "+r.note);}catch(e){setError(String(e));}};
+ const refreshProxy=async()=>{try{setProxyStatus(await invoke<{installed:boolean;running:boolean;binary:string;config_path:string}>("proxy_status",{token}));}catch(e){setError(String(e));}};
+ const controlProxy=async(action:string)=>{setBusy("proxy");try{await invoke("proxy_action",{token,action});await refreshProxy();}catch(e){setError(String(e));}finally{setBusy("");}};
  const add=async()=>{setBusy("add");try{await invoke("create_website",{token,name,projectPath,runtime});setShowAdd(false);setName("");setProjectPath("");await refresh();}catch(e){setError(String(e));}finally{setBusy("");}};
  const action=async(id:string,action:string)=>{setBusy(id);try{await invoke("website_action",{token,id,action});await refresh();}catch(e){setError(String(e));}finally{setBusy("");}};
  const remove=async(w:Website)=>{if(!window.confirm(`Remove "${w.name}" from the registry? Project files will not be deleted.`))return;try{await invoke("delete_website",{token,id:w.id});await refresh();}catch(e){setError(String(e));}};
