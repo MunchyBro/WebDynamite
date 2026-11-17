@@ -515,7 +515,7 @@ async fn query_database(State(state): State<AppState>, Path(id): Path<String>, J
                 rusqlite::types::ValueRef::Null=>serde_json::Value::Null,
                 rusqlite::types::ValueRef::Integer(v)=>json!(v),
                 rusqlite::types::ValueRef::Real(v)=>json!(v),
-                rusqlite::types::ValueRef::Text(v)=>json!(String::from_utf8_lossy(v).chars().take(8192).collect::<String>()),
+                rusqlite::types::ValueRef::Text(v)=>json!(String::from_utf8_lossy(&v[..v.len().min(8192)]).to_string()),
                 rusqlite::types::ValueRef::Blob(v)=>json!({"type":"blob","base64":encode_base64(&v[..v.len().min(8192)]),"truncated":v.len()>8192}),
             };
             estimated_bytes+=value.to_string().len();
@@ -524,7 +524,8 @@ async fn query_database(State(state): State<AppState>, Path(id): Path<String>, J
         values.push(cells);
         if estimated_bytes>1024*1024 {truncated=true;break;}
     }
-    Ok(Json(json!({"database_id":id,"columns":columns,"rows":values,"row_count":values.len(),"truncated":truncated,"read_only":true})))
+    let row_count=values.len();
+    Ok(Json(json!({"database_id":id,"columns":columns,"rows":values,"row_count":row_count,"truncated":truncated,"read_only":true})))
 }
 
 async fn delete_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<StatusCode,ApiError> {
