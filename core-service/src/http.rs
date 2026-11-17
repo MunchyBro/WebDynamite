@@ -501,7 +501,8 @@ async fn export_database(State(state): State<AppState>, Path(id): Path<String>) 
     };
     let connection=rusqlite::Connection::open_with_flags(&path,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"database_export_failed",e.to_string()))?;
-    connection.execute_batch("PRAGMA wal_checkpoint(FULL);").map_err(database_error)?;
+    let (busy,_,_):(i64,i64,i64)=connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(database_error)?;
+    if busy!=0{return Err(ApiError(StatusCode::CONFLICT,"database_busy","The database is busy; close active connections and retry the export.".into()));}
     drop(connection);
     let metadata=std::fs::metadata(&path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_export_failed",e.to_string()))?;
     if metadata.len()>16*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"database_export_limit","SQLite exports are limited to 16 MiB.".into()));}
@@ -540,7 +541,7 @@ async fn import_database(State(state): State<AppState>, Json(input): Json<serde_
         let result:String=connection.query_row("PRAGMA integrity_check",[],|r|r.get(0))
             .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_sqlite_file",e.to_string()))?;
         if result!="ok" {return Err(ApiError(StatusCode::BAD_REQUEST,"sqlite_integrity_failed",format!("SQLite integrity check failed: {result}")));}
-        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(database_error)?;
+        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").map_err(database_error)?;
         drop(connection);
         Ok(())
     })();
