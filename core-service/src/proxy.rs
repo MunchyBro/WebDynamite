@@ -31,7 +31,7 @@ pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),Stri
  };
  for (host,id,runtime,port) in public_sites {
   if runtime=="static" {
-   config.push_str(&format!("{host} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{{{uri}}}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n"));
+   config.push_str(&format!("{host} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n"));
    routes+=1;
   } else if let Some(upstream)=port {
    config.push_str(&format!("{host} {{\n    reverse_proxy 127.0.0.1:{upstream}\n}}\n\n"));
