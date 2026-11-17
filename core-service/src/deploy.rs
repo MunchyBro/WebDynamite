@@ -82,7 +82,7 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
   let output=canonical.join(&profile.2);
   match output.canonicalize(){
    Ok(path) if path.starts_with(&canonical)&&path.is_dir()=>{},
-   _=>{status="failed";exit_code=Some(1);logs.push_str("\\nBuild command exited successfully, but the configured output folder was not found inside the website project.");}
+   _=>{status="failed";exit_code=Some(1);logs.push_str("\nBuild command exited successfully, but the configured output folder was not found inside the website project.");}
   }
  }
  let id=Uuid::new_v4().to_string();
@@ -90,5 +90,5 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  db.execute("INSERT INTO build_runs(id,website_id,program,status,exit_code,duration_ms,logs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,website_id,profile.0,status,exit_code,elapsed,logs]).map_err(db_error)?;
  let website_name:String=db.query_row("SELECT name FROM websites WHERE id=?1",params![website_id],|r|r.get(0)).map_err(db_error)?;
  let created_at:String=db.query_row("SELECT created_at FROM build_runs WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
-Ok((if result.status.success(){StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},Json(BuildRun{id,website_id,website_name,program:profile.0,status:status.into(),exit_code,duration_ms:elapsed,logs,created_at})))
+Ok((if status=="success"{StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},Json(BuildRun{id,website_id,website_name,program:profile.0,status:status.into(),exit_code,duration_ms:elapsed,logs,created_at})))
 }
