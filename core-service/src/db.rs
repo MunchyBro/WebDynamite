@@ -136,6 +136,8 @@ mod tests {
         assert_eq!(profiles, 1);
         let runs: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='build_runs'", [], |row| row.get(0)).unwrap();
         assert_eq!(runs, 1);
+        let releases: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='releases'", [], |row| row.get(0)).unwrap();
+        assert_eq!(releases, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
