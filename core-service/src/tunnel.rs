@@ -142,14 +142,20 @@ pub async fn start(
             "cloudflared could not start. Install cloudflared or set CLOUDFLARED_BIN. {e}"
         )))?;
 
+    // Clear metadata from any previous process before reader threads can publish
+    // the new process URL; otherwise a fast CLI response could be erased below.
+    let started_at = now();
+    state.tunnel_urls.lock()
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel URL registry unavailable"))?
+        .remove(&id);
+    state.tunnel_started_at.lock()
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel start registry unavailable"))?
+        .insert(id.clone(), started_at);
+
     let stdout = child.stdout.take().ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "Could not capture tunnel stdout"))?;
     let stderr = child.stderr.take().ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "Could not capture tunnel stderr"))?;
     capture_urls(stdout, state.tunnel_urls.clone(), id.clone());
     capture_urls(stderr, state.tunnel_urls.clone(), id.clone());
-
-    let started_at = now();
-    state.tunnel_urls.lock().map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel URL registry unavailable"))?.remove(&id);
-    state.tunnel_started_at.lock().map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel start registry unavailable"))?.insert(id.clone(), started_at);
     children.insert(id.clone(), child);
 
     Ok(Json(TunnelInfo {
