@@ -127,9 +127,20 @@ fn safe_relative_path(value:&str)->Result<PathBuf,ApiError>{
 }
 fn contained_existing(root:&FsPath,relative:&str)->Result<PathBuf,ApiError>{
     let rel=safe_relative_path(relative)?;
-    let target=root.join(rel).canonicalize()
+    let mut current=root.to_path_buf();
+    for component in rel.components(){
+        if let std::path::Component::Normal(part)=component {
+            current.push(part);
+            let metadata=std::fs::symlink_metadata(&current)
+                .map_err(|e|ApiError(StatusCode::NOT_FOUND,"file_not_found",format!("File or folder was not found: {e}")))?;
+            if metadata.file_type().is_symlink(){
+                return Err(ApiError(StatusCode::FORBIDDEN,"symbolic_link_forbidden","Symbolic links are not followed by the File Manager.".into()));
+            }
+        }
+    }
+    let target=current.canonicalize()
         .map_err(|e|ApiError(StatusCode::NOT_FOUND,"file_not_found",format!("File or folder was not found: {e}")))?;
-    if !target.starts_with(root){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The requested path escapes the website folder." .into()));}
+    if !target.starts_with(root){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The requested path escapes the website folder.".into()));}
     Ok(target)
 }
 async fn list_website_files(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<Json<serde_json::Value>,ApiError>{
@@ -167,13 +178,14 @@ async fn write_website_file(State(state):State<AppState>,Path(id):Path<String>,J
     let root=website_root(&state,&id)?;
     let relative=safe_relative_path(&input.path)?;
     if relative.as_os_str().is_empty(){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A file name is required.".into()));}
-    let target=root.join(&relative);
-    let parent=target.parent().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A parent directory is required.".into()))?;
-    let canonical_parent=parent.canonicalize().map_err(|e|ApiError(StatusCode::NOT_FOUND,"parent_directory_not_found",e.to_string()))?;
-    if !canonical_parent.starts_with(&root){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The requested path escapes the website folder.".into()));}
-    if target.exists(){
-        let canonical_target=target.canonicalize().map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_file_path",e.to_string()))?;
-        if !canonical_target.starts_with(&root)||!canonical_target.is_file(){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The target is not a regular file inside the website folder.".into()));}
+    let parent_relative=relative.parent().unwrap_or_else(||FsPath::new(""));
+    let parent_text=parent_relative.to_string_lossy();
+    let canonical_parent=if parent_text.is_empty(){root.clone()}else{contained_existing(&root,&parent_text)?};
+    if !canonical_parent.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"parent_not_directory","The parent path is not a directory.".into()));}
+    let file_name=relative.file_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A file name is required.".into()))?;
+    let target=canonical_parent.join(file_name);
+    if let Ok(metadata)=std::fs::symlink_metadata(&target){
+        if metadata.file_type().is_symlink()||!metadata.is_file(){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The target must be a regular file, not a symbolic link or directory.".into()));}
     }
     std::fs::write(&target,input.content.as_bytes()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_write_failed",e.to_string()))?;
     Ok(Json(json!({"website_id":id,"path":input.path,"size_bytes":input.content.len(),"saved":true})))
