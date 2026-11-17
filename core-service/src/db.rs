@@ -75,6 +75,8 @@ mod tests {
         assert_eq!(version, 4);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
+        assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
+        assert!(has_column(&connection, "websites", "lan_port").unwrap());
         let domains: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='domains'", [], |row| row.get(0)).unwrap();
         assert_eq!(domains, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
