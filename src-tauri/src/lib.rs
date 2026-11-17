@@ -123,8 +123,6 @@ async fn write_website_file(token:String,id:String,path:String,content:String)->
  authorized_request(&token,reqwest::Method::PUT,&format!("/api/v1/websites/{id}/file"),Some(body)).await?.json().await.map_err(|e|api_error("Could not save website file",e))
 }
 #[tauri::command]
-
-#[tauri::command]
 async fn upload_website_file(token:String,id:String,path:String,content_base64:String)->Result<Value,String>{
  let body=serde_json::json!({"path":path,"content_base64":content_base64});
  authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/websites/{id}/files/upload"),Some(body)).await?.json().await.map_err(|e|api_error("Could not upload website file",e))
@@ -134,6 +132,7 @@ async fn download_website_file(token:String,id:String,path:String)->Result<Value
  let url_path=format!("/api/v1/websites/{id}/files/download?path={}",encode_query_value(&path));
  authorized_request(&token,reqwest::Method::GET,&url_path,None).await?.json().await.map_err(|e|api_error("Could not download website file",e))
 }
+#[tauri::command]
 async fn create_website_directory(token:String,id:String,path:String)->Result<Value,String>{
  let body=serde_json::json!({"path":path});
  authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/websites/{id}/files/directory"),Some(body)).await?.json().await.map_err(|e|api_error("Could not create website folder",e))
