@@ -65,10 +65,11 @@ fn tree_checksum(root:&FsPath)->Result<(String,u64,u64),BackupError>{
    if kind.is_symlink(){return Err(backup_error(StatusCode::FORBIDDEN,"backup_symlink_forbidden","Backup contains a symbolic link."));}
    if kind.is_dir(){walk(root,&entry.path(),hash,files,size)?;}
    else if kind.is_file(){
-    let relative=entry.path().strip_prefix(root).unwrap_or(FsPath::new("")).to_string_lossy();
+    let file_path=entry.path();
+    let relative=file_path.strip_prefix(root).unwrap_or(FsPath::new("")).to_string_lossy();
     if relative=="manifest.json"{continue;}
     *hash=fnv_hash(relative.as_bytes(),*hash);
-    let bytes=fs::read(entry.path()).map_err(|e|io_error("backup_read_failed",e))?;
+    let bytes=fs::read(&file_path).map_err(|e|io_error("backup_read_failed",e))?;
     *files+=1;*size=size.saturating_add(bytes.len() as u64);*hash=fnv_hash(&bytes,*hash);
    }
   }
@@ -155,7 +156,7 @@ fn verify_sync(path:&FsPath)->Result<Manifest,BackupError>{
  Ok(manifest)
 }
 fn list_sync(state:&AppState)->Result<Vec<BackupRecord>,BackupError>{
- let rows={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;let mut q=db.prepare("SELECT id,backup_path,checksum,file_count,size_bytes,website_count,database_count,created_at FROM backups ORDER BY created_at DESC").map_err(db_error)?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,String>(7)?))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
+ let rows={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;let mut q=db.prepare("SELECT id,backup_path,checksum,file_count,size_bytes,website_count,database_count,created_at FROM backups ORDER BY created_at DESC").map_err(db_error)?;let mapped=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,String>(7)?))).map_err(db_error)?;let collected=mapped.collect::<Result<Vec<_>,_>>().map_err(db_error)?;collected};
  Ok(rows.into_iter().map(|(id,path,checksum,file_count,size_bytes,website_count,database_count,created_at)|{
   let verified=verify_sync(&PathBuf::from(path)).is_ok();
   BackupRecord{id,checksum,file_count,size_bytes,website_count,database_count,verified,created_at}
