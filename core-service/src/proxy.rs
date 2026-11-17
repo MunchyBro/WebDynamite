@@ -1,6 +1,6 @@
 use axum::{extract::State, routing::get, Json, Router};
 use serde_json::{json, Value};
-use std::{process::{Command, Stdio}, fs, time::Duration};
+use std::{process::{Command, Stdio}, fs};
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -58,7 +58,6 @@ async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::St
  let path=config_path(&state);
  let child=Command::new(&state.caddy_bin).args(["run","--config"]).arg(&path).args(["--adapter","caddyfile"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e|(axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_start_failed","message":format!("Could not start Caddy: {e}")}}))))?;
  let pid=child.id(); *slot=Some(child); drop(slot);
- tokio::time::sleep(Duration::from_millis(350)).await;
  Ok(Json(json!({"running":true,"pid":pid,"config_path":path,"message":"Caddy start requested"})))
 }
 async fn stop(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
