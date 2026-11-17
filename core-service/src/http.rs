@@ -104,6 +104,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/databases", get(list_databases).post(create_database))
         .route("/api/v1/databases/:id", axum::routing::delete(delete_database))
         .route("/api/v1/databases/:id/test", axum::routing::post(test_database))
+        .route("/api/v1/databases/:id/export", get(export_database))
+        .route("/api/v1/databases/import", axum::routing::post(import_database))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .merge(crate::deploy::router())
@@ -489,6 +491,72 @@ async fn delete_database(State(state): State<AppState>, Path(id): Path<String>) 
     let _=std::fs::remove_file(format!("{path}-wal"));
     let _=std::fs::remove_file(format!("{path}-shm"));
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn export_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>,ApiError> {
+    let path:String={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT file_path FROM managed_databases WHERE id=?1 AND engine='sqlite'",[&id],|r|r.get(0))
+            .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"database_not_found","Managed SQLite database was not found.".into())}else{database_error(e)})?
+    };
+    let connection=rusqlite::Connection::open_with_flags(&path,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"database_export_failed",e.to_string()))?;
+    connection.execute_batch("PRAGMA wal_checkpoint(FULL);").map_err(database_error)?;
+    drop(connection);
+    let metadata=std::fs::metadata(&path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_export_failed",e.to_string()))?;
+    if metadata.len()>16*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"database_export_limit","SQLite exports are limited to 16 MiB.".into()));}
+    let bytes=std::fs::read(&path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_export_failed",e.to_string()))?;
+    Ok(Json(json!({"database_id":id,"size_bytes":bytes.len(),"content_base64":encode_base64(&bytes)})))
+}
+
+async fn import_database(State(state): State<AppState>, Json(input): Json<serde_json::Value>) -> Result<(StatusCode,Json<serde_json::Value>),ApiError> {
+    let name=input.get("name").and_then(|v|v.as_str()).unwrap_or("").trim();
+    if name.is_empty() || name.len()>48 || !name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-') {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_database_name","Use 1–48 letters, numbers, underscores or hyphens for the database name.".into()));
+    }
+    let encoded=input.get("content_base64").and_then(|v|v.as_str()).unwrap_or("");
+    let bytes=decode_base64(encoded)?;
+    if bytes.is_empty() || bytes.len()>16*1024*1024 {
+        return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"database_import_limit","SQLite imports must be between 1 byte and 16 MiB.".into()));
+    }
+    if !bytes.starts_with(b"SQLite format 3\\0") {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_sqlite_file","The selected file is not a SQLite database.".into()));
+    }
+    {
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        if db.query_row("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE name=?1)",[name],|r|r.get::<_,bool>(0)).map_err(database_error)? {
+            return Err(ApiError(StatusCode::CONFLICT,"database_name_in_use","A managed database with that name already exists.".into()));
+        }
+    }
+    let directory=state.config_dir.join("databases");
+    std::fs::create_dir_all(&directory).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_storage_unavailable",e.to_string()))?;
+    let id=Uuid::new_v4().to_string();
+    let path=directory.join(format!("{id}.sqlite3"));
+    let temp=directory.join(format!("{id}.importing.sqlite3"));
+    std::fs::write(&temp,&bytes).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_import_failed",e.to_string()))?;
+    let validation=(||->Result<(),ApiError>{
+        let connection=rusqlite::Connection::open_with_flags(&temp,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_sqlite_file",format!("SQLite could not open this file: {e}")))?;
+        let result:String=connection.query_row("PRAGMA integrity_check",[],|r|r.get(0))
+            .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_sqlite_file",e.to_string()))?;
+        if result!="ok" {return Err(ApiError(StatusCode::BAD_REQUEST,"sqlite_integrity_failed",format!("SQLite integrity check failed: {result}")));}
+        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(database_error)?;
+        drop(connection);
+        Ok(())
+    })();
+    if let Err(error)=validation {let _=std::fs::remove_file(&temp);return Err(error);}
+    if let Err(error)=std::fs::rename(&temp,&path) {let _=std::fs::remove_file(&temp);return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_import_failed",error.to_string()));}
+    let path_text=path.to_string_lossy().to_string();
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE name=?1)",[name],|r|r.get::<_,bool>(0)).map_err(database_error)? {
+        drop(db);let _=std::fs::remove_file(&path);
+        return Err(ApiError(StatusCode::CONFLICT,"database_name_in_use","A managed database with that name already exists.".into()));
+    }
+    if let Err(error)=db.execute("INSERT INTO managed_databases(id,name,engine,file_path) VALUES (?1,?2,'sqlite',?3)",params![id,name,path_text]) {
+        drop(db);let _=std::fs::remove_file(&path);return Err(database_error(error));
+    }
+    let created_at:String=db.query_row("SELECT created_at FROM managed_databases WHERE id=?1",[&id],|r|r.get(0)).map_err(database_error)?;
+    Ok((StatusCode::CREATED,Json(json!({"id":id,"name":name,"engine":"sqlite","size_bytes":bytes.len(),"created_at":created_at}))))
 }
 
 async fn system_metrics()->Result<Json<serde_json::Value>,ApiError>{
