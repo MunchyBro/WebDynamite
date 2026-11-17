@@ -107,7 +107,7 @@ async fn set_lan_access(
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     let (runtime,existing_port):(String,Option<u16>)=db.query_row(
         "SELECT runtime,lan_port FROM websites WHERE id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?))
-    ).map_err(|e|if e==rusqlite::Error::QueryReturnedNoRows {ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())} else {database_error(e)})?;
+    ).map_err(|e|match e { rusqlite::Error::QueryReturnedNoRows => ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()), other => database_error(other) })?;
     if input.enabled && runtime!="static" && runtime!="node" {
         return Err(ApiError(StatusCode::BAD_REQUEST,"lan_runtime_unsupported","LAN publishing currently supports static and Node.js websites.".into()));
     }
