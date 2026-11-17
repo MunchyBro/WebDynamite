@@ -92,3 +92,13 @@ The Monitoring page and Overview health panel read live host metrics from the au
 - Network received/transmitted values are cumulative interface counters since boot or interface reset; they are not instantaneous bandwidth speeds.
 - The desktop refreshes metrics every five seconds while Overview or Monitoring is open.
 - The endpoint is protected by the same bearer-token middleware as the other management APIs and remains bound to the Core Service loopback listener.
+
+
+## Managed SQLite databases (Phase 13)
+
+Open **Databases** to create a separate SQLite database for an application. WebDynamite stores the database file under its managed data directory and keeps only its metadata (name, engine and file path) in the internal registry. Use **Test** to run SQLite's integrity check.
+
+- Database names are limited to letters, numbers, underscores and hyphens.
+- Deleting a managed database permanently removes its database file and associated SQLite WAL/SHM sidecars. Export or back it up before deletion.
+- The internal WebDynamite registry database is not listed as an application database.
+- This phase supports SQLite file creation, listing, size reporting, integrity testing and deletion only. PostgreSQL/MySQL discovery, protected credentials, database users/permissions, SQL console, import/export and website connection injection are not implemented yet.
