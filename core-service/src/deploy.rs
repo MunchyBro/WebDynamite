@@ -1,4 +1,4 @@
-use axum::{extract::{Path, Query, State}, routing::get, Json, Router, http::StatusCode};
+use axum::{extract::{Path, Query, State}, routing::get, Json, Router, http::StatusCode, response::IntoResponse};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -68,7 +68,6 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
   (PathBuf::from(root),p)
  };
  let canonical=root.canonicalize().map_err(|e|DeployError(StatusCode::BAD_REQUEST,"website_folder_unavailable",e.to_string()))?;
- let output=FsPath::new(&profile.2);
  if !safe_output_dir(&profile.2){return Err(DeployError(StatusCode::BAD_REQUEST,"invalid_output_dir","Build output path is invalid.".into()));}
  let started=Instant::now();
  let result=Command::new(&profile.0).args(&profile.1).current_dir(&canonical).output()
@@ -77,13 +76,19 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  let mut logs=String::from_utf8_lossy(&result.stdout).to_string();
  logs.push_str(&String::from_utf8_lossy(&result.stderr));
  if logs.len()>262_144{logs=format!("{}\n… build log truncated to 256 KiB",String::from_utf8_lossy(&logs.as_bytes()[logs.len()-262_144..]));}
- let status=if result.status.success(){"success"}else{"failed"};
+ let mut status=if result.status.success(){"success"}else{"failed"};
+ let mut exit_code=result.status.code();
+ if result.status.success(){
+  let output=canonical.join(&profile.2);
+  match output.canonicalize(){
+   Ok(path) if path.starts_with(&canonical)&&path.is_dir()=>{},
+   _=>{status="failed";exit_code=Some(1);logs.push_str("\\nBuild command exited successfully, but the configured output folder was not found inside the website project.");}
+  }
+ }
  let id=Uuid::new_v4().to_string();
- let exit_code=result.status.code();
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  db.execute("INSERT INTO build_runs(id,website_id,program,status,exit_code,duration_ms,logs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,website_id,profile.0,status,exit_code,elapsed,logs]).map_err(db_error)?;
  let website_name:String=db.query_row("SELECT name FROM websites WHERE id=?1",params![website_id],|r|r.get(0)).map_err(db_error)?;
  let created_at:String=db.query_row("SELECT created_at FROM build_runs WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
- let _=output;
- Ok((if result.status.success(){StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},Json(BuildRun{id,website_id,website_name,program:profile.0,status:status.into(),exit_code,duration_ms:elapsed,logs,created_at})))
+Ok((if result.status.success(){StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},Json(BuildRun{id,website_id,website_name,program:profile.0,status:status.into(),exit_code,duration_ms:elapsed,logs,created_at})))
 }
