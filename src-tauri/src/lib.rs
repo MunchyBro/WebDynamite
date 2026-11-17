@@ -162,6 +162,14 @@ async fn rollback_deployment_release(token:String,website_id:String,release_id:S
 
 
 #[tauri::command]
+async fn list_tunnels(token:String)->Result<Vec<Value>,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/tunnels",None).await?.json().await.map_err(|e|api_error("Could not read tunnel status",e))}
+#[tauri::command]
+async fn tunnel_action(token:String,website_id:String,action:String)->Result<Value,String>{
+ if action=="start"{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/tunnels/{website_id}/start"),None).await?.json().await.map_err(|e|api_error("Could not start tunnel",e))}
+ else if action=="stop"{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/tunnels/{website_id}/stop"),None).await?;Ok(serde_json::json!({"stopped":true}))}
+ else{Err("Unsupported tunnel action.".into())}
+}
+#[tauri::command]
 async fn get_backup_schedule(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/backups/schedule",None).await?.json().await.map_err(|e|api_error("Could not read backup schedule",e))}
 #[tauri::command]
 async fn save_backup_schedule(token:String,enabled:bool,interval_hours:i64,retention_count:i64)->Result<Value,String>{authorized_request(&token,reqwest::Method::PUT,"/api/v1/backups/schedule",Some(serde_json::json!({"enabled":enabled,"interval_hours":interval_hours,"retention_count":retention_count}))).await?.json().await.map_err(|e|api_error("Could not save backup schedule",e))}
@@ -196,4 +204,4 @@ async fn save_runtime_profile(token:String,website_id:String,program:String,args
 async fn delete_runtime_profile(token:String,website_id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/runtime-profiles/{website_id}"),None).await?;Ok(())}
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
