@@ -3,6 +3,7 @@ mod http;
 mod network;
 mod monitor;
 mod proxy;
+mod deploy;
 
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
