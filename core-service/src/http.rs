@@ -81,6 +81,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/restart", axum::routing::post(restart_website))
         .route("/api/v1/websites/:id/logs", get(website_logs))
         .route("/api/v1/websites/:id/files", get(list_website_files))
+        .route("/api/v1/websites/:id/storage", get(website_storage_usage))
         .route("/api/v1/websites/:id/file", get(read_website_file).put(write_website_file).delete(delete_website_file))
         .route("/api/v1/websites/:id/files/rename", axum::routing::post(rename_website_file))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
@@ -154,6 +155,33 @@ fn contained_existing(root:&FsPath,relative:&str)->Result<PathBuf,ApiError>{
         .map_err(|e|ApiError(StatusCode::NOT_FOUND,"file_not_found",format!("File or folder was not found: {e}")))?;
     if !target.starts_with(root){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The requested path escapes the website folder.".into()));}
     Ok(target)
+}
+async fn website_storage_usage(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
+    let root=website_root(&state,&id)?;
+    let mut pending=vec![root.clone()];
+    let mut total_bytes:u64=0;
+    let mut file_count:u64=0;
+    let mut directory_count:u64=0;
+    let mut skipped_count:u64=0;
+    let mut truncated=false;
+    const MAX_ENTRIES:u64=100_000;
+    while let Some(directory)=pending.pop(){
+        let entries=std::fs::read_dir(&directory)
+            .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"storage_scan_failed",format!("Could not scan website storage: {e}")))?;
+        for entry in entries{
+            if file_count+directory_count+skipped_count>=MAX_ENTRIES{truncated=true;break;}
+            let entry=entry.map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"storage_scan_failed",e.to_string()))?;
+            let metadata=std::fs::symlink_metadata(entry.path())
+                .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"storage_scan_failed",e.to_string()))?;
+            let kind=metadata.file_type();
+            if kind.is_symlink(){skipped_count+=1;continue;}
+            if kind.is_dir(){directory_count+=1;pending.push(entry.path());}
+            else if kind.is_file(){file_count+=1;total_bytes=total_bytes.saturating_add(metadata.len());}
+            else{skipped_count+=1;}
+        }
+        if truncated{break;}
+    }
+    Ok(Json(json!({"website_id":id,"total_bytes":total_bytes,"file_count":file_count,"directory_count":directory_count,"skipped_count":skipped_count,"truncated":truncated,"max_entries":MAX_ENTRIES})))
 }
 async fn list_website_files(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<Json<serde_json::Value>,ApiError>{
     let root=website_root(&state,&id)?;
