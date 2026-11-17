@@ -104,10 +104,10 @@ fn encode_query_value(value:&str)->String{
     encoded
 }
 #[tauri::command]
-#[tauri::command]
 async fn website_storage_usage(token:String,id:String)->Result<Value,String>{
  authorized_request(&token,reqwest::Method::GET,&format!("/api/v1/websites/{id}/storage"),None).await?.json().await.map_err(|e|api_error("Could not calculate website storage usage",e))
 }
+#[tauri::command]
 async fn list_website_files(token:String,id:String,path:String)->Result<Value,String>{
  let url_path=format!("/api/v1/websites/{id}/files?path={}",encode_query_value(&path));
  authorized_request(&token,reqwest::Method::GET,&url_path,None).await?.json().await.map_err(|e|api_error("Could not list website files",e))
