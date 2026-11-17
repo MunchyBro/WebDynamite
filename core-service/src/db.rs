@@ -127,6 +127,12 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_backups_created ON backups(created_at DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);")?;
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (10);")?;
     Ok(())
 }
 
@@ -140,7 +146,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
@@ -157,6 +163,8 @@ mod tests {
         assert!(has_column(&connection, "releases", "size_bytes").unwrap());
         let backups: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='backups'", [], |row| row.get(0)).unwrap();
         assert_eq!(backups, 1);
+        let settings: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'", [], |row| row.get(0)).unwrap();
+        assert_eq!(settings, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
