@@ -17,3 +17,6 @@
 
 /* Phase 15 deployment manager */
 .build-args{display:block;height:110px;min-height:110px;padding:10px;resize:vertical;line-height:1.6}.build-run{border-bottom:1px solid #292c32;padding:3px 0 12px}.build-run details{margin:8px 0 4px;color:#9da2ac;font-size:10px}.build-run summary{cursor:pointer;color:#e5a06e}.build-run pre{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#101216;border:1px solid #30343c;border-radius:6px;padding:12px;color:#c7d2df;font:10px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}
+
+/* Phase 16 Git and release management */
+.git-changes{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;background:#101216;border:1px solid #30343c;border-radius:6px;padding:12px;color:#c7d2df;font:10px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;margin:14px 0 0}.release-row{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:12px 2px;border-bottom:1px solid #292c32}.release-main{min-width:0;flex:1}.release-main .health-row{padding:0 0 6px;border:0}.release-main .health-row small{display:block;color:#858b95;font-size:9px;margin-top:5px}.release-main>small{display:block;color:#858b95;font-size:9px;overflow-wrap:anywhere}.release-row .outline{white-space:nowrap;padding:7px 9px;font-size:9px}

@@ -140,5 +140,19 @@ async fn list_build_runs(token:String,website_id:String)->Result<Vec<Value>,Stri
  authorized_request(&token,reqwest::Method::GET,&format!("/api/v1/deployments/runs{suffix}"),None).await?.json().await.map_err(|e|api_error("Could not read build history",e))
 }
 
+
+#[tauri::command]
+async fn git_repository_status(token:String,website_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,&format!("/api/v1/git/{website_id}/status"),None).await?.json().await.map_err(|e|api_error("Could not read Git status",e))}
+#[tauri::command]
+async fn git_fetch(token:String,website_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/git/{website_id}/fetch"),None).await?.json().await.map_err(|e|api_error("Git fetch failed",e))}
+#[tauri::command]
+async fn git_pull(token:String,website_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/git/{website_id}/pull"),None).await?.json().await.map_err(|e|api_error("Git pull failed",e))}
+#[tauri::command]
+async fn list_deployment_releases(token:String,website_id:String)->Result<Vec<Value>,String>{authorized_request(&token,reqwest::Method::GET,&format!("/api/v1/deployments/releases?website_id={website_id}"),None).await?.json().await.map_err(|e|api_error("Could not read release history",e))}
+#[tauri::command]
+async fn create_deployment_release(token:String,website_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/deployments/{website_id}/release"),None).await?.json().await.map_err(|e|api_error("Could not create release snapshot",e))}
+#[tauri::command]
+async fn rollback_deployment_release(token:String,website_id:String,release_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/deployments/{website_id}/rollback/{release_id}"),None).await?.json().await.map_err(|e|api_error("Could not activate previous release",e))}
+
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file,list_build_profiles,save_build_profile,run_build,list_build_runs]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,list_website_files,read_website_file,write_website_file,delete_website_file,list_build_profiles,save_build_profile,run_build,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release]).run(tauri::generate_context!()).expect("error while running WebDynamite");}

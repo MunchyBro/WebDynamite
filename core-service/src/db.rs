@@ -97,6 +97,23 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_build_runs_website_created ON build_runs(website_id,created_at DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);")?;
+    // Version 8 adds immutable release snapshots for static-site rollback.
+    if !has_column(connection, "releases", "active")? {
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS releases (
+            id TEXT PRIMARY KEY NOT NULL,
+            website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+            release_path TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL DEFAULT 'build',
+            commit_hash TEXT,
+            active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),
+            file_count INTEGER NOT NULL DEFAULT 0,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_releases_website_created ON releases(website_id,created_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_one_active ON releases(website_id) WHERE active=1;")?;
+    }
+    connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)", [])?;
     Ok(())
 }
 
@@ -110,7 +127,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
@@ -121,6 +138,10 @@ mod tests {
         assert_eq!(profiles, 1);
         let runs: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='build_runs'", [], |row| row.get(0)).unwrap();
         assert_eq!(runs, 1);
+        let releases: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='releases'", [], |row| row.get(0)).unwrap();
+        assert_eq!(releases, 1);
+        assert!(has_column(&connection, "releases", "file_count").unwrap());
+        assert!(has_column(&connection, "releases", "size_bytes").unwrap());
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
