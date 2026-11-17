@@ -139,7 +139,9 @@ mod tests {
         let runs: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='build_runs'", [], |row| row.get(0)).unwrap();
         assert_eq!(runs, 1);
         let releases: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='releases'", [], |row| row.get(0)).unwrap();
-        assert_eq!(releases, 1);\n        assert!(has_column(&connection, "releases", "file_count").unwrap());\n        assert!(has_column(&connection, "releases", "size_bytes").unwrap());
+        assert_eq!(releases, 1);
+        assert!(has_column(&connection, "releases", "file_count").unwrap());
+        assert!(has_column(&connection, "releases", "size_bytes").unwrap());
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
