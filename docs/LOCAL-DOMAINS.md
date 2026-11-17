@@ -114,3 +114,17 @@ The desktop **File Manager** browses files under a registered website's project 
 - The website root itself cannot be deleted. Non-empty directories cannot be deleted.
 - Binary files and text files larger than 1 MiB are not opened in the built-in editor. Use an external editor for those files.
 - This phase does not provide upload/download, drag-and-drop, archive extraction, permission editing, or multi-file operations.
+
+
+## Automated static deployment (Phase 19)
+
+The **Deployments** screen includes **Build & deploy** for static websites with a saved build profile.
+
+1. Configure the executable, separate arguments and expected output folder.
+2. Save the profile. The executable must be one of the supported programs; arguments are passed directly without a shell.
+3. Select **Build & deploy** and confirm. WebDynamite runs the build, records its output and exit status, verifies that the configured output directory exists inside the website root, and creates an immutable release snapshot.
+4. The new release is activated only after the build and snapshot succeed. The previous release remains in history and can be reactivated from **Git & Releases**.
+
+If the build fails, the active release is not changed. If release creation fails (for example, because output contains a symlink or sensitive file), the deployment is not activated. Inspect the build history for command output.
+
+This workflow currently activates static-site releases only. Node.js, PHP and Python build commands can still be run separately, but automated release activation for those runtimes is not yet supported. Deployment is local to this PC; it does not upload artifacts to a remote server or configure hosting infrastructure.
