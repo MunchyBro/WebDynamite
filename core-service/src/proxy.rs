@@ -34,9 +34,9 @@ pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),Stri
    let Some(port)=lan_port else {pending+=1;continue;};
    if runtime=="node" {
     let Some(upstream)=node_port else {pending+=1;continue;};
-    config.push_str(&format!("http://{ip}:{port} {{\\n    reverse_proxy 127.0.0.1:{upstream}\\n}}\\n\\n"));
+    config.push_str(&format!("http://{ip}:{port} {{\n    reverse_proxy 127.0.0.1:{upstream}\n}}\n\n"));
    } else {
-    config.push_str(&format!("http://{ip}:{port} {{\\n    @root path /\\n    rewrite @root /hosted/{id}/index.html\\n    @assets not path /\\n    rewrite @assets /hosted/{id}{{uri}}\\n    reverse_proxy 127.0.0.1:47821\\n}}\\n\\n"));
+    config.push_str(&format!("http://{ip}:{port} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n"));
    }
    routes+=1;
   }
