@@ -36,7 +36,7 @@ fn snapshot_metadata(db:&Connection)->Result<Value,BackupError>{
   "domains":rows_json(db,"SELECT id,website_id,hostname,access_mode,created_at FROM domains ORDER BY id",5)?,
   "public_domains":rows_json(db,"SELECT id,website_id,hostname,created_at FROM public_domains ORDER BY id",4)?,
   "managed_databases":rows_json(db,"SELECT id,name,engine,created_at FROM managed_databases ORDER BY id",4)?,
-  "runtime_profiles":rows_json(db,"SELECT id,website_id,program,args_json,updated_at FROM runtime_profiles ORDER BY id",11)?,\n  "build_profiles":rows_json(db,"SELECT id,website_id,program,args_json,output_dir,updated_at FROM build_profiles ORDER BY id",6)?,
+  "runtime_profiles":rows_json(db,"SELECT id,website_id,program,args_json,updated_at FROM runtime_profiles ORDER BY id",5)?,\n  "build_profiles":rows_json(db,"SELECT id,website_id,program,args_json,output_dir,updated_at FROM build_profiles ORDER BY id",6)?,
   "build_runs":rows_json(db,"SELECT id,website_id,program,status,exit_code,duration_ms,logs,created_at FROM build_runs ORDER BY id",8)?
  }))
 }
