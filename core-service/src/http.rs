@@ -130,7 +130,8 @@ async fn create_database(State(state): State<AppState>, Json(input): Json<serde_
         return Err(ApiError(StatusCode::CONFLICT,"database_name_in_use","A managed database with that name already exists.".into()));
     }
     db.execute("INSERT INTO managed_databases(id,name,engine,file_path) VALUES (?1,?2,'sqlite',?3)",params![id,name,path_text]).map_err(database_error)?;
-    Ok((StatusCode::CREATED,Json(json!({"id":id,"name":name,"engine":"sqlite","size_bytes":0,"file_path":path_text,"created_at":""}))))
+    let created_at:String=db.query_row("SELECT created_at FROM managed_databases WHERE id=?1",[&id],|r|r.get(0)).map_err(database_error)?;
+    Ok((StatusCode::CREATED,Json(json!({"id":id,"name":name,"engine":"sqlite","size_bytes":0,"file_path":path_text,"created_at":created_at}))))
 }
 
 async fn test_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>,ApiError> {
