@@ -36,3 +36,15 @@ LAN routes bind Caddy to the detected private IPv4 address rather than a wildcar
 - Public domain verification, public DNS diagnostics, tunnels and HTTPS provisioning remain separate work.
 
 Removing a local domain deletes only its registry assignment. It does not delete website files or stop a website.
+
+
+## Public domain diagnostics (Phase 8)
+
+The **Public Hosting** screen can resolve a public hostname using the machine's configured DNS resolver and display its IPv4/IPv6 answers. Optionally enter the expected public IPv4 address to check whether the domain's A records include it.
+
+This is a diagnostic only:
+- It does not publish a website or change Caddy configuration.
+- It does not open Windows Firewall, modify router settings, or enable port forwarding.
+- A successful DNS lookup does not prove domain ownership or that inbound traffic reaches this PC.
+- HTTPS is not considered ready until the domain reaches the public ingress and Caddy successfully completes its ACME challenge.
+- Never expose the Core Service management API to the public internet.
