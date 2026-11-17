@@ -32,7 +32,7 @@ LAN routes bind Caddy to the detected private IPv4 address rather than a wildcar
 - This feature does not configure Windows Firewall automatically and does not change router settings.
 - It does not enable internet/public access. Do not forward the LAN ports on your router.
 - LAN URLs are based on the active private IPv4 address and can change when the PC changes networks.
-- Current LAN publishing supports static, Node.js and PHP websites. Python adapters are not available yet.
+- Current LAN publishing supports static, Node.js, PHP and Python websites.
 - Public domain verification, public DNS diagnostics, tunnels and HTTPS provisioning remain separate work.
 
 Removing a local domain deletes only its registry assignment. It does not delete website files or stop a website.
@@ -59,3 +59,13 @@ This is a diagnostic only:
 5. Stop the site from WebDynamite when it is no longer needed.
 
 The PHP built-in server is intended for local development and testing, not production-grade public hosting. Do not expose it directly to the internet. PHP must be installed separately; WebDynamite does not bundle the PHP runtime.
+
+
+## Python websites (Phase 10)
+
+1. Install Python 3 and ensure the `python` command is available on the Core Service `PATH`.
+2. Register the project folder with runtime **Python**.
+3. Start the website. WebDynamite launches `python -m http.server` bound to `127.0.0.1` on an allocated per-site port, serving the selected project directory.
+4. Assign a local domain or explicitly enable LAN access as needed; Python sites use the same Caddy reverse-proxy routing as Node.js and PHP sites.
+
+Python's built-in HTTP server is a simple static file server for development and testing. It does not execute Python web frameworks (such as Django, Flask or FastAPI), and is not a production-grade public hosting server. Python must be installed separately; WebDynamite does not bundle the runtime.
