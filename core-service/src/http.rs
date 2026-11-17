@@ -169,7 +169,7 @@ async fn create_domain(State(state): State<AppState>, Json(input): Json<CreateDo
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     let runtime: String=db.query_row("SELECT runtime FROM websites WHERE id=?1",params![input.website_id],|r|r.get(0))
         .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","Select an existing website.".into())}else{database_error(e)})?;
-    if runtime!="static" && runtime!="node" { return Err(ApiError(StatusCode::NOT_IMPLEMENTED,"runtime_domain_unavailable","Local domain routing currently supports static and Node.js websites.".into())); }
+    if runtime!="static" && runtime!="node" && runtime!="php" { return Err(ApiError(StatusCode::NOT_IMPLEMENTED,"runtime_domain_unavailable","Local domain routing currently supports static, Node.js and PHP websites.".into())); }
     if db.query_row("SELECT EXISTS(SELECT 1 FROM domains WHERE hostname=?1)",params![hostname],|r|r.get::<_,bool>(0)).map_err(database_error)? {
         return Err(ApiError(StatusCode::CONFLICT,"hostname_in_use","That hostname is already assigned.".into()));
     }
