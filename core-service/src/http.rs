@@ -82,6 +82,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/logs", get(website_logs))
         .route("/api/v1/websites/:id/files", get(list_website_files))
         .route("/api/v1/websites/:id/file", get(read_website_file).put(write_website_file).delete(delete_website_file))
+        .route("/api/v1/websites/:id/files/rename", axum::routing::post(rename_website_file))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
         .route("/api/v1/domains/diagnose", axum::routing::post(diagnose_domain))
         .route("/api/v1/public-domains", get(list_public_domains).post(create_public_domain))
@@ -115,6 +116,8 @@ pub fn router(state: AppState, token: String) -> Router {
 struct FilePathQuery { path: Option<String> }
 #[derive(Debug, Deserialize)]
 struct WriteWebsiteFile { path: String, content: String }
+#[derive(Debug, Deserialize)]
+struct RenameWebsiteFile { source_path: String, new_path: String }
 
 fn website_root(state:&AppState,id:&str)->Result<PathBuf,ApiError>{
     let project:String={
@@ -198,6 +201,27 @@ async fn write_website_file(State(state):State<AppState>,Path(id):Path<String>,J
     }
     std::fs::write(&target,input.content.as_bytes()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_write_failed",e.to_string()))?;
     Ok(Json(json!({"website_id":id,"path":input.path,"size_bytes":input.content.len(),"saved":true})))
+}
+async fn rename_website_file(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<RenameWebsiteFile>)->Result<Json<serde_json::Value>,ApiError>{
+    let root=website_root(&state,&id)?;
+    let source=contained_existing(&root,&input.source_path)?;
+    if source==root{return Err(ApiError(StatusCode::FORBIDDEN,"cannot_rename_website_root","The website root cannot be renamed.".into()));}
+    let new_relative=safe_relative_path(&input.new_path)?;
+    if new_relative.as_os_str().is_empty(){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A destination name is required.".into()));}
+    let parent_relative=new_relative.parent().unwrap_or_else(||FsPath::new(""));
+    let parent_text=parent_relative.to_string_lossy();
+    let destination_parent=if parent_text.is_empty(){root.clone()}else{contained_existing(&root,&parent_text)?};
+    if !destination_parent.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"parent_not_directory","The destination parent is not a directory.".into()));}
+    let file_name=new_relative.file_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A destination name is required.".into()))?;
+    let destination=destination_parent.join(file_name);
+    if destination.exists()||std::fs::symlink_metadata(&destination).is_ok(){
+        return Err(ApiError(StatusCode::CONFLICT,"destination_exists","A file or folder already exists at the destination.".into()));
+    }
+    if destination_parent==source || destination_parent.starts_with(&source){
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_move","A folder cannot be moved inside itself.".into()));
+    }
+    std::fs::rename(&source,&destination).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_rename_failed",e.to_string()))?;
+    Ok(Json(json!({"website_id":id,"source_path":input.source_path,"path":input.new_path,"renamed":true})))
 }
 async fn delete_website_file(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<StatusCode,ApiError>{
     let root=website_root(&state,&id)?;
