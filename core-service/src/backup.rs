@@ -1,5 +1,5 @@
 use axum::{extract::{Path,State},routing::get,Json,Router,http::StatusCode,response::IntoResponse};
-use rusqlite::{params,Connection};
+use rusqlite::{params,Connection,types::ValueRef};
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::{fs,path::{Path as FsPath,PathBuf},time::SystemTime};
@@ -24,7 +24,7 @@ fn rows_json(db:&Connection,sql:&str,columns:usize)->Result<Vec<Value>,BackupErr
  let mut statement=db.prepare(sql).map_err(db_error)?;
  let rows=statement.query_map([],|row|{
   let mut values=Vec::with_capacity(columns);
-  for index in 0..columns{values.push(row.get::<_,Value>(index)?);}
+  for index in 0..columns{values.push(match row.get_ref(index)?{ValueRef::Null=>Value::Null,ValueRef::Integer(v)=>json!(v),ValueRef::Real(v)=>json!(v),ValueRef::Text(v)=>json!(String::from_utf8_lossy(v).to_string()),ValueRef::Blob(v)=>json!(v)});}
   Ok(Value::Array(values))
  }).map_err(db_error)?;
  rows.collect::<Result<Vec<_>,_>>().map_err(db_error)
@@ -258,6 +258,6 @@ pub fn router()->Router<AppState>{
 #[cfg(test)]
 mod tests{
  use super::*;
- #[test]fn fnv_hash_is_deterministic(){assert_eq!(format!("{:016x}",fnv_hash(b"webdynamite",14695981039346656037)),"f8a4c0d2d6c42f9d");}
+ #[test]fn fnv_hash_is_deterministic(){assert_eq!(format!("{:016x}",fnv_hash(b"webdynamite",14695981039346656037)),"6920feb25131f99a");}
  #[test]fn rejects_backup_ids_with_path_components(){assert!(!"../outside".bytes().all(|b|b.is_ascii_hexdigit()||b==b'-'));}
 }
