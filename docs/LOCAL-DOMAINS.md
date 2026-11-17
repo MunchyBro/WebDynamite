@@ -128,3 +128,18 @@ The **Deployments** screen includes **Build & deploy** for static websites with 
 If the build fails, the active release is not changed. If release creation fails (for example, because output contains a symlink or sensitive file), the deployment is not activated. Inspect the build history for command output.
 
 This workflow currently activates static-site releases only. Node.js, PHP and Python build commands can still be run separately, but automated release activation for those runtimes is not yet supported. Deployment is local to this PC; it does not upload artifacts to a remote server or configure hosting infrastructure.
+
+
+## PHP and Python framework launchers (Phase 20)
+
+When a website registered as **PHP** is started, WebDynamite detects a Laravel project when both `artisan` and `public/index.php` exist and runs Laravel's development server bound to `127.0.0.1` on the allocated per-site port. Other PHP projects continue to use PHP's built-in server.
+
+For websites registered as **Python**, the launcher checks the project root in this order:
+
+1. `manage.py` — starts Django with `manage.py runserver 127.0.0.1:PORT`.
+2. `main.py`, `app.py`, then `wsgi.py` — detects a `FastAPI(` application and starts `uvicorn MODULE:app`, or detects a `Flask(` application and starts Flask's CLI.
+3. If no supported framework signature is found, it retains the Python static-file server.
+
+Install each framework and its server dependency in the Python environment selected in Settings before starting the site (Django, Flask, or FastAPI plus Uvicorn). Laravel requires PHP and its Composer-installed project dependencies. All detected servers bind to loopback only; Caddy continues to provide the configured domain routing.
+
+Detection is intentionally conservative and uses conventional entry points and an application variable named `app`. Projects with factory patterns, nonstandard modules/variable names, virtual-environment-specific interpreters, ASGI alternatives, or custom startup arguments still need configurable launch profiles in a later phase. These development servers are not a substitute for hardened production process managers.

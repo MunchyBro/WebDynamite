@@ -495,12 +495,44 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
     let stdout=File::create(&log_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
     let stderr=stdout.try_clone().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
     let mut command=if runtime=="php" {
-        let mut c=Command::new(crate::settings::setting_string(&state,"php_executable","php"));
-        c.args(["-S",&format!("127.0.0.1:{port}"),"-t",&project]);
+        let php=crate::settings::setting_string(&state,"php_executable","php");
+        let artisan=FsPath::new(&project).join("artisan");
+        let public_index=FsPath::new(&project).join("public").join("index.php");
+        let mut c=Command::new(php);
+        if artisan.is_file() && public_index.is_file() {
+            c.args(["artisan","serve","--host","127.0.0.1","--port",&port.to_string()]);
+        } else {
+            c.args(["-S",&format!("127.0.0.1:{port}"),"-t",&project]);
+        }
         c
     } else if runtime=="python" {
-        let mut c=Command::new(crate::settings::setting_string(&state,"python_executable","python"));
-        c.args(["-m","http.server",&port.to_string(),"--bind","127.0.0.1","--directory",&project]);
+        let python=crate::settings::setting_string(&state,"python_executable","python");
+        let root=FsPath::new(&project);
+        let mut c=Command::new(python);
+        if root.join("manage.py").is_file() {
+            c.args(["manage.py","runserver",&format!("127.0.0.1:{port}")]);
+        } else {
+            let candidates=["main.py","app.py","wsgi.py"];
+            let detected=candidates.iter().find_map(|name|{
+                let path=root.join(name);
+                let source=std::fs::read_to_string(&path).ok()?;
+                if source.contains("FastAPI(") { Some((*name,"fastapi")) }
+                else if source.contains("Flask(") { Some((*name,"flask")) }
+                else { None }
+            });
+            match detected {
+                Some((file,"fastapi")) => {
+                    let module=file.trim_end_matches(".py");
+                    c.args(["-m","uvicorn",&format!("{module}:app"),"--host","127.0.0.1","--port",&port.to_string()]);
+                }
+                Some((file,"flask")) => {
+                    c.args(["-m","flask","--app",file,"run","--host","127.0.0.1","--port",&port.to_string()]);
+                }
+                _ => {
+                    c.args(["-m","http.server",&port.to_string(),"--bind","127.0.0.1","--directory",&project]);
+                }
+            }
+        }
         c
     } else {
         #[cfg(windows)]
