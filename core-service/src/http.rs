@@ -11,7 +11,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{fs::File, io::{Cursor, Read, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::TcpListener};
-suse zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 use uuid::Uuid;
 
 use crate::AppState;
