@@ -6,6 +6,7 @@ mod proxy;
 mod deploy;
 mod git;
 mod backup;
+mod settings;
 
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
@@ -20,6 +21,7 @@ pub struct AppState {
     pub config_dir: PathBuf,
     pub caddy_bin: PathBuf,
     pub proxy_process: Arc<Mutex<Option<Child>>>,
+    pub started_at: std::time::Instant,
 }
 
 fn data_dir() -> PathBuf {
@@ -103,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config_dir,
         caddy_bin: env::var_os("CADDY_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("caddy")),
         proxy_process: Arc::new(Mutex::new(None)),
+        started_at: std::time::Instant::now(),
     };
     supervise_processes(state.clone());
     let app = http::router(state.clone(), token);
