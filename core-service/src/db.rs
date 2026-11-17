@@ -67,6 +67,15 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_public_domains_website ON public_domains(website_id);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);")?;
+    // Version 6 stores metadata for user-managed SQLite databases separately from the internal registry.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS managed_databases (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        engine TEXT NOT NULL CHECK (engine IN ('sqlite')),
+        file_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);")?;
     Ok(())
 }
 
@@ -80,7 +89,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
