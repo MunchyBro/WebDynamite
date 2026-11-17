@@ -4,7 +4,7 @@ WebDynamite supports local hostnames and opt-in LAN URLs for static, Node.js and
 
 ## Local domains
 
-1. Register a static project with `index.html`, or a Node.js project with an `npm run start` script.
+1. Register a static project with `index.html`, a Node.js project with an `npm run start` script, or a PHP project with PHP installed on `PATH`.
 2. Assign a hostname in **Domains**, for example `portfolio.localhost`.
 3. Start a Node.js website before applying its route. WebDynamite supplies `PORT` and `HOST=127.0.0.1`; the app must honor `process.env.PORT`.
 4. Install Caddy and make it available on `PATH`, or set `CADDY_BIN` for the Core Service.
