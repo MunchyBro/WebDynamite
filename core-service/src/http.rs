@@ -90,9 +90,16 @@ pub fn router(state: AppState, token: String) -> Router {
         .layer(middleware::from_fn_with_state(token, require_bearer));
     Router::new()
         .route("/api/v1/health", get(health))
+        .route("/api/v1/monitoring/metrics", get(system_metrics))
         .route("/hosted/:id/*path", get(serve_static))
         .merge(protected)
         .with_state(state)
+}
+
+async fn system_metrics()->Result<Json<serde_json::Value>,ApiError>{
+    let metrics=tokio::task::spawn_blocking(crate::monitor::snapshot).await
+        .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"metrics_collection_failed",e.to_string()))?;
+    Ok(Json(metrics))
 }
 
 async fn networking_status(State(state): State<AppState>) -> Result<Json<serde_json::Value>,ApiError> {
