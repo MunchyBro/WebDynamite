@@ -86,6 +86,8 @@ fn vacuum_database(source:&str,destination:&FsPath)->Result<(),BackupError>{
  Ok(())
 }
 fn create_backup_sync(state:&AppState)->Result<BackupRecord,BackupError>{
+ let active=state.db.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?.query_row("SELECT COUNT(*) FROM websites WHERE status!='stopped'",[],|r|r.get::<_,i64>(0)).map_err(db_error)?;
+ if active>0||!state.processes.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Website process registry is unavailable."))?.is_empty(){return Err(BackupError(StatusCode::CONFLICT,"websites_must_be_stopped","Stop every website before creating a consistent full-system backup."));}
  let (metadata,websites,databases):(Value,Vec<(String,PathBuf)>,Vec<(String,String,String,String)>)={
   let db=state.db.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
   let metadata=snapshot_metadata(&db)?;
@@ -154,7 +156,7 @@ fn verify_sync(path:&FsPath)->Result<Manifest,BackupError>{
 fn list_sync(state:&AppState)->Result<Vec<BackupRecord>,BackupError>{
  let rows={let db=state.db.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;let mut q=db.prepare("SELECT id,backup_path,checksum,file_count,size_bytes,website_count,database_count,created_at FROM backups ORDER BY created_at DESC").map_err(db_error)?;q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,String>(7)?))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(rows.into_iter().map(|(id,path,checksum,file_count,size_bytes,website_count,database_count,created_at)|{
-  let verified=PathBuf::from(path).join("manifest.json").is_file();
+  let verified=verify_sync(&PathBuf::from(path)).is_ok();
   BackupRecord{id,checksum,file_count,size_bytes,website_count,database_count,verified,created_at}
  }).collect())
 }
@@ -184,8 +186,8 @@ fn restore_sync(state:&AppState,id:&str)->Result<Value,BackupError>{
  let metadata:Value=serde_json::from_slice(&fs::read(path.join("metadata.json")).map_err(|e|io_error("backup_metadata_missing",e))?).map_err(|e|BackupError(StatusCode::UNPROCESSABLE_ENTITY,"backup_metadata_invalid",e.to_string()))?;
  {
   let db=state.db.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
-  let active:i64=db.query_row("SELECT COUNT(*) FROM websites WHERE status IN ('running','starting','stopping')",[],|r|r.get(0)).map_err(db_error)?;
-  if active>0{return Err(BackupError(StatusCode::CONFLICT,"websites_must_be_stopped","Stop every website before restoring a full-system backup."));}
+  let active:i64=db.query_row("SELECT COUNT(*) FROM websites WHERE status!='stopped'",[],|r|r.get(0)).map_err(db_error)?;
+  if active>0||!state.processes.lock().map_err(|_|BackupError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Website process registry is unavailable."))?.is_empty(){return Err(BackupError(StatusCode::CONFLICT,"websites_must_be_stopped","Stop every website before restoring a full-system backup."));}
  }
  let safety=create_backup_sync(state)?;
  let sites=metadata["websites"].as_array().cloned().unwrap_or_default();
