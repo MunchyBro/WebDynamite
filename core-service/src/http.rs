@@ -85,6 +85,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/domains/:id", axum::routing::delete(delete_domain))
         .route("/api/v1/domains/caddyfile", get(export_caddyfile))
         .route("/api/v1/networking/status", get(networking_status))
+        .route("/api/v1/monitoring/metrics", get(system_metrics))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .layer(middleware::from_fn_with_state(token, require_bearer));
@@ -93,6 +94,12 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/hosted/:id/*path", get(serve_static))
         .merge(protected)
         .with_state(state)
+}
+
+async fn system_metrics()->Result<Json<serde_json::Value>,ApiError>{
+    let metrics=tokio::task::spawn_blocking(crate::monitor::snapshot).await
+        .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"metrics_collection_failed",e.to_string()))?;
+    Ok(Json(metrics))
 }
 
 async fn networking_status(State(state): State<AppState>) -> Result<Json<serde_json::Value>,ApiError> {
