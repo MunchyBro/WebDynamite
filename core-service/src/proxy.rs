@@ -29,12 +29,11 @@ fn validate_config(state:&AppState)->Result<String,String>{
  let path=config_path(state); let temp=path.with_extension("candidate");
  fs::write(&temp,&config).map_err(|e|format!("Could not write candidate Caddyfile: {e}"))?;
  let candidate=temp.to_string_lossy().to_string();
- let validation=caddy_output(state,&["validate","--config",&candidate,"--adapter","caddyfile"]);
- if let Err(error)=validation { let _=fs::remove_file(&temp); return Err(error); }
+ let output=match caddy_output(state,&["validate","--config",&candidate,"--adapter","caddyfile"]){Ok(output)=>output,Err(error)=>{let _=fs::remove_file(&temp);return Err(error);}};
  if path.exists(){let backup=path.with_extension("previous");fs::copy(&path,&backup).map_err(|e|format!("Could not preserve previous Caddyfile: {e}"))?;}
  fs::copy(&temp,&path).map_err(|e|format!("Could not activate validated Caddyfile: {e}"))?;
  let _=fs::remove_file(&temp);
- validation
+ Ok(output)
 }
 async fn status(State(state):State<AppState>)->Json<Value>{
  let installed=Command::new(&state.caddy_bin).arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
@@ -50,7 +49,7 @@ async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::St
  if let Some(child)=slot.as_mut(){if child.try_wait().ok().flatten().is_none(){return Ok(Json(json!({"running":true,"pid":child.id(),"message":"Caddy is already running"})));} *slot=None;}
  let path=config_path(&state);
  let child=Command::new(&state.caddy_bin).args(["run","--config"]).arg(&path).args(["--adapter","caddyfile"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e|(axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_start_failed","message":format!("Could not start Caddy: {e}")}}))))?;
- let pid=child.id(); *slot=Some(child);
+ let pid=child.id(); *slot=Some(child); drop(slot);
  tokio::time::sleep(Duration::from_millis(350)).await;
  Ok(Json(json!({"running":true,"pid":pid,"config_path":path,"message":"Caddy start requested"})))
 }
