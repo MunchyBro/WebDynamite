@@ -133,7 +133,7 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (10);")?;
-    Ok(())
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS runtime_profiles (\n        id TEXT PRIMARY KEY NOT NULL,\n        website_id TEXT NOT NULL UNIQUE REFERENCES websites(id) ON DELETE CASCADE,\n        program TEXT NOT NULL,\n        args_json TEXT NOT NULL,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    );\n    INSERT OR IGNORE INTO schema_migrations(version) VALUES (11);")?;\n    Ok(())
 }
 
 #[cfg(test)]
