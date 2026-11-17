@@ -28,3 +28,19 @@ The current implementation supports release activation and rollback for static w
 ## Security and operational notes
 
 Git operations execute fixed Git subcommands without a shell. Git credentials remain in the user's configured Git credential manager. Build output is copied as data; it is not executed by the release manager. The Core Service management API remains loopback-only and all Git/release endpoints require bearer authentication.
+
+
+## Backup and restore
+
+WebDynamite supports manual full-system backups stored under its local managed backups directory. A backup contains:
+- All registered website project folders
+- Managed SQLite database contents, copied with SQLite VACUUM INTO and checked with PRAGMA integrity_check
+- Website records and runtime settings
+- Local and public domain mappings
+- Build profiles and build history
+
+Backups are directory snapshots with a manifest and deterministic FNV-1a inventory checksum. The checksum detects accidental corruption; it is not a cryptographic authenticity signature. Each backup is limited to 100,000 files and 10 GiB. Symbolic links and special files are rejected.
+
+Before restoring, the UI verifies the backup and shows a preview of website folders and managed databases that will be overwritten. Restore requires explicit confirmation and all websites must be stopped. WebDynamite automatically creates a fresh pre-restore safety backup first. Website folders are staged beside their destination before activation.
+
+Backups currently remain on the same PC. For disaster recovery, copy the managed backup directory to a separate disk or off-device location. Scheduled backups, retention policies, user-selected backup locations, release snapshot payloads and cryptographic signatures are not included in this phase.
