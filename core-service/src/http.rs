@@ -1,10 +1,10 @@
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header::AUTHORIZATION, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, put},
     Json, Router,
 };
 use rusqlite::params;
@@ -78,6 +78,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/stop", axum::routing::post(stop_website))
         .route("/api/v1/websites/:id/restart", axum::routing::post(restart_website))
         .route("/api/v1/websites/:id/logs", get(website_logs))
+        .route("/api/v1/websites/:id/files", get(list_website_files))
+        .route("/api/v1/websites/:id/file", get(read_website_file).put(write_website_file).delete(delete_website_file))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
         .route("/api/v1/domains/diagnose", axum::routing::post(diagnose_domain))
         .route("/api/v1/public-domains", get(list_public_domains).post(create_public_domain))
@@ -97,6 +99,93 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/hosted/:id/*path", get(serve_static))
         .merge(protected)
         .with_state(state)
+}
+
+
+#[derive(Debug, Deserialize)]
+struct FilePathQuery { path: Option<String> }
+#[derive(Debug, Deserialize)]
+struct WriteWebsiteFile { path: String, content: String }
+
+fn website_root(state:&AppState,id:&str)->Result<PathBuf,ApiError>{
+    let project:String={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT project_path FROM websites WHERE id=?1",[id],|r|r.get(0))
+            .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())}else{database_error(e)})?
+    };
+    let root=FsPath::new(&project).canonicalize()
+        .map_err(|e|ApiError(StatusCode::NOT_FOUND,"website_folder_unavailable",format!("Website folder is unavailable: {e}")))?;
+    if !root.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"website_root_not_directory","Website project path is not a directory.".into()));}
+    Ok(root)
+}
+fn safe_relative_path(value:&str)->Result<PathBuf,ApiError>{
+    let path=FsPath::new(value);
+    if path.is_absolute() || path.components().any(|c|!matches!(c,std::path::Component::Normal(_))) {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","Use a relative path inside the website folder.".into()));
+    }
+    Ok(path.to_path_buf())
+}
+fn contained_existing(root:&FsPath,relative:&str)->Result<PathBuf,ApiError>{
+    let rel=safe_relative_path(relative)?;
+    let target=root.join(rel).canonicalize()
+        .map_err(|e|ApiError(StatusCode::NOT_FOUND,"file_not_found",format!("File or folder was not found: {e}")))?;
+    if !target.starts_with(root){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The requested path escapes the website folder." .into()));}
+    Ok(target)
+}
+async fn list_website_files(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<Json<serde_json::Value>,ApiError>{
+    let root=website_root(&state,&id)?;
+    let relative=query.path.as_deref().unwrap_or("");
+    let directory=if relative.is_empty(){root.clone()}else{contained_existing(&root,relative)?};
+    if !directory.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"not_a_directory","The requested path is not a directory.".into()));}
+    let mut entries=Vec::new();
+    for entry in std::fs::read_dir(&directory).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"directory_read_failed",e.to_string()))?{
+        let entry=entry.map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"directory_read_failed",e.to_string()))?;
+        let kind=entry.file_type().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_metadata_failed",e.to_string()))?;
+        let name=entry.file_name().to_string_lossy().to_string();
+        if name=="."||name==".."{continue;}
+        let metadata=entry.metadata().ok();
+        entries.push(json!({"name":name,"kind":if kind.is_symlink(){"symlink"}else if kind.is_dir(){"directory"}else if kind.is_file(){"file"}else{"other"},"size_bytes":if kind.is_file(){metadata.map(|m|m.len()).unwrap_or(0)}else{0}}));
+    }
+    entries.sort_by(|a,b|{
+        let ak=a["kind"].as_str().unwrap_or("");let bk=b["kind"].as_str().unwrap_or("");
+        (ak!="directory").cmp(&(bk!="directory")).then_with(||a["name"].as_str().unwrap_or("").to_lowercase().cmp(&b["name"].as_str().unwrap_or("").to_lowercase()))
+    });
+    Ok(Json(json!({"website_id":id,"path":relative,"entries":entries})))
+}
+async fn read_website_file(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<Json<serde_json::Value>,ApiError>{
+    let root=website_root(&state,&id)?;
+    let relative=query.path.as_deref().unwrap_or("");
+    let target=contained_existing(&root,relative)?;
+    if !target.is_file(){return Err(ApiError(StatusCode::BAD_REQUEST,"not_a_file","The requested path is not a file.".into()));}
+    let metadata=std::fs::metadata(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_metadata_failed",e.to_string()))?;
+    if metadata.len()>1_048_576{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"file_too_large","Text editor supports files up to 1 MiB.".into()));}
+    let content=std::fs::read_to_string(&target).map_err(|e|ApiError(StatusCode::UNSUPPORTED_MEDIA_TYPE,"file_not_text","This file is not valid UTF-8 text and cannot be opened in the text editor.".into()))?;
+    Ok(Json(json!({"website_id":id,"path":relative,"content":content,"size_bytes":metadata.len()})))
+}
+async fn write_website_file(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<WriteWebsiteFile>)->Result<Json<serde_json::Value>,ApiError>{
+    if input.content.len()>1_048_576{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"file_too_large","Text editor supports files up to 1 MiB.".into()));}
+    let root=website_root(&state,&id)?;
+    let relative=safe_relative_path(&input.path)?;
+    if relative.as_os_str().is_empty(){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A file name is required.".into()));}
+    let target=root.join(&relative);
+    let parent=target.parent().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","A parent directory is required.".into()))?;
+    let canonical_parent=parent.canonicalize().map_err(|e|ApiError(StatusCode::NOT_FOUND,"parent_directory_not_found",e.to_string()))?;
+    if !canonical_parent.starts_with(&root){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The requested path escapes the website folder.".into()));}
+    if target.exists(){
+        let canonical_target=target.canonicalize().map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_file_path",e.to_string()))?;
+        if !canonical_target.starts_with(&root)||!canonical_target.is_file(){return Err(ApiError(StatusCode::FORBIDDEN,"file_path_forbidden","The target is not a regular file inside the website folder.".into()));}
+    }
+    std::fs::write(&target,input.content.as_bytes()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_write_failed",e.to_string()))?;
+    Ok(Json(json!({"website_id":id,"path":input.path,"size_bytes":input.content.len(),"saved":true})))
+}
+async fn delete_website_file(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<StatusCode,ApiError>{
+    let root=website_root(&state,&id)?;
+    let relative=query.path.as_deref().unwrap_or("");
+    let target=contained_existing(&root,relative)?;
+    if target==root{return Err(ApiError(StatusCode::FORBIDDEN,"cannot_delete_website_root","The website root cannot be deleted.".into()));}
+    if target.is_dir(){std::fs::remove_dir(&target).map_err(|e|ApiError(StatusCode::CONFLICT,"directory_not_empty",format!("Only empty directories can be deleted: {e}")))?;}
+    else{std::fs::remove_file(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_delete_failed",e.to_string()))?;}
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_databases(State(state): State<AppState>) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
