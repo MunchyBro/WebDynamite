@@ -37,7 +37,7 @@ fn validate_config(state:&AppState)->Result<String,String>{
 }
 async fn status(State(state):State<AppState>)->Json<Value>{
  let installed=Command::new(&state.caddy_bin).arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
- let running=if let Ok(mut slot)=state.proxy_process.lock(){if let Some(child)=slot.as_mut(){match child.try_wait(){Ok(Some(_))=>{*slot=None;false},Ok(None)=>true,Err(_)=>true}}else{false}}else{false};
+ let running=if let Ok(mut slot)=state.proxy_process.lock(){let exited=match slot.as_mut(){Some(child)=>matches!(child.try_wait(),Ok(Some(_))),None=>false};if exited{*slot=None;false}else{slot.is_some()}}else{false};
  Json(json!({"installed":installed,"running":running,"binary":state.caddy_bin,"config_path":config_path(&state),"admin_endpoint":"http://127.0.0.1:2019","note":"Caddy listens on the ports declared by your domain routes. Public exposure and HTTPS require DNS, firewall and domain configuration."}))
 }
 async fn validate(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
@@ -46,7 +46,9 @@ async fn validate(State(state):State<AppState>)->Result<Json<Value>,(axum::http:
 async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
  if let Err(e)=validate_config(&state){return Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_validation_failed","message":e}}))));}
  let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
- if let Some(child)=slot.as_mut(){if child.try_wait().ok().flatten().is_none(){return Ok(Json(json!({"running":true,"pid":child.id(),"message":"Caddy is already running"})));} *slot=None;}
+ let already_running=match slot.as_mut(){Some(child)=>match child.try_wait(){Ok(None)=>true,Ok(Some(_))=>false,Err(_)=>true},None=>false};
+ if already_running {let pid=slot.as_ref().and_then(|child|child.as_ref().map(|process|process.id())).unwrap_or_default();return Ok(Json(json!({"running":true,"pid":pid,"message":"Caddy is already running"})));}
+ if slot.is_some(){*slot=None;}
  let path=config_path(&state);
  let child=Command::new(&state.caddy_bin).args(["run","--config"]).arg(&path).args(["--adapter","caddyfile"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e|(axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_start_failed","message":format!("Could not start Caddy: {e}")}}))))?;
  let pid=child.id(); *slot=Some(child); drop(slot);
