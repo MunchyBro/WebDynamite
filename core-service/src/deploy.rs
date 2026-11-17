@@ -37,6 +37,7 @@ pub fn router()->Router<AppState>{
   .route("/api/v1/deployments/:website_id/release",axum::routing::post(create_release))
   .route("/api/v1/deployments/:website_id/rollback/:release_id",axum::routing::post(rollback_release))
   .route("/api/v1/deployments/:website_id/run",axum::routing::post(run_build))
+  .route("/api/v1/deployments/:website_id/deploy",axum::routing::post(deploy_website))
 }
 async fn list_profiles(State(state):State<AppState>)->Result<Json<Vec<Profile>>,DeployError>{
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -65,6 +66,28 @@ async fn list_runs(State(state):State<AppState>,Query(query):Query<RunsQuery>)->
  let rows=if let Some(id)=query.website_id{q.query_map(params![id],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map([],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(Json(rows))
 }
+async fn deploy_website(State(state):State<AppState>,Path(website_id):Path<String>)->Result<(StatusCode,Json<serde_json::Value>),DeployError>{
+ let runtime:String={
+  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  db.query_row("SELECT runtime FROM websites WHERE id=?1",params![website_id],|r|r.get(0))
+   .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){DeployError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())}else{db_error(e)})?
+ };
+ if runtime!="static"{
+  return Err(DeployError(StatusCode::BAD_REQUEST,"deployment_runtime_unsupported","Automated build-and-release currently supports static websites only. Dynamic runtimes can still run their build profile, but release activation is not implemented for them.".into()));
+ }
+ let (_,build)=run_build(State(state.clone()),Path(website_id.clone())).await?;
+ if build.0.status!="success"{
+  return Err(DeployError(StatusCode::UNPROCESSABLE_ENTITY,"deployment_build_failed","The build failed. Review the saved build history and logs; the active release was not changed.".into()));
+ }
+ let (_,release)=create_release(State(state),Path(website_id)).await?;
+ Ok((StatusCode::CREATED,Json(json!({
+  "status":"deployed",
+  "build":build.0,
+  "release":release.0,
+  "message":"Build succeeded and the new static release is now active. Previous releases remain available for rollback."
+ }))))
+}
+
 async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->Result<(StatusCode,Json<BuildRun>),DeployError>{
  let (root,profile):(PathBuf,(String,Vec<String>,String,String))={
   let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
