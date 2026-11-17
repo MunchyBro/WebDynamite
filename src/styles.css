@@ -8,3 +8,6 @@
 
 /* Phase 12 system monitoring */
 .monitoring-layout{display:grid;gap:15px}.monitoring-layout .stats{margin:0}.metrics-bars{padding:20px 2px 3px}.metric-bar{margin:0 0 23px}.metric-bar>div:first-child{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}.metric-bar b{font-size:11px;color:#e1e3e8}.metric-bar span{font-size:10px;color:#9298a3}.meter{height:8px;background:#292d35;border-radius:8px;overflow:hidden}.meter i{display:block;height:100%;background:#e97735;border-radius:8px;transition:width .35s ease}.monitoring-layout .grid{grid-template-columns:1fr 1fr}
+
+/* Phase 13 database manager */
+.database-actions{display:flex;align-items:center;gap:7px}.database-actions .outline{padding:6px 9px;font-size:9px}.database-actions .danger-icon:disabled{opacity:.45;cursor:wait}
