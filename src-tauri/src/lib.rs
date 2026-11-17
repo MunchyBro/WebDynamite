@@ -89,7 +89,6 @@ async fn set_lan_access(token:String,id:String,enabled:bool)->Result<Value,Strin
  authorized_request(&token,reqwest::Method::PUT,&format!("/api/v1/websites/{id}/lan"),Some(body)).await?.json().await.map_err(|e|api_error("Could not change LAN access",e))
 }
 #[tauri::command]
-#[tauri::command]
 async fn proxy_tls_check(token:String,hostname:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/proxy/tls-check/{}",encode_query_value(&hostname)),None).await?.json().await.map_err(|e|api_error("HTTPS verification failed",e))}
 #[tauri::command]
 async fn proxy_status(token:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/proxy/status",None).await?.json().await.map_err(|e|api_error("Could not read Caddy status",e))}
