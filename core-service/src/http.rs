@@ -7,7 +7,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{fs::File, io::Read, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::TcpListener};
@@ -74,6 +74,8 @@ pub fn router(state: AppState, token: String) -> Router {
     let protected = Router::new()
         .route("/api/v1/websites", get(list_websites).post(create_website))
         .route("/api/v1/websites/:id", get(get_website).delete(delete_website))
+        .route("/api/v1/runtime-profiles", get(list_runtime_profiles).put(save_runtime_profile))
+        .route("/api/v1/runtime-profiles/:website_id", axum::routing::delete(delete_runtime_profile))
         .route("/api/v1/websites/:id/start", axum::routing::post(start_website))
         .route("/api/v1/websites/:id/stop", axum::routing::post(stop_website))
         .route("/api/v1/websites/:id/restart", axum::routing::post(restart_website))
@@ -476,6 +478,34 @@ fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     }
     Ok(())
 }
+#[derive(Debug,Deserialize)]
+struct SaveRuntimeProfile { website_id:String, program:String, args:Vec<String> }
+async fn list_runtime_profiles(State(state):State<AppState>)->Result<Json<Vec<serde_json::Value>>,ApiError>{
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let mut q=db.prepare("SELECT p.id,p.website_id,w.name,p.program,p.args_json,p.updated_at FROM runtime_profiles p JOIN websites w ON w.id=p.website_id ORDER BY w.name").map_err(database_error)?;
+ let rows=q.query_map([],|r|{let raw:String=r.get(4)?;let args:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok(json!({"id":r.get::<_,String>(0)?,"website_id":r.get::<_,String>(1)?,"website_name":r.get::<_,String>(2)?,"program":r.get::<_,String>(3)?,"args":args,"updated_at":r.get::<_,String>(5)?}))}).map_err(database_error)?;
+ Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?))
+}
+async fn save_runtime_profile(State(state):State<AppState>,Json(input):Json<SaveRuntimeProfile>)->Result<Json<serde_json::Value>,ApiError>{
+ let program=input.program.trim();
+ if program.is_empty()||program.len()>512||program.contains('\0'){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_program","Executable must contain 1–512 valid characters.".into()));}
+ if input.args.len()>64||input.args.iter().any(|a|a.len()>1024||a.contains('\0'))||input.args.iter().map(String::len).sum::<usize>()>8192{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_arguments","Use at most 64 arguments, each up to 1,024 characters and 8 KiB total.".into()));}
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let (runtime,status):(String,String)=db.query_row("SELECT runtime,status FROM websites WHERE id=?1",[&input.website_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())}else{database_error(e)})?;
+ if runtime=="static"{return Err(ApiError(StatusCode::BAD_REQUEST,"static_profile_unsupported","Static websites do not use a launch command.".into()));}
+ if status!="stopped"{return Err(ApiError(StatusCode::CONFLICT,"website_must_be_stopped","Stop the website before changing its launch profile.".into()));}
+ let id=Uuid::new_v4().to_string();let args_json=serde_json::to_string(&input.args).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_arguments",e.to_string()))?;
+ db.execute("INSERT INTO runtime_profiles(id,website_id,program,args_json) VALUES(?1,?2,?3,?4) ON CONFLICT(website_id) DO UPDATE SET program=excluded.program,args_json=excluded.args_json,updated_at=CURRENT_TIMESTAMP",params![id,input.website_id,program,args_json]).map_err(database_error)?;
+ let (profile_id,updated_at):(String,String)=db.query_row("SELECT id,updated_at FROM runtime_profiles WHERE website_id=?1",[&input.website_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(database_error)?;
+ Ok(Json(json!({"id":profile_id,"website_id":input.website_id,"program":program,"args":input.args,"updated_at":updated_at,"saved":true})))
+}
+async fn delete_runtime_profile(State(state):State<AppState>,Path(website_id):Path<String>)->Result<StatusCode,ApiError>{
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let status:String=db.query_row("SELECT status FROM websites WHERE id=?1",[&website_id],|r|r.get(0)).map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())}else{database_error(e)})?;
+ if status!="stopped"{return Err(ApiError(StatusCode::CONFLICT,"website_must_be_stopped","Stop the website before removing its launch profile.".into()));}
+ if db.execute("DELETE FROM runtime_profiles WHERE website_id=?1",[website_id]).map_err(database_error)?==0{return Err(ApiError(StatusCode::NOT_FOUND,"runtime_profile_not_found","No custom launch profile exists for this website.".into()));}
+ Ok(StatusCode::NO_CONTENT)
+}
 async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
     let (project,runtime)=project_details(&state,&id)?;
     if !FsPath::new(&project).is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"project_not_found","The project directory is no longer available.".into()));}
@@ -494,7 +524,16 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
     let log_path=state.logs_dir.join(format!("{id}.log"));
     let stdout=File::create(&log_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
     let stderr=stdout.try_clone().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
-    let mut command=if runtime=="php" {
+    let custom_profile:Option<(String,Vec<String>)>={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT program,args_json FROM runtime_profiles WHERE website_id=?1",[&id],|r|{let raw:String=r.get(1)?;let args:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok((r.get(0)?,args))}).optional().map_err(database_error)?
+    };
+    let mut command=if let Some((program,args))=custom_profile {
+        let mut c=Command::new(program);
+        let expanded=args.into_iter().map(|arg|arg.replace("{project}",&project).replace("{port}",&port.to_string())).collect::<Vec<_>>();
+        c.args(expanded);
+        c
+    } else if runtime=="php" {
         let php=crate::settings::setting_string(&state,"php_executable","php");
         let artisan=FsPath::new(&project).join("artisan");
         let public_index=FsPath::new(&project).join("public").join("index.php");

@@ -143,3 +143,10 @@ For websites registered as **Python**, the launcher checks the project root in t
 Install each framework and its server dependency in the Python environment selected in Settings before starting the site (Django, Flask, or FastAPI plus Uvicorn). Laravel requires PHP and its Composer-installed project dependencies. All detected servers bind to loopback only; Caddy continues to provide the configured domain routing.
 
 Detection is intentionally conservative and uses conventional entry points and an application variable named `app`. Projects with factory patterns, nonstandard modules/variable names, virtual-environment-specific interpreters, ASGI alternatives, or custom startup arguments still need configurable launch profiles in a later phase. These development servers are not a substitute for hardened production process managers.
+
+
+## Custom runtime launch profiles (Phase 21)
+
+A custom launch profile overrides automatic runtime detection for a non-static website. Configure an executable and one argument per line in **Runtime Profiles**. Arguments are passed directly without a command shell. The process working directory is the project folder and it receives `PORT` and `HOST=127.0.0.1` environment variables. Use `{port}` and `{project}` placeholders in arguments. Save or remove profiles only while the website is stopped. Removing a profile restores the built-in runtime launcher. Profiles are included in full-system backups.
+
+**Security:** a custom executable runs with the same operating-system permissions as WebDynamite. This feature does not sandbox processes or prevent a user-selected program from binding to other interfaces; use trusted executables and configure them to listen only on loopback.

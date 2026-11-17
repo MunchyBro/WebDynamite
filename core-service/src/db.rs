@@ -133,6 +133,7 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (10);")?;
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS runtime_profiles (\n        id TEXT PRIMARY KEY NOT NULL,\n        website_id TEXT NOT NULL UNIQUE REFERENCES websites(id) ON DELETE CASCADE,\n        program TEXT NOT NULL,\n        args_json TEXT NOT NULL,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    );\n    INSERT OR IGNORE INTO schema_migrations(version) VALUES (11);")?;
     Ok(())
 }
 
@@ -146,7 +147,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
