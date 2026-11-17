@@ -97,6 +97,10 @@ fn copy_release_tree(source:&FsPath,destination:&FsPath,counts:&mut (u64,u64))->
  for entry in fs::read_dir(source).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_read_failed",e.to_string()))?{
   let entry=entry.map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_read_failed",e.to_string()))?;
   let kind=entry.file_type().map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_metadata_failed",e.to_string()))?;
+  let name=entry.file_name().to_string_lossy().to_ascii_lowercase();
+  if name==".git"||name==".env"||name.starts_with(".env.")||name.ends_with(".pem")||name.ends_with(".key")||name.ends_with(".p12")||name.ends_with(".pfx")||name=="id_rsa"||name=="id_ed25519"{
+   return Err(DeployError(StatusCode::FORBIDDEN,"release_sensitive_file","Build output contains a sensitive file or directory; remove it before creating a release.".into()));
+  }
   if kind.is_symlink(){return Err(DeployError(StatusCode::FORBIDDEN,"release_symlink_forbidden","Build output contains a symbolic link; release snapshot was cancelled.".into()));}
   let target=destination.join(entry.file_name());
   if kind.is_dir(){fs::create_dir_all(&target).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_create_failed",e.to_string()))?;copy_release_tree(&entry.path(),&target,counts)?;}
