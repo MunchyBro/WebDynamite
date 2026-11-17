@@ -55,6 +55,11 @@ async fn git_fetch(State(state):State<AppState>,Path(id):Path<String>)->Result<J
 }
 async fn git_pull(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<Value>,GitError>{
  let root=project_root(&state,&id)?;
+ let current=status_json(&root)?;
+ if current["clean"].as_bool()!=Some(true){return Err(GitError(StatusCode::CONFLICT,"working_tree_dirty","Commit or stash local changes before pulling remote updates.".into()));}
+ let website_status:String={let db=state.db.lock().map_err(|_|GitError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  db.query_row("SELECT status FROM websites WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?};
+ if website_status!="stopped"{return Err(GitError(StatusCode::CONFLICT,"website_must_be_stopped","Stop the website before pulling code changes so a running application is not modified underneath its process.".into()));}
  tokio::task::spawn_blocking(move||git_output(&root,&["pull","--ff-only"])).await.map_err(|e|GitError(StatusCode::INTERNAL_SERVER_ERROR,"git_task_failed",e.to_string()))??;
  let root=project_root(&state,&id)?;
  let value=status_json(&root)?;
