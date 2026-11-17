@@ -111,8 +111,8 @@ async fn set_lan_access(
     let (runtime,existing_port):(String,Option<u16>)=db.query_row(
         "SELECT runtime,lan_port FROM websites WHERE id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?))
     ).map_err(|e|match e { rusqlite::Error::QueryReturnedNoRows => ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()), other => database_error(other) })?;
-    if input.enabled && runtime!="static" && runtime!="node" {
-        return Err(ApiError(StatusCode::BAD_REQUEST,"lan_runtime_unsupported","LAN publishing currently supports static and Node.js websites.".into()));
+    if input.enabled && runtime!="static" && runtime!="node" && runtime!="php" {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"lan_runtime_unsupported","LAN publishing currently supports static, Node.js and PHP websites.".into()));
     }
     let port=if input.enabled {
         Some(match existing_port {Some(value)=>value,None=>crate::network::allocate_lan_port(&db).map_err(|e|ApiError(StatusCode::CONFLICT,"lan_port_unavailable",e))?})
@@ -169,7 +169,7 @@ async fn create_domain(State(state): State<AppState>, Json(input): Json<CreateDo
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     let runtime: String=db.query_row("SELECT runtime FROM websites WHERE id=?1",params![input.website_id],|r|r.get(0))
         .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","Select an existing website.".into())}else{database_error(e)})?;
-    if runtime!="static" && runtime!="node" { return Err(ApiError(StatusCode::NOT_IMPLEMENTED,"runtime_domain_unavailable","Local domain routing currently supports static and Node.js websites.".into())); }
+    if runtime!="static" && runtime!="node" && runtime!="php" { return Err(ApiError(StatusCode::NOT_IMPLEMENTED,"runtime_domain_unavailable","Local domain routing currently supports static, Node.js and PHP websites.".into())); }
     if db.query_row("SELECT EXISTS(SELECT 1 FROM domains WHERE hostname=?1)",params![hostname],|r|r.get::<_,bool>(0)).map_err(database_error)? {
         return Err(ApiError(StatusCode::CONFLICT,"hostname_in_use","That hostname is already assigned.".into()));
     }
@@ -272,7 +272,7 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
         set_status(&state,&id,"running")?;
         return Ok(Json(json!({"id":id,"status":"running","url":format!("http://127.0.0.1:47821/hosted/{id}/index.html")})));
     }
-    if runtime!="node"{return Err(ApiError(StatusCode::NOT_IMPLEMENTED,"runtime_unavailable","This runtime adapter is not implemented yet. Static and Node.js projects are supported in this build.".into()));}
+    if runtime!="node" && runtime!="php"{return Err(ApiError(StatusCode::NOT_IMPLEMENTED,"runtime_unavailable","This runtime adapter is not implemented yet. Static, Node.js and PHP projects are supported in this build.".into()));}
     let port=allocate_port(&state,&id)?;
     {
         let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -281,12 +281,18 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
     let log_path=state.logs_dir.join(format!("{id}.log"));
     let stdout=File::create(&log_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
     let stderr=stdout.try_clone().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
-    #[cfg(windows)]
-    let mut command={let mut c=Command::new("cmd");c.args(["/C","npm run start"]);c};
-    #[cfg(not(windows))]
-    let mut command={let mut c=Command::new("npm");c.args(["run","start"]);c};
+    let mut command=if runtime=="php" {
+        let mut c=Command::new("php");
+        c.args(["-S",&format!("127.0.0.1:{port}"),"-t",&project]);
+        c
+    } else {
+        #[cfg(windows)]
+        { let mut c=Command::new("cmd");c.args(["/C","npm run start"]);c }
+        #[cfg(not(windows))]
+        { let mut c=Command::new("npm");c.args(["run","start"]);c }
+    };
     let child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).spawn()
-      .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"runtime_start_failed",format!("Could not start npm. Verify Node.js and npm are installed: {e}")))?;
+      .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"runtime_start_failed",if runtime=="php"{format!("Could not start PHP. Verify PHP is installed and available on PATH: {e}")}else{format!("Could not start npm. Verify Node.js and npm are installed: {e}")}))?;
     let pid=child.id();
     state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?.insert(id.clone(),child);
     set_status(&state,&id,"running")?;

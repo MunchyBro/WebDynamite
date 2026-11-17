@@ -1,10 +1,10 @@
 # Local domains and LAN networking
 
-WebDynamite supports local hostnames and opt-in LAN URLs for static and Node.js websites.
+WebDynamite supports local hostnames and opt-in LAN URLs for static, Node.js and PHP websites.
 
 ## Local domains
 
-1. Register a static project with `index.html`, or a Node.js project with an `npm run start` script.
+1. Register a static project with `index.html`, a Node.js project with an `npm run start` script, or a PHP project with PHP installed on `PATH`.
 2. Assign a hostname in **Domains**, for example `portfolio.localhost`.
 3. Start a Node.js website before applying its route. WebDynamite supplies `PORT` and `HOST=127.0.0.1`; the app must honor `process.env.PORT`.
 4. Install Caddy and make it available on `PATH`, or set `CADDY_BIN` for the Core Service.
@@ -32,7 +32,7 @@ LAN routes bind Caddy to the detected private IPv4 address rather than a wildcar
 - This feature does not configure Windows Firewall automatically and does not change router settings.
 - It does not enable internet/public access. Do not forward the LAN ports on your router.
 - LAN URLs are based on the active private IPv4 address and can change when the PC changes networks.
-- Current LAN publishing supports static and Node.js websites. PHP and Python adapters are not available yet.
+- Current LAN publishing supports static, Node.js and PHP websites. Python adapters are not available yet.
 - Public domain verification, public DNS diagnostics, tunnels and HTTPS provisioning remain separate work.
 
 Removing a local domain deletes only its registry assignment. It does not delete website files or stop a website.
@@ -48,3 +48,14 @@ This is a diagnostic only:
 - A successful DNS lookup does not prove domain ownership or that inbound traffic reaches this PC.
 - HTTPS is not considered ready until the domain reaches the public ingress and Caddy successfully completes its ACME challenge.
 - Never expose the Core Service management API to the public internet.
+
+
+## PHP websites (Phase 9)
+
+1. Install PHP for Windows and make `php.exe` available on the Core Service `PATH`.
+2. Register the project folder with runtime **PHP**.
+3. Start the website. WebDynamite launches PHP's built-in development server bound to `127.0.0.1` on an allocated per-site port, with the project folder as its document root.
+4. Assign a local domain or explicitly enable LAN access as needed; PHP sites use the same Caddy reverse-proxy routing as Node.js sites.
+5. Stop the site from WebDynamite when it is no longer needed.
+
+The PHP built-in server is intended for local development and testing, not production-grade public hosting. Do not expose it directly to the internet. PHP must be installed separately; WebDynamite does not bundle the PHP runtime.
