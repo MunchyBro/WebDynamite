@@ -18,7 +18,7 @@ For safety, pull is rejected unless the working tree is clean and the website is
 For static websites, the Release Manager can snapshot the build profile's configured output directory into WebDynamite's managed `releases` data directory. A release records its website, creation time, file count, size and current Git commit when available.
 
 - Snapshot limits: 50,000 files and 2 GiB per release.
-- Symbolic links and special files are rejected.
+- Symbolic links, special files, `.git`, `.env` files, private keys and certificate bundles are rejected.
 - The source output must resolve inside the registered project directory.
 - The active release is served by the static hosting endpoint; the original project folder remains unchanged.
 - Rollback switches the active release pointer. Previous releases remain available for later reactivation.
