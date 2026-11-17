@@ -49,7 +49,7 @@ async fn status(State(state):State<AppState>)->Json<Value>{
 async fn validate(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
  match validate_config(&state){Ok(output)=>Ok(Json(json!({"valid":true,"output":output,"config_path":config_path(&state)}))),Err(e)=>Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_validation_failed","message":e}}))))}
 }
-fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{ start_sync(state) }\nfn start_sync(state:AppState)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
  if let Err(e)=validate_config(&state){return Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_validation_failed","message":e}}))));}
  let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
  let already_running=match slot.as_mut(){Some(child)=>match child.try_wait(){Ok(None)=>true,Ok(Some(_))=>false,Err(_)=>true},None=>false};
