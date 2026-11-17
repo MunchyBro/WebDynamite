@@ -256,8 +256,66 @@ async fn delete_backup(State(state):State<AppState>,Path(id):Path<String>)->Resu
  db.execute("DELETE FROM backups WHERE id=?1",[id]).map_err(db_error)?;
  Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(Debug,Serialize)]
+struct BackupSchedule{enabled:bool,interval_hours:i64,retention_count:i64,next_run_at:Option<i64>,last_run_at:Option<i64>,last_status:Option<String>,last_error:Option<String>}
+#[derive(Deserialize)]
+struct SaveBackupSchedule{enabled:bool,interval_hours:i64,retention_count:i64}
+fn unix_now()->i64{SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs() as i64}
+fn schedule_sync(state:&AppState)->Result<BackupSchedule,BackupError>{
+ let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
+ db.query_row("SELECT enabled,interval_hours,retention_count,next_run_at,last_run_at,last_status,last_error FROM backup_schedule WHERE id=1",[],|r|Ok(BackupSchedule{enabled:r.get::<_,i64>(0)?!=0,interval_hours:r.get(1)?,retention_count:r.get(2)?,next_run_at:r.get(3)?,last_run_at:r.get(4)?,last_status:r.get(5)?,last_error:r.get(6)?})).map_err(db_error)
+}
+async fn get_schedule(State(state):State<AppState>)->Result<Json<BackupSchedule>,BackupError>{Ok(Json(schedule_sync(&state)?))}
+async fn save_schedule(State(state):State<AppState>,Json(input):Json<SaveBackupSchedule>)->Result<Json<BackupSchedule>,BackupError>{
+ if !(1..=720).contains(&input.interval_hours)||!(1..=100).contains(&input.retention_count){return Err(backup_error(StatusCode::BAD_REQUEST,"invalid_backup_schedule","Interval must be 1–720 hours and retention must be 1–100 backups."));}
+ let now=unix_now();let next=if input.enabled{Some(now+input.interval_hours*3600)}else{None};
+ {let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
+ db.execute("UPDATE backup_schedule SET enabled=?1,interval_hours=?2,retention_count=?3,next_run_at=?4,last_error=NULL WHERE id=1",params![input.enabled as i64,input.interval_hours,input.retention_count,next]).map_err(db_error)?;}
+ Ok(Json(schedule_sync(&state)?))
+}
+fn prune_sync(state:&AppState,retention:i64)->Result<u64,BackupError>{
+ let rows={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
+ let mut q=db.prepare("SELECT id,backup_path FROM backups ORDER BY created_at DESC").map_err(db_error)?;
+ let mapped=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(db_error)?;
+ mapped.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
+ let mut kept=0i64;let mut removed=0u64;
+ for (id,path) in rows{
+  let candidate=PathBuf::from(&path);
+  if !candidate.is_dir()||verify_sync(&candidate).is_err(){continue;}
+  kept+=1;if kept<=retention.max(1){continue;}
+  let root=state.backups_dir.canonicalize().map_err(|e|io_error("backup_store_unavailable",e))?;
+  let target=candidate.canonicalize().map_err(|e|io_error("backup_files_missing",e))?;
+  if !target.starts_with(&root)||target==root{return Err(backup_error(StatusCode::FORBIDDEN,"backup_path_forbidden","Refusing to prune a path outside the managed backup directory."));}
+  fs::remove_dir_all(&target).map_err(|e|io_error("backup_prune_failed",e))?;
+  let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
+  db.execute("DELETE FROM backups WHERE id=?1",[id]).map_err(db_error)?;removed+=1;
+ }
+ Ok(removed)
+}
+pub fn start_scheduler(state:AppState){
+ tokio::spawn(async move{
+  let mut tick=tokio::time::interval(std::time::Duration::from_secs(15));
+  loop{
+   tick.tick().await;
+   let due={let db=match state.db.lock(){Ok(v)=>v,Err(_)=>continue};
+    db.query_row("SELECT enabled,interval_hours,retention_count,next_run_at FROM backup_schedule WHERE id=1",[],|r|Ok((r.get::<_,i64>(0)?!=0,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<i64>>(3)?))).ok()};
+   let Some((true,interval,retention,Some(next)))=due else{continue;};
+   let now=unix_now();if now<next{continue;}
+   {let db=match state.db.lock(){Ok(v)=>v,Err(_)=>continue};
+    let _=db.execute("UPDATE backup_schedule SET next_run_at=?1 WHERE id=1",params![now+interval*3600]);}
+   let backup_state=state.clone();
+   let result=tokio::task::spawn_blocking(move||create_backup_sync(&backup_state)).await;
+   let (status,error)=match result{Ok(Ok(_))=>("success".to_string(),None),Ok(Err(e))=>("failed".to_string(),Some(e.2)),Err(e)=>("failed".to_string(),Some(e.to_string()))};
+   if status=="success"{let prune_state=state.clone();let _=tokio::task::spawn_blocking(move||prune_sync(&prune_state,retention)).await;}
+   if let Ok(db)=state.db.lock(){let _=db.execute("UPDATE backup_schedule SET last_run_at=?1,last_status=?2,last_error=?3 WHERE id=1",params![now,status,error]);}
+  }
+ });
+}
+
 pub fn router()->Router<AppState>{
  Router::new().route("/api/v1/backups",get(list_backups).post(create_backup))
+  .route("/api/v1/backups/schedule",get(get_schedule).put(save_schedule))
   .route("/api/v1/backups/:id/verify",axum::routing::post(verify_backup))
   .route("/api/v1/backups/:id/preview",get(preview_restore))
   .route("/api/v1/backups/:id/restore",axum::routing::post(restore_backup))
