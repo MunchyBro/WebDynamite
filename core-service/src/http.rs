@@ -93,7 +93,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/databases/:id/test", axum::routing::post(test_database))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
-        .merge(crate::deploy::router())
+        .merge(crate::deploy::router())\n        .merge(crate::git::router())
         .layer(middleware::from_fn_with_state(token, require_bearer));
     Router::new()
         .route("/api/v1/health", get(health))
