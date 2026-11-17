@@ -1,5 +1,6 @@
 mod db;
 mod http;
+mod proxy;
 
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
@@ -9,6 +10,9 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
     pub logs_dir: PathBuf,
+    pub config_dir: PathBuf,
+    pub caddy_bin: PathBuf,
+    pub proxy_process: Arc<Mutex<Option<Child>>>,
 }
 
 fn data_dir() -> PathBuf {
@@ -72,8 +76,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = data_dir();
     let database_dir = root.join("database");
     let logs_dir = root.join("logs");
+    let config_dir = root.join("config");
     std::fs::create_dir_all(&database_dir)?;
     std::fs::create_dir_all(&logs_dir)?;
+    std::fs::create_dir_all(&config_dir)?;
     let connection = Connection::open(database_dir.join("webdynamite.sqlite3"))?;
     db::initialize(&connection)?;
 
@@ -81,6 +87,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: Arc::new(Mutex::new(connection)),
         processes: Arc::new(Mutex::new(HashMap::new())),
         logs_dir,
+        config_dir,
+        caddy_bin: env::var_os("CADDY_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("caddy")),
+        proxy_process: Arc::new(Mutex::new(None)),
     };
     supervise_processes(state.clone());
     let app = http::router(state.clone(), token);
@@ -89,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("WebDynamite Core Service listening on http://{address}");
     let result = axum::serve(listener, app).with_graceful_shutdown(shutdown()).await;
     stop_all_processes(&state);
+    proxy::stop_on_shutdown(&state);
     result?;
     Ok(())
 }
