@@ -139,7 +139,8 @@ async fn create_release(State(state):State<AppState>,Path(website_id):Path<Strin
  let mut counts=(0,0);
  if let Err(error)=copy_release_tree(&source,&destination,&mut counts){let _=fs::remove_dir_all(&destination);return Err(error);}
  if counts.0==0{let _=fs::remove_dir_all(&destination);return Err(DeployError(StatusCode::BAD_REQUEST,"empty_release","Build output folder is empty.".into()));}
- let commit=Command::new("git").arg("-C").arg(&root).args(["rev-parse","HEAD"]).output().ok().filter(|o|o.status.success()).map(|o|String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s|!s.is_empty());
+ let clean_git=Command::new("git").arg("-C").arg(&root).args(["status","--short"]).output().ok().filter(|o|o.status.success()).map(|o|o.stdout.is_empty()).unwrap_or(false);
+ let commit=if clean_git{Command::new("git").arg("-C").arg(&root).args(["rev-parse","HEAD"]).output().ok().filter(|o|o.status.success()).map(|o|String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s|!s.is_empty())}else{None};
  let release_path=destination.to_string_lossy().to_string();
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let tx=db.unchecked_transaction().map_err(db_error)?;
