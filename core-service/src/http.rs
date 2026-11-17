@@ -10,7 +10,8 @@ use axum::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::File, io::{Read, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::TcpListener};
+use std::{fs::File, io::{Cursor, Read, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::TcpListener};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -85,6 +86,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/file", get(read_website_file).put(write_website_file).delete(delete_website_file))
         .route("/api/v1/websites/:id/files/upload", axum::routing::post(upload_website_file))
         .route("/api/v1/websites/:id/files/download", get(download_website_file))
+        .route("/api/v1/websites/:id/files/archive", get(download_website_archive))
+        .route("/api/v1/websites/:id/files/extract", axum::routing::post(extract_website_archive))
         .route("/api/v1/websites/:id/files/rename", axum::routing::post(rename_website_file))
         .route("/api/v1/websites/:id/files/directory", axum::routing::post(create_website_directory))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
@@ -272,6 +275,112 @@ async fn download_website_file(State(state):State<AppState>,Path(id):Path<String
  if metadata.len()>32*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"file_too_large","Downloads through the File Manager are limited to 32 MiB.".into()));}
  let bytes=std::fs::read(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_read_failed",e.to_string()))?;
  Ok(Json(json!({"website_id":id,"path":relative,"size_bytes":bytes.len(),"content_base64":encode_base64(&bytes)})))
+}
+
+
+#[derive(Debug, Deserialize)]
+struct ExtractWebsiteArchive { path: String, archive_base64: String }
+
+fn add_archive_directory(
+    writer: &mut ZipWriter<Cursor<Vec<u8>>>,
+    root: &FsPath,
+    directory: &FsPath,
+    count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<(), ApiError> {
+    for entry in std::fs::read_dir(directory).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_read_failed",e.to_string()))? {
+        let entry=entry.map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_read_failed",e.to_string()))?;
+        let metadata=std::fs::symlink_metadata(entry.path()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_metadata_failed",e.to_string()))?;
+        if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) { continue; }
+        *count+=1;
+        if *count>1000 { return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_entry_limit","ZIP creation is limited to 1,000 files and folders.".into())); }
+        let entry_path=entry.path();
+        let relative=entry_path.strip_prefix(root).map_err(|_|ApiError(StatusCode::FORBIDDEN,"archive_path_forbidden","An archive entry escaped the selected folder.".into()))?;
+        let name=relative.to_string_lossy().replace('\\',"/");
+        if metadata.is_dir() {
+            writer.add_directory(format!("{name}/"),SimpleFileOptions::default())
+                .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_write_failed",e.to_string()))?;
+            add_archive_directory(writer,root,&entry_path,count,total_bytes)?;
+        } else {
+            *total_bytes=total_bytes.saturating_add(metadata.len());
+            if *total_bytes>256*1024*1024 { return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_size_limit","ZIP creation is limited to 256 MiB of uncompressed files.".into())); }
+            writer.start_file(name,SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated))
+                .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_write_failed",e.to_string()))?;
+            let mut file=File::open(&entry_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_read_failed",e.to_string()))?;
+            let mut buffer=[0u8;64*1024];
+            loop {
+                let read=file.read(&mut buffer).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_read_failed",e.to_string()))?;
+                if read==0 { break; }
+                writer.write_all(&buffer[..read]).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_write_failed",e.to_string()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn download_website_archive(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<Json<serde_json::Value>,ApiError>{
+    let root=website_root(&state,&id)?;
+    let relative=query.path.as_deref().unwrap_or("");
+    let directory=if relative.is_empty(){root.clone()}else{contained_existing(&root,relative)?};
+    if !directory.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"not_a_directory","ZIP creation requires a folder.".into()));}
+    let mut writer=ZipWriter::new(Cursor::new(Vec::new()));
+    let mut count=0usize;
+    let mut total_bytes=0u64;
+    add_archive_directory(&mut writer,&directory,&directory,&mut count,&mut total_bytes)?;
+    let bytes=writer.finish().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_write_failed",e.to_string()))?.into_inner();
+    if bytes.len()>16*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_compressed_limit","Generated ZIP files are limited to 16 MiB.".into()));}
+    Ok(Json(json!({"website_id":id,"path":relative,"size_bytes":bytes.len(),"content_base64":encode_base64(&bytes)})))
+}
+
+async fn extract_website_archive(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<ExtractWebsiteArchive>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
+    let root=website_root(&state,&id)?;
+    let relative=safe_relative_path(&input.path)?;
+    if relative.as_os_str().is_empty(){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_extract_path","Choose a new folder name for extraction.".into()));}
+    let parent_relative=relative.parent().unwrap_or_else(||FsPath::new(""));
+    let parent_text=parent_relative.to_string_lossy();
+    let parent=if parent_text.is_empty(){root.clone()}else{contained_existing(&root,&parent_text)?};
+    if !parent.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"parent_not_directory","The extraction parent is not a directory.".into()));}
+    let name=relative.file_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"invalid_extract_path","Choose a new folder name for extraction.".into()))?;
+    let destination=parent.join(name);
+    let bytes=decode_base64(&input.archive_base64)?;
+    if bytes.len()>16*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_compressed_limit","ZIP uploads are limited to 16 MiB.".into()));}
+    match std::fs::symlink_metadata(&destination){
+        Ok(_)=>return Err(ApiError(StatusCode::CONFLICT,"destination_exists","The extraction folder already exists.".into())),
+        Err(e) if e.kind()!=std::io::ErrorKind::NotFound=>return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR,"directory_check_failed",e.to_string())),
+        Err(_)=>{}
+    }
+    let result=(||->Result<(usize,u64),ApiError>{
+        let mut archive=ZipArchive::new(Cursor::new(bytes)).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_zip_archive",format!("The selected file is not a valid ZIP archive: {e}")))?;
+        if archive.len()>1000{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_entry_limit","ZIP extraction is limited to 1,000 entries.".into()));}
+        let mut total=0u64;
+        for index in 0..archive.len(){
+            let mut file=archive.by_index(index).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_zip_archive",e.to_string()))?;
+            let enclosed=file.enclosed_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains an absolute or traversal path.".into()))?.to_path_buf();
+            if enclosed.components().any(|c|!matches!(c,std::path::Component::Normal(_))) || enclosed.to_string_lossy().contains('\\') || enclosed.to_string_lossy().contains(':') {
+                return Err(ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains an unsafe path.".into()));
+            }
+            if file.unix_mode().map(|mode|mode&0o170000==0o120000).unwrap_or(false){
+                return Err(ApiError(StatusCode::BAD_REQUEST,"archive_symlink_forbidden","ZIP symbolic links are not extracted.".into()));
+            }
+            total=total.saturating_add(file.size());
+            if total>256*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_uncompressed_limit","ZIP extraction is limited to 256 MiB uncompressed.".into()));}
+            let target=destination.join(&enclosed);
+            if file.is_dir(){
+                std::fs::create_dir_all(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_extract_failed",e.to_string()))?;
+            }else{
+                let target_parent=target.parent().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP entry has no parent folder.".into()))?;
+                std::fs::create_dir_all(target_parent).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_extract_failed",e.to_string()))?;
+                let mut output=std::fs::OpenOptions::new().write(true).create_new(true).open(&target)
+                    .map_err(|e|if e.kind()==std::io::ErrorKind::AlreadyExists{ApiError(StatusCode::CONFLICT,"archive_duplicate_path","The ZIP contains duplicate paths.".into())}else{ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_extract_failed",e.to_string())})?;
+                std::io::copy(&mut file,&mut output).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"archive_extract_failed",e.to_string()))?;
+            }
+        }
+        Ok((archive.len(),total))
+    })();
+    match result {
+        Ok((entries,total_bytes))=>Ok((StatusCode::CREATED,Json(json!({"website_id":id,"path":input.path,"entries":entries,"uncompressed_bytes":total_bytes,"extracted":true})))),
+        Err(error)=>{let _=std::fs::remove_dir_all(&destination);Err(error)}
+    }
 }
 
 async fn create_website_directory(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<CreateWebsiteDirectory>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
