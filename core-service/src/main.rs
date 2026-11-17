@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         started_at: std::time::Instant::now(),
     };
     supervise_processes(state.clone());
+    backup::start_scheduler(state.clone());
     let app = http::router(state.clone(), token);
     let address = SocketAddr::from(([127, 0, 0, 1], 47821));
     let listener = tokio::net::TcpListener::bind(address).await?;
