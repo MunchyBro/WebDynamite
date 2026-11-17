@@ -13,12 +13,12 @@ export default function App(){
  const connect=async()=>{setConnecting(true);setError("");try{await invoke("core_health");setWebsites(await invoke<Website[]>("list_websites",{token}));setConnected(true);}catch(e){setConnected(false);setError(String(e));}finally{setConnecting(false);}};
  useEffect(()=>{if(connected)refresh().catch(e=>{setConnected(false);setError(String(e));});},[connected,refresh]);
  const refreshDomains=useCallback(async()=>{if(token)setDomains(await invoke<Domain[]>("list_domains",{token}));},[token]);
+ const refreshPublicDomains=useCallback(async()=>{if(token)setPublicDomains(await invoke<PublicDomain[]>("list_public_domains",{token}));},[token]);
  useEffect(()=>{if(connected&&page==="Domains"){refreshDomains().catch(e=>setError(String(e)));refreshProxy();}if(connected&&page==="Networking"){refreshNetworking();refreshProxy();}if(connected&&page==="Public Hosting"){refreshPublicDomains();refreshProxy();}},[connected,page,refreshDomains,refreshPublicDomains]);
  const addDomain=async()=>{setBusy("domain-add");try{await invoke("create_domain",{token,websiteId:domainWebsite,hostname:domainHost});setDomainHost("");await refreshDomains();}catch(e){setError(String(e));}finally{setBusy("");}};
  const removeDomain=async(id:string)=>{try{await invoke("delete_domain",{token,id});await refreshDomains();}catch(e){setError(String(e));}};
  const exportCaddy=async()=>{try{const r=await invoke<{config:string;routes:number;status:string;note:string}>("export_caddyfile",{token});setCaddyText(r.config+"\
 # "+r.note);}catch(e){setError(String(e));}};
- const refreshPublicDomains=useCallback(async()=>{if(token)setPublicDomains(await invoke<PublicDomain[]>("list_public_domains",{token}));},[token]);
  const addPublicDomain=async()=>{setBusy("public-domain-add");try{await invoke("create_public_domain",{token,websiteId:publicDomainWebsite,hostname:publicDomainHost});setPublicDomainHost("");await refreshPublicDomains();if(proxyStatus?.running)await invoke("proxy_action",{token,action:"reload"});await refreshProxy();}catch(e){setError(String(e));}finally{setBusy("");}};
  const removePublicDomain=async(id:string)=>{try{await invoke("delete_public_domain",{token,id});await refreshPublicDomains();if(proxyStatus?.running)await invoke("proxy_action",{token,action:"reload"});await refreshProxy();}catch(e){setError(String(e));}};
  const diagnosePublicDomain=async()=>{setBusy("dns");setDnsResult(null);try{setDnsResult(await invoke("diagnose_domain",{token,hostname:publicHost,expectedIpv4:expectedIp}));}catch(e){setError(String(e));}finally{setBusy("");}};
