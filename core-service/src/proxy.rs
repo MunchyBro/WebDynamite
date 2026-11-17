@@ -29,7 +29,7 @@ fn write_config(state:&AppState)->Result<(String,usize,usize),String>{
  let path=config_path(state); let temp=path.with_extension("tmp");
  fs::write(&temp,&config).map_err(|e|format!("Could not write Caddyfile: {e}"))?;
  if path.exists(){let backup=path.with_extension("previous");fs::copy(&path,&backup).map_err(|e|format!("Could not preserve previous Caddyfile: {e}"))?;}
- fs::rename(&temp,&path).map_err(|e|format!("Could not activate generated Caddyfile: {e}"))?;
+ fs::copy(&temp,&path).map_err(|e|format!("Could not activate generated Caddyfile: {e}"))?;\n let _=fs::remove_file(&temp);
  Ok((config,routes,pending))
 }
 fn caddy_output(state:&AppState,args:&[&str])->Result<String,String>{
