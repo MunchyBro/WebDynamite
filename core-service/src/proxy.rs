@@ -24,24 +24,17 @@ fn generate_config(state:&AppState)->Result<(String,usize,usize),String>{
  }
  Ok((config,routes,pending))
 }
-fn write_config(state:&AppState)->Result<(String,usize,usize),String>{
- let (config,routes,pending)=generate_config(state)?;
- let path=config_path(state); let temp=path.with_extension("tmp");
- fs::write(&temp,&config).map_err(|e|format!("Could not write Caddyfile: {e}"))?;
- if path.exists(){let backup=path.with_extension("previous");fs::copy(&path,&backup).map_err(|e|format!("Could not preserve previous Caddyfile: {e}"))?;}
- fs::copy(&temp,&path).map_err(|e|format!("Could not activate generated Caddyfile: {e}"))?;\n let _=fs::remove_file(&temp);
- Ok((config,routes,pending))
-}
-fn caddy_output(state:&AppState,args:&[&str])->Result<String,String>{
- let output=Command::new(&state.caddy_bin).args(args).output().map_err(|e|format!("Caddy was not found. Install Caddy or set CADDY_BIN to its executable path: {e}"))?;
- let mut text=String::from_utf8_lossy(&output.stdout).to_string(); text.push_str(&String::from_utf8_lossy(&output.stderr));
- if !output.status.success(){return Err(format!("Caddy exited with {}: {}",output.status,text.trim()));}
- Ok(text.trim().to_string())
-}
 fn validate_config(state:&AppState)->Result<String,String>{
- write_config(state)?;
- let path=config_path(state); let p=path.to_string_lossy().to_string();
- caddy_output(state,&["validate","--config",&p,"--adapter","caddyfile"])
+ let (config,_,_)=generate_config(state)?;
+ let path=config_path(state); let temp=path.with_extension("candidate");
+ fs::write(&temp,&config).map_err(|e|format!("Could not write candidate Caddyfile: {e}"))?;
+ let candidate=temp.to_string_lossy().to_string();
+ let validation=caddy_output(state,&["validate","--config",&candidate,"--adapter","caddyfile"]);
+ if let Err(error)=validation { let _=fs::remove_file(&temp); return Err(error); }
+ if path.exists(){let backup=path.with_extension("previous");fs::copy(&path,&backup).map_err(|e|format!("Could not preserve previous Caddyfile: {e}"))?;}
+ fs::copy(&temp,&path).map_err(|e|format!("Could not activate validated Caddyfile: {e}"))?;
+ let _=fs::remove_file(&temp);
+ validation
 }
 async fn status(State(state):State<AppState>)->Json<Value>{
  let installed=Command::new(&state.caddy_bin).arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
