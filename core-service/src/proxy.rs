@@ -1,4 +1,4 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::{Path, State}, routing::get, Json, Router};
 use serde_json::{json, Value};
 use std::{process::{Command, Stdio}, fs};
 use crate::AppState;
@@ -6,6 +6,7 @@ use crate::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/proxy/status", get(status))
+        .route("/api/v1/proxy/tls-check/:hostname", axum::routing::post(tls_check))
         .route("/api/v1/proxy/validate", axum::routing::post(validate))
         .route("/api/v1/proxy/start", axum::routing::post(start))
         .route("/api/v1/proxy/stop", axum::routing::post(stop))
@@ -76,6 +77,28 @@ fn validate_config(state:&AppState)->Result<String,String>{
  let _=fs::remove_file(&temp);
  Ok(output)
 }
+
+async fn tls_check(State(state):State<AppState>,Path(hostname):Path<String>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+ let registered={
+  let db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_locked","message":"Database lock is unavailable"}}))))?;
+  db.query_row("SELECT EXISTS(SELECT 1 FROM public_domains WHERE hostname=?1)",[&hostname],|r|r.get::<_,bool>(0))
+   .map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_error","message":e.to_string()}}))))?
+ };
+ if !registered{return Err((axum::http::StatusCode::NOT_FOUND,Json(json!({"error":{"code":"public_domain_not_found","message":"Only a hostname registered in Public Hosting can be checked."}}))));}
+ let sink=if cfg!(windows){"NUL"}else{"/dev/null"};
+ let output=Command::new("curl").args(["--head","--silent","--show-error","--connect-timeout","5","--max-time","15","--max-redirs","0","--output",sink,"--write-out","%{http_code}|%{ssl_verify_result}|%{time_total}"])
+  .arg(format!("https://{hostname}/")).output()
+  .map_err(|e|(axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":{"code":"curl_unavailable","message":format!("HTTPS verification requires curl on PATH: {e}")}}))))?;
+ let stdout=String::from_utf8_lossy(&output.stdout);
+ let parts:Vec<&str>=stdout.trim().split('|').collect();
+ let http_status=parts.first().and_then(|v|v.parse::<u16>().ok()).filter(|v|*v>0);
+ let verify=parts.get(1).and_then(|v|v.parse::<i64>().ok());
+ let elapsed=parts.get(2).and_then(|v|v.parse::<f64>().ok());
+ let tls_valid=output.status.success()&&verify==Some(0);
+ let error=if tls_valid{None}else{Some(String::from_utf8_lossy(&output.stderr).trim().to_string())};
+ Ok(Json(json!({"hostname":hostname,"tls_valid":tls_valid,"http_status":http_status,"ssl_verify_result":verify,"elapsed_seconds":elapsed,"checked_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),"error":error,"method":"curl HEAD; certificate verification enabled; redirects not followed"})))
+}
+
 async fn status(State(state):State<AppState>)->Json<Value>{
  let installed=Command::new(&state.caddy_bin).arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|result|result.success()).unwrap_or(false);
  let running=if let Ok(mut slot)=state.proxy_process.lock(){let exited=match slot.as_mut(){Some(child)=>matches!(child.try_wait(),Ok(Some(_))),None=>false};if exited{*slot=None;false}else{slot.is_some()}}else{false};
