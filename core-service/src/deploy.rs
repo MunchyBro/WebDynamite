@@ -207,3 +207,28 @@ async fn rollback_release(State(state):State<AppState>,Path((website_id,release_
  tx.commit().map_err(db_error)?;
  Ok(Json(json!({"website_id":website_id,"active_release_id":release_id,"message":"Previous release activated. Static requests now serve this snapshot."})))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_directories_must_be_relative_and_contained() {
+        assert!(safe_output_dir("dist"));
+        assert!(safe_output_dir("build/site"));
+        assert!(!safe_output_dir(""));
+        assert!(!safe_output_dir("../outside"));
+        assert!(!safe_output_dir("build/../outside"));
+        assert!(!safe_output_dir("C:\\outside"));
+    }
+
+    #[test]
+    fn build_programs_are_allowlisted() {
+        for program in ["node", "python", "php", "cargo", "dotnet"] {
+            assert!(allowed_program(program));
+        }
+        for program in ["cmd", "powershell", "bash", "npm.cmd", ""] {
+            assert!(!allowed_program(program));
+        }
+    }
+}
