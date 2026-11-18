@@ -198,11 +198,16 @@ fn prune_release_history(state:&AppState,website_id:&str,keep_total:u64)->Result
  let mut removed=0u64;
  for (index,(id,path)) in inactive.into_iter().enumerate(){
   if index<keep_inactive{continue;}
-  let candidate=FsPath::new(&path);
+  // Re-check active state while holding the registry lock so a concurrent rollback
+  // cannot activate a snapshot between selection and filesystem deletion.
+  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let current:Option<(String,i64)>=db.query_row("SELECT release_path,active FROM releases WHERE id=?1 AND website_id=?2",params![id,website_id],|r|Ok((r.get(0)?,r.get(1)?))).ok();
+  let Some((current_path,active))=current else{continue;};
+  if active!=0||current_path!=path{continue;}
+  let candidate=FsPath::new(&current_path);
   let Ok(target)=candidate.canonicalize() else{continue;};
   if !target.starts_with(&root)||target==root||!target.is_dir(){continue;}
   fs::remove_dir_all(&target).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_prune_failed",format!("Could not remove expired release files: {e}")))?;
-  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
   removed+=db.execute("DELETE FROM releases WHERE id=?1 AND website_id=?2 AND active=0",params![id,website_id]).map_err(db_error)? as u64;
  }
  Ok(removed)
