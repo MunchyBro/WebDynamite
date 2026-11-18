@@ -16,7 +16,7 @@ WebDynamite brings local website hosting, domains, deployment workflows, databas
 - **File manager:** browse website files, search/sort, create folders, rename, upload/download files and folders, and work with ZIP archives.
 - **Git and releases:** inspect repository state, create and roll back static-site release snapshots, delete inactive snapshots, and automatically prune old releases using a configurable 1–100 release retention limit (default 10).
 - **Backups:** full-system backup/restore workflows, verification, and scheduled retention controls.
-- **Operations:** system metrics, diagnostics, SSL/security checks, logs, and application settings.
+- **Operations:** system metrics, diagnostics, SSL/security checks, logs, and application settings. Dynamic runtime startup waits for the application port to become reachable before reporting success.
 
 Features that depend on external programs or network services require those programs, permissions, credentials, and connectivity to be configured on the host.
 
@@ -169,7 +169,7 @@ The current installer is **unsigned**. Windows SmartScreen may show an unknown-p
 
 ## Current limitations
 
-WebDynamite is actively evolving. The existence of a dashboard or configuration screen does not imply every hosting scenario is production-ready. Runtime behavior varies by framework and project. Advanced multi-tenant hosting isolation, hardened sandboxing, signed releases, automatic desktop updates, and some advanced hosting-provider operations remain future work. Review the code and the Core Service documentation before using this on a production or multi-user server.
+WebDynamite is actively evolving. The existence of a dashboard or configuration screen does not imply every hosting scenario is production-ready. Runtime behavior varies by framework and project. Dynamic runtime readiness currently checks only whether the assigned loopback TCP port accepts connections; it is not a full HTTP or application-level health check. Advanced multi-tenant hosting isolation, hardened sandboxing, signed releases, automatic desktop updates, and some advanced hosting-provider operations remain future work. Review the code and the Core Service documentation before using this on a production or multi-user server.
 
 ## Project links
 
