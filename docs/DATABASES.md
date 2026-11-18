@@ -42,6 +42,10 @@ Response limits:
 
 The console is for inspection, not writes or administrative changes. Unsupported PostgreSQL data types are identified in the result instead of being decoded. The existing loopback-only NoTLS restriction still applies.
 
+### Schema browser shortcuts
+
+The PostgreSQL console includes metadata shortcuts to list non-system schemas, list tables in a schema, and inspect a table's columns (ordinal position, type, nullability, and default). These shortcuts query `information_schema` through the same read-only endpoint and use SQL-escaped schema/table values. They do not modify database objects.
+
 ## Not yet implemented
 
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
