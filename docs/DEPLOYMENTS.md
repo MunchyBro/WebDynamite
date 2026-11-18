@@ -19,10 +19,10 @@ Build commands execute code from the selected project and should only be run for
 
 ## Current limitations
 
-- Builds run synchronously in the Core Service request; there is no queue, cancellation, concurrency limit, timeout, or live log streaming yet.
+- Builds run synchronously in the Core Service request; there is no queue, cancellation, concurrency limit, build timeout, or live log streaming yet. Dynamic website startup waits up to 15 seconds for the assigned loopback port to accept connections and reports early exits or readiness timeouts instead of marking a merely spawned process as healthy.
 - Profiles do not store environment variables or secrets.
 - Static websites can snapshot build output into immutable managed releases, activate a new release, and roll back to a previous snapshot. Release cleanup is manual; automatic release retention is not implemented.
-- Automated release activation is currently static-site-only. Node.js, PHP and Python build profiles can run builds, but their runtime deployment/rollback integration is not implemented.
+- Automated release activation is currently static-site-only. Node.js, PHP and Python build profiles can run builds and their processes are checked for initial TCP readiness, but runtime deployment/rollback integration is not implemented.
 - Uploading releases to external hosting is not implemented.
 - Package-manager wrappers such as `npm.cmd` and shell scripts are not invoked automatically. Use an executable supported on the host and pass arguments separately.
 - The Core Service must have the selected executable available on its PATH.
