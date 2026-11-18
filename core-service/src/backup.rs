@@ -355,11 +355,11 @@ mod tests{
  #[test]fn sha256_tree_checksum_detects_content_changes(){
   let root=std::env::temp_dir().join(format!("webdynamite-backup-test-{}",Uuid::new_v4()));
   fs::create_dir_all(root.join("nested")).unwrap();
-  fs::write(root.join("nested/site.txt"),b"first").unwrap();
+  fs::write(root.join("nested/site.txt"),b"first").unwrap();\n  fs::write(root.join("nested/manifest.json"),b"nested manifest is part of the payload").unwrap();
   let first=tree_checksum_sha256(&root).unwrap();
   let repeated=tree_checksum_sha256(&root).unwrap();
   assert_eq!(first,repeated);
-  fs::write(root.join("nested/site.txt"),b"changed").unwrap();
+  fs::write(root.join("nested/site.txt"),b"changed").unwrap();\n  fs::write(root.join("nested/manifest.json"),b"modified nested manifest").unwrap();
   let changed=tree_checksum_sha256(&root).unwrap();
   assert_ne!(first.0,changed.0);
   let _=fs::remove_dir_all(root);
