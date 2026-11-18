@@ -530,6 +530,7 @@ async fn query_postgres_connection(
         std::iter::empty::<&(dyn tokio_postgres::types::ToSql + Sync)>(),
     ).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, "postgres_sql_query_failed", e.to_string()))?;
     use futures_util::TryStreamExt;
+    tokio::pin!(stream);
     let mut values: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut truncated = false;
     let mut estimated_bytes = 0usize;
