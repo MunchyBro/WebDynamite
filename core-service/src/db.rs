@@ -157,7 +157,7 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (13);
-    // Version 14 stores local MySQL/MariaDB connection metadata; passwords are never persisted.
+    -- Version 14 stores local MySQL/MariaDB connection metadata; passwords are never persisted.
     CREATE TABLE IF NOT EXISTS mysql_connections (
         id TEXT PRIMARY KEY NOT NULL,
         name TEXT NOT NULL COLLATE NOCASE UNIQUE,
