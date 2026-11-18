@@ -184,6 +184,8 @@ async fn create_release(State(state):State<AppState>,Path(website_id):Path<Strin
 }
 
 
+fn inactive_release_limit(keep_total:u64)->usize{keep_total.clamp(1,100).saturating_sub(1) as usize}
+
 fn prune_release_history(state:&AppState,website_id:&str,keep_total:u64)->Result<u64,DeployError>{
  let inactive={
   let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -192,7 +194,7 @@ fn prune_release_history(state:&AppState,website_id:&str,keep_total:u64)->Result
   rows.collect::<Result<Vec<_>,_>>().map_err(db_error)?
  };
  let root=state.releases_dir.canonicalize().map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_store_unavailable",e.to_string()))?;
- let keep_inactive=keep_total.saturating_sub(1) as usize;
+ let keep_inactive=inactive_release_limit(keep_total);
  let mut removed=0u64;
  for (index,(id,path)) in inactive.into_iter().enumerate(){
   if index<keep_inactive{continue;}
@@ -236,6 +238,15 @@ async fn rollback_release(State(state):State<AppState>,Path((website_id,release_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_retention_always_preserves_active_and_keeps_configured_total() {
+        assert_eq!(inactive_release_limit(1), 0);
+        assert_eq!(inactive_release_limit(10), 9);
+        assert_eq!(inactive_release_limit(100), 99);
+        assert_eq!(inactive_release_limit(0), 0);
+        assert_eq!(inactive_release_limit(500), 99);
+    }
 
     #[test]
     fn output_directories_must_be_relative_and_contained() {
