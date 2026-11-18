@@ -78,3 +78,16 @@ Response limits:
 - Text previews: 8 KiB per cell; binary previews: 4 KiB as hexadecimal
 
 This is an inspection console, not an administrative client. The server must support read-only transactions and the execution-time setting. A read-only transaction is an additional safety layer, not a replacement for a least-privilege database account.
+
+
+## Saved PostgreSQL and MySQL/MariaDB passwords
+
+When testing a connection or running a query, WebDynamite first checks Windows Credential Manager for a saved password associated with that database profile. If no saved password is available, the app prompts for one. After entering it, choose whether to save it for future operations.
+
+- Passwords are stored by the Windows Credential Manager through the desktop application, not in WebDynamite's SQLite registry or profile records.
+- The Core Service still receives the password only for the current connection test or query request; it does not persist it.
+- Deleting a PostgreSQL or MySQL/MariaDB profile also attempts to delete its saved Windows credential.
+- Saving is optional. Declining keeps the password transient for that operation.
+- Credentials are scoped by database engine and profile ID. Removing and recreating a profile creates a new credential scope.
+
+Windows account access controls apply to Credential Manager. Anyone able to access the same Windows account may be able to use its saved credentials; protect the Windows account and device accordingly.

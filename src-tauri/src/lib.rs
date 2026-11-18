@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use keyring::Entry;
 const CORE_URL: &str = "http://127.0.0.1:47821";
 #[derive(Debug, Serialize, Deserialize)]
 struct Website { id:String, name:String, project_path:String, runtime:String, status:String, created_at:String, updated_at:String }
@@ -14,6 +15,25 @@ async fn authorized_request(token:&str,method:reqwest::Method,path:&str,body:Opt
  let response=request.send().await.map_err(|e|api_error("Could not reach WebDynamite Core Service at 127.0.0.1:47821",e))?;
  if !response.status().is_success(){let status=response.status();let detail=response.text().await.unwrap_or_default();return Err(format!("Core Service returned {status}: {detail}"));}
  Ok(response)
+}
+fn database_credential_entry(engine:&str,profile_id:&str)->Result<Entry,String>{
+ let service=match engine{"mysql"=>"WebDynamite.Database.MySQL","postgres"=>"WebDynamite.Database.PostgreSQL",_=>return Err("Unsupported database credential type.".into())};
+ let id=profile_id.trim();
+ if id.is_empty()||id.len()>128||!id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'){return Err("Invalid database profile identifier.".into());}
+ Entry::new(service,id).map_err(|e|api_error("Could not access Windows Credential Manager",e))
+}
+#[tauri::command]
+fn save_database_credential(engine:String,profileId:String,password:String)->Result<(),String>{
+ if password.is_empty()||password.len()>4096{return Err("Password must contain between 1 and 4096 bytes.".into());}
+ database_credential_entry(&engine,&profileId)?.set_password(&password).map_err(|e|api_error("Could not save database credential in Windows Credential Manager",e))
+}
+#[tauri::command]
+fn get_database_credential(engine:String,profileId:String)->Result<String,String>{
+ database_credential_entry(&engine,&profileId)?.get_password().map_err(|e|api_error("No saved password is available in Windows Credential Manager",e))
+}
+#[tauri::command]
+fn delete_database_credential(engine:String,profileId:String)->Result<(),String>{
+ database_credential_entry(&engine,&profileId)?.delete_credential().map_err(|e|api_error("Could not delete database credential from Windows Credential Manager",e))
 }
 #[tauri::command]
 async fn core_health()->Result<Value,String>{
@@ -288,4 +308,4 @@ async fn save_runtime_profile(token:String,website_id:String,program:String,args
 async fn delete_runtime_profile(token:String,website_id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/runtime-profiles/{website_id}"),None).await?;Ok(())}
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
