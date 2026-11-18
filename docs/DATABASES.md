@@ -44,7 +44,7 @@ The console is for inspection, not writes or administrative changes. Unsupported
 
 ### Schema browser shortcuts
 
-The PostgreSQL console includes metadata shortcuts to list non-system schemas, list tables in a schema, and inspect a table's columns (ordinal position, type, nullability, and default). These shortcuts query `information_schema` through the same read-only endpoint and use SQL-escaped schema/table values. They do not modify database objects.
+The PostgreSQL console includes metadata shortcuts to list non-system schemas, list tables in a schema, and inspect a table's columns (ordinal position, type, nullability, and default). These shortcuts query `information_schema` through the same read-only endpoint and use SQL-escaped schema/table values. They do not modify database objects. **Preview rows** builds a quoted-identifier `SELECT * ... LIMIT 200` for the selected schema and table, then runs it through the same read-only query endpoint. The preview is capped by the query console response limits and does not change data.
 
 ## Not yet implemented
 
