@@ -1139,6 +1139,36 @@ async fn delete_runtime_profile(State(state):State<AppState>,Path(website_id):Pa
  if db.execute("DELETE FROM runtime_profiles WHERE website_id=?1",[website_id]).map_err(database_error)?==0{return Err(ApiError(StatusCode::NOT_FOUND,"runtime_profile_not_found","No custom launch profile exists for this website.".into()));}
  Ok(StatusCode::NO_CONTENT)
 }
+// Require an actual HTTP response, not merely a TCP listener. Redirects and
+// client errors still prove the server is responding; 5xx responses do not.
+fn http_status_is_healthy(status: u16) -> bool {
+    (200..500).contains(&status)
+}
+
+fn http_readiness_probe(port: u16) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    let timeout = Some(Duration::from_millis(500));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    if stream.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut response = [0u8; 512];
+    let Ok(count) = stream.read(&mut response) else {
+        return false;
+    };
+    let first_line = String::from_utf8_lossy(&response[..count]);
+    let Some(status) = first_line.lines().next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok()) else {
+            return false;
+        };
+    http_status_is_healthy(status)
+}
+
 async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
     let (project,runtime)=project_details(&state,&id)?;
     if !FsPath::new(&project).is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"project_not_found","The project directory is no longer available.".into()));}
@@ -1234,7 +1264,7 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
             }
             Ok(None) => {}
         }
-        if TcpStream::connect_timeout(&SocketAddr::from(([127,0,0,1],port)),Duration::from_millis(150)).is_ok() {
+        if http_readiness_probe(port) {
             ready=true;
             break;
         }
@@ -1295,6 +1325,20 @@ fn mime_type(path:&PathBuf)->&'static str{
 #[cfg(test)]
 mod domain_tests {
     use super::valid_local_hostname;
+
+    #[test]
+    fn accepts_http_success_redirect_and_client_error_responses() {
+        for status in [200, 204, 301, 302, 400, 404, 499] {
+            assert!(super::http_status_is_healthy(status));
+        }
+    }
+
+    #[test]
+    fn rejects_server_errors_and_invalid_status_codes() {
+        for status in [0, 100, 500, 502, 503, 599, 600] {
+            assert!(!super::http_status_is_healthy(status));
+        }
+    }
 
     #[test]
     fn accepts_reserved_local_suffixes() {
