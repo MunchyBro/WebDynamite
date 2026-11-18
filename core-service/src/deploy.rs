@@ -98,7 +98,7 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  };
  let canonical=root.canonicalize().map_err(|e|DeployError(StatusCode::BAD_REQUEST,"website_folder_unavailable",e.to_string()))?;
  if !safe_output_dir(&profile.2){return Err(DeployError(StatusCode::BAD_REQUEST,"invalid_output_dir","Build output path is invalid.".into()));}
- const build_timeout_seconds=crate::settings::setting_number(&state,"build_timeout_seconds",600).clamp(30,1800);
+ let build_timeout_seconds=crate::settings::setting_number(&state,"build_timeout_seconds",600).clamp(30,1800);
  let build_timeout=Duration::from_secs(build_timeout_seconds);
  let build_log_path=state.logs_dir.join(format!("build-{}.log",Uuid::new_v4()));
  let log_file=File::create(&build_log_path).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
