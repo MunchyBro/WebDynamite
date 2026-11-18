@@ -92,6 +92,20 @@ async fn query_database(token:String,id:String,sql:String)->Result<Value,String>
  authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/databases/{id}/query"),Some(body)).await?.json().await.map_err(|e|api_error("SQLite query failed",e))
 }
 #[tauri::command]
+async fn list_mysql_connections(token:String)->Result<Vec<Value>,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/mysql-connections",None).await?.json().await.map_err(|e|api_error("Could not list MySQL/MariaDB profiles",e))}
+#[tauri::command]
+async fn create_mysql_connection(token:String,name:String,host:String,port:u16,databaseName:String,username:String)->Result<Value,String>{
+ let body=serde_json::json!({"name":name,"host":host,"port":port,"database_name":databaseName,"username":username});
+ authorized_request(&token,reqwest::Method::POST,"/api/v1/mysql-connections",Some(body)).await?.json().await.map_err(|e|api_error("Could not create MySQL/MariaDB profile",e))
+}
+#[tauri::command]
+async fn delete_mysql_connection(token:String,id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/mysql-connections/{id}"),None).await?;Ok(())}
+#[tauri::command]
+async fn test_mysql_connection(token:String,id:String,password:String)->Result<Value,String>{
+ let body=serde_json::json!({"password":password});
+ authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/mysql-connections/{id}/test"),Some(body)).await?.json().await.map_err(|e|api_error("MySQL/MariaDB connection test failed",e))
+}
+#[tauri::command]
 async fn list_postgres_connections(token:String)->Result<Vec<Value>,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/postgres-connections",None).await?.json().await.map_err(|e|api_error("Could not list PostgreSQL profiles",e))}
 #[tauri::command]
 async fn create_postgres_connection(token:String,name:String,host:String,port:u16,databaseName:String,username:String)->Result<Value,String>{
@@ -269,4 +283,4 @@ async fn save_runtime_profile(token:String,website_id:String,program:String,args
 async fn delete_runtime_profile(token:String,website_id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/runtime-profiles/{website_id}"),None).await?;Ok(())}
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,query_database,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
