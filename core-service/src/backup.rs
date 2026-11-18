@@ -89,7 +89,11 @@ fn tree_checksum_sha256(root:&FsPath)->Result<(String,u64,u64),BackupError>{
    let kind=entry.file_type().map_err(|e|io_error("backup_metadata_failed",e))?;
    if kind.is_symlink(){return Err(backup_error(StatusCode::FORBIDDEN,"backup_symlink_forbidden","Backup contains a symbolic link."));}
    if kind.is_dir(){collect(root,&entry.path(),files)?;}
-   else if kind.is_file(){\n    let path=entry.path();\n    let relative=path.strip_prefix(root).unwrap_or(&path);\n    if relative!=FsPath::new("manifest.json"){files.push(path);}\n   }
+   else if kind.is_file(){
+    let path=entry.path();
+    let relative=path.strip_prefix(root).unwrap_or(&path);
+    if relative!=FsPath::new("manifest.json"){files.push(path);}
+   }
   }
   Ok(())
  }
@@ -355,11 +359,13 @@ mod tests{
  #[test]fn sha256_tree_checksum_detects_content_changes(){
   let root=std::env::temp_dir().join(format!("webdynamite-backup-test-{}",Uuid::new_v4()));
   fs::create_dir_all(root.join("nested")).unwrap();
-  fs::write(root.join("nested/site.txt"),b"first").unwrap();\n  fs::write(root.join("nested/manifest.json"),b"nested manifest is part of the payload").unwrap();
+  fs::write(root.join("nested/site.txt"),b"first").unwrap();
+  fs::write(root.join("nested/manifest.json"),b"nested manifest is part of the payload").unwrap();
   let first=tree_checksum_sha256(&root).unwrap();
   let repeated=tree_checksum_sha256(&root).unwrap();
   assert_eq!(first,repeated);
-  fs::write(root.join("nested/site.txt"),b"changed").unwrap();\n  fs::write(root.join("nested/manifest.json"),b"modified nested manifest").unwrap();
+  fs::write(root.join("nested/site.txt"),b"changed").unwrap();
+  fs::write(root.join("nested/manifest.json"),b"modified nested manifest").unwrap();
   let changed=tree_checksum_sha256(&root).unwrap();
   assert_ne!(first.0,changed.0);
   let _=fs::remove_dir_all(root);
