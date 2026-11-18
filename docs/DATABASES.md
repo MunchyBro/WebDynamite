@@ -19,7 +19,7 @@ Response limits:
 - Approximate serialized result budget: 1 MiB
 - Text and BLOB cell previews: 8 KiB per cell
 
-BLOB previews are returned as Base64 objects. Text and BLOB previews may be shortened. This console is for inspection, not writes or administrative changes.
+BLOB previews are returned as Base64 objects. Text and BLOB previews may be shortened. Results can be exported as UTF-8 CSV; exports include only the bounded rows returned by the query API and guard text cells that could be interpreted as spreadsheet formulas. This console is for inspection, not writes or administrative changes.
 
 ## PostgreSQL: local connection profiles
 
@@ -40,7 +40,7 @@ Response limits:
 - Approximate serialized result budget: 1 MiB
 - Text and bytea previews: 8 KiB per cell
 
-The console is for inspection, not writes or administrative changes. Unsupported PostgreSQL data types are identified in the result instead of being decoded. The existing loopback-only NoTLS restriction still applies.
+The console is for inspection, not writes or administrative changes. Unsupported PostgreSQL data types are identified in the result instead of being decoded. The existing loopback-only NoTLS restriction still applies. Query results can be exported from the desktop UI as UTF-8 CSV (with a BOM for spreadsheet compatibility). CSV cells are quoted and embedded quotes are escaped; text cells beginning with spreadsheet formula characters are prefixed to reduce formula-injection risk. Exports contain only rows/columns returned by the bounded query response.
 
 ### Schema browser shortcuts
 
