@@ -9,7 +9,7 @@ WebDynamite brings local website hosting, domains, deployment workflows, databas
 ## What it includes
 
 - **Website management:** register projects, start/stop/restart supported runtimes, inspect logs, and manage project files.
-- **Runtime and builds:** static sites, Node.js process profiles, PHP/Python runtime support, and configurable build/deployment profiles. The exact runtime adapter depends on the installed runtime and project configuration.
+- **Runtime and builds:** static sites, Node.js process profiles, PHP/Python runtime support, and configurable build/deployment profiles. Build commands have a 10-minute timeout and build history retains at most the last 256 KiB of output. The exact runtime adapter depends on the installed runtime and project configuration.
 - **Domains and routing:** local domain registry, Caddy configuration integration, DNS diagnostics for public domains, and TLS readiness/verification tools.
 - **Public access:** LAN publishing and Cloudflare Quick Tunnel workflows. Public availability still depends on DNS, firewall/router rules, tunnel state, and the target machine remaining online.
 - **Databases:** managed SQLite databases, import/export and query tools, plus saved PostgreSQL and MySQL/MariaDB connection profiles with read-only query workflows.
