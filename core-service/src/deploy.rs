@@ -98,7 +98,8 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  };
  let canonical=root.canonicalize().map_err(|e|DeployError(StatusCode::BAD_REQUEST,"website_folder_unavailable",e.to_string()))?;
  if !safe_output_dir(&profile.2){return Err(DeployError(StatusCode::BAD_REQUEST,"invalid_output_dir","Build output path is invalid.".into()));}
- const BUILD_TIMEOUT:Duration=Duration::from_secs(600);
+ let build_timeout_seconds=crate::settings::setting_number(&state,"build_timeout_seconds",600).clamp(30,1800);
+ let build_timeout=Duration::from_secs(build_timeout_seconds);
  let build_log_path=state.logs_dir.join(format!("build-{}.log",Uuid::new_v4()));
  let log_file=File::create(&build_log_path).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
  let stderr=log_file.try_clone().map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
@@ -110,7 +111,7 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  let result_status=loop {
   match child.try_wait() {
    Ok(Some(status))=>break Some(status),
-   Ok(None) if started.elapsed()>=BUILD_TIMEOUT=>{
+   Ok(None) if started.elapsed()>=build_timeout=>{
     timed_out=true;
     terminate_build_process(&mut child);
     break child.wait().ok();
@@ -126,7 +127,7 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  let elapsed=started.elapsed().as_millis().min(i64::MAX as u128) as i64;
  let mut logs=read_log_tail(&build_log_path,262_144).unwrap_or_else(|e|format!("Could not read build log: {e}"));
  let _=fs::remove_file(&build_log_path);
- if timed_out{logs.push_str("\nBuild timed out after 10 minutes; the process was terminated.");}
+ if timed_out{logs.push_str(&format!("\nBuild timed out after {build_timeout_seconds} seconds; the process was terminated."));}
  let mut status=if !timed_out&&result_status.as_ref().is_some_and(|s|s.success()){"success"}else{"failed"};
  let mut exit_code=result_status.and_then(|s|s.code());
  if !timed_out&&result_status.as_ref().is_some_and(|s|s.success()){
