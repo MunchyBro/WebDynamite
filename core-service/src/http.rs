@@ -1102,9 +1102,7 @@ fn set_status(state:&AppState,id:&str,status:&str)->Result<(),ApiError>{
 fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
     if let Some(mut child)=map.remove(id){
-        if let Some(stdout)=child.stdout.take(){pump_runtime_log(stdout,log_file.clone(),log_bytes.clone(),log_truncated.clone());}
-    if let Some(stderr)=child.stderr.take(){pump_runtime_log(stderr,log_file,log_bytes,log_truncated);}
-    let pid=child.id();
+        let pid=child.id();
         #[cfg(windows)]
         { let _=Command::new("taskkill").args(["/PID",&pid.to_string(),"/T","/F"]).output(); }
         #[cfg(not(windows))]
@@ -1276,6 +1274,8 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
     };
     let mut child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
       .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"runtime_start_failed",if runtime=="php"{format!("Could not start PHP. Verify PHP is installed and available on PATH: {e}")}else if runtime=="python"{format!("Could not start Python. Verify Python is installed and available as `python` on PATH: {e}")}else{format!("Could not start npm. Verify Node.js and npm are installed: {e}")}))?;
+    if let Some(stdout)=child.stdout.take(){pump_runtime_log(stdout,log_file.clone(),log_bytes.clone(),log_truncated.clone());}
+    if let Some(stderr)=child.stderr.take(){pump_runtime_log(stderr,log_file,log_bytes,log_truncated);}
     let pid=child.id();
     // A successful spawn is not proof that the application is serving requests.
     // Wait for the assigned loopback port and detect early process exits before
