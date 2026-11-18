@@ -18,6 +18,7 @@ fn defaults() -> BTreeMap<String, Value> {
         ("log_retention_days".into(), json!(30)),
         ("monitoring_interval_seconds".into(), json!(5)),
         ("domain_suffix".into(), json!("localhost")),
+        ("release_retention_count".into(), json!(10)),
     ])
 }
 
@@ -55,6 +56,10 @@ fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
         "monitoring_interval_seconds" => {
             let n=value.as_u64().ok_or("Monitoring interval must be an integer")?;
             if !(2..=60).contains(&n) { return Err("Monitoring interval must be between 2 and 60 seconds".into()); }
+        }
+        "release_retention_count" => {
+            let n=value.as_u64().ok_or("Release retention must be an integer")?;
+            if !(1..=100).contains(&n) { return Err("Release retention must be between 1 and 100 releases".into()); }
         }
         "domain_suffix" => {
             let suffix=value.as_str().ok_or("Domain suffix must be a string")?;
@@ -177,5 +182,14 @@ mod tests {
         assert!(validate_setting("unknown",&json!(true)).is_err());
         assert!(validate_setting("monitoring_interval_seconds",&json!(10)).is_ok());
         assert!(validate_setting("domain_suffix",&json!("localhost")).is_ok());
+        assert!(validate_setting("release_retention_count",&json!(1)).is_ok());
+        assert!(validate_setting("release_retention_count",&json!(101)).is_err());
     }
+}
+
+pub fn setting_number(state:&AppState,key:&str,fallback:u64)->u64 {
+    let Ok(db)=state.db.lock() else { return fallback; };
+    db.query_row("SELECT value_json FROM settings WHERE key=?1",[key],|row|row.get::<_,String>(0)).ok()
+        .and_then(|raw|serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v|v.as_u64()).unwrap_or(fallback)
 }
