@@ -129,7 +129,7 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  if timed_out{logs.push_str("\nBuild timed out after 10 minutes; the process was terminated.");}
  let mut status=if !timed_out&&result_status.as_ref().is_some_and(|s|s.success()){"success"}else{"failed"};
  let mut exit_code=result_status.and_then(|s|s.code());
- if result.status.success(){
+ if !timed_out&&result_status.as_ref().is_some_and(|s|s.success()){
   let output=canonical.join(&profile.2);
   match output.canonicalize(){
    Ok(path) if path.starts_with(&canonical)&&path.is_dir()=>{},
