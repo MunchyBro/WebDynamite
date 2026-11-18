@@ -5,6 +5,13 @@ on:
   push:
     tags:
       - "v*"
+  pull_request:
+    paths:
+      - "core-service/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/windows-installer.yml"
 
 permissions:
   contents: write
