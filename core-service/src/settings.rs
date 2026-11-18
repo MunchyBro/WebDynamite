@@ -19,6 +19,7 @@ fn defaults() -> BTreeMap<String, Value> {
         ("monitoring_interval_seconds".into(), json!(5)),
         ("domain_suffix".into(), json!("localhost")),
         ("release_retention_count".into(), json!(10)),
+        ("build_timeout_seconds".into(), json!(600)),
     ])
 }
 
@@ -56,6 +57,10 @@ fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
         "monitoring_interval_seconds" => {
             let n=value.as_u64().ok_or("Monitoring interval must be an integer")?;
             if !(2..=60).contains(&n) { return Err("Monitoring interval must be between 2 and 60 seconds".into()); }
+        }
+        "build_timeout_seconds" => {
+            let n=value.as_u64().ok_or("Build timeout must be an integer")?;
+            if !(30..=1800).contains(&n) { return Err("Build timeout must be between 30 and 1800 seconds".into()); }
         }
         "release_retention_count" => {
             let n=value.as_u64().ok_or("Release retention must be an integer")?;
@@ -183,6 +188,10 @@ mod tests {
         assert!(validate_setting("monitoring_interval_seconds",&json!(10)).is_ok());
         assert!(validate_setting("domain_suffix",&json!("localhost")).is_ok());
         assert!(validate_setting("release_retention_count",&json!(1)).is_ok());
+        assert!(validate_setting("build_timeout_seconds",&json!(30)).is_ok());
+        assert!(validate_setting("build_timeout_seconds",&json!(1800)).is_ok());
+        assert!(validate_setting("build_timeout_seconds",&json!(29)).is_err());
+        assert!(validate_setting("build_timeout_seconds",&json!(1801)).is_err());
         assert!(validate_setting("release_retention_count",&json!(101)).is_err());
     }
 }
