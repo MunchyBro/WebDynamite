@@ -29,6 +29,14 @@ A profile stores its name, host, port, database name, and username. **Test** ask
 
 Removing a profile removes only its saved connection metadata. It does not stop PostgreSQL, delete a database, or modify server data.
 
+## PostgreSQL read-only query console
+
+Select a saved local PostgreSQL profile in **PostgreSQL read-only query console**. Enter one row-returning SQL statement and run it. The Core Service opens a fresh connection using a password requested for that query, then executes inside a PostgreSQL read-only transaction. It applies a 5-second statement timeout and a 10-second idle transaction timeout. Only one statement is accepted; multi-statement scripts and write-capable operations are not supported.
+
+Results are limited to 200 rows, 8 KiB per text value, and approximately 1 MiB of serialized cell data. A row is represented as JSON so PostgreSQL values can be displayed without requiring a client-side driver for every PostgreSQL type. Results may be truncated. The password is request-only and is never stored in a profile.
+
+The read-only transaction is an additional database guard, not a sandbox for arbitrary SQL functions. Only run queries you trust.
+
 ## Not yet implemented
 
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
