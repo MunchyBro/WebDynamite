@@ -114,6 +114,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/mysql-connections", get(list_mysql_connections).post(create_mysql_connection))
         .route("/api/v1/mysql-connections/:id", axum::routing::delete(delete_mysql_connection))
         .route("/api/v1/mysql-connections/:id/test", axum::routing::post(test_mysql_connection))
+        .route("/api/v1/mysql-connections/:id/query", axum::routing::post(query_mysql_connection))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .merge(crate::deploy::router())
@@ -535,6 +536,94 @@ async fn test_mysql_connection(State(state):State<AppState>,Path(id):Path<String
  let version:String=row.try_get(2).unwrap_or_default();
  connection.close().await.ok();
  Ok(Json(json!({"id":id,"connected":true,"database":database,"username":user,"server_version":version,"password_persisted":false})))
+}
+
+
+#[derive(Debug, Deserialize)]
+struct MysqlQuery { password: String, sql: String }
+
+async fn query_mysql_connection(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<MysqlQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let sql = input.sql.trim();
+    if sql.is_empty() || sql.len() > 64 * 1024 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_query", "Enter a SQL statement up to 64 KiB.".into()));
+    }
+    if input.password.len() > 1024 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mysql_password", "Password is too long.".into()));
+    }
+    let (host, port, database_name, username) = {
+        let db = state.db.lock().map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "database_locked", "Database lock is unavailable.".into()))?;
+        db.query_row(
+            "SELECT host,port,database_name,username FROM mysql_connections WHERE id=?1",
+            [&id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, u16>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
+        ).map_err(|e| if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+            ApiError(StatusCode::NOT_FOUND, "mysql_profile_not_found", "MySQL/MariaDB connection profile was not found.".into())
+        } else { database_error(e) })?
+    };
+    let mut options = sqlx::mysql::MySqlConnectOptions::new()
+        .host(&host).port(port).username(&username).password(&input.password)
+        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+    if !database_name.is_empty() { options = options.database(&database_name); }
+    let connect = sqlx::mysql::MySqlConnection::connect_with(&options);
+    let mut connection = tokio::time::timeout(std::time::Duration::from_secs(5), connect).await
+        .map_err(|_| ApiError(StatusCode::GATEWAY_TIMEOUT, "mysql_connection_timeout", "MySQL/MariaDB connection timed out after five seconds.".into()))?
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_connection_failed", format!("MySQL/MariaDB connection failed: {e}")))?;
+    use sqlx::{Connection, Column, Row};
+    use futures_util::TryStreamExt;
+    sqlx::query("SET SESSION MAX_EXECUTION_TIME=5000").execute(&mut connection).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_timeout_setup_failed", e.to_string()))?;
+    sqlx::query("SET TRANSACTION READ ONLY").execute(&mut connection).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_read_only_failed", e.to_string()))?;
+    let mut transaction = connection.begin().await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_read_only_failed", e.to_string()))?;
+    let mut stream = sqlx::query(sql).fetch(&mut *transaction);
+    tokio::pin!(stream);
+    let mut columns: Vec<String> = Vec::new();
+    let mut values: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut truncated = false;
+    let mut estimated_bytes = 0usize;
+    while let Some(row) = stream.try_next().await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, "mysql_sql_query_failed", e.to_string()))? {
+        if columns.is_empty() {
+            columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+            if columns.len() > 100 {
+                return Err(ApiError(StatusCode::BAD_REQUEST, "too_many_columns", "Queries may return at most 100 columns.".into()));
+            }
+        }
+        if values.len() >= 200 { truncated = true; break; }
+        let mut cells = Vec::with_capacity(columns.len());
+        for index in 0..columns.len() {
+            let type_name = row.column(index).type_info().name().to_ascii_uppercase();
+            let value = if type_name.contains("BLOB") || type_name.contains("BINARY") || type_name=="BIT" {
+                match row.try_get::<Option<Vec<u8>>, _>(index) {
+                    Ok(Some(bytes)) => json!({"type":"binary","hex":bytes.iter().take(4096).map(|b|format!("{b:02x}")).collect::<String>(),"truncated":bytes.len()>4096}),
+                    Ok(None) => serde_json::Value::Null,
+                    Err(_) => json!({"type":type_name,"unsupported":true}),
+                }
+            } else {
+                match row.try_get::<Option<String>, _>(index) {
+                    Ok(Some(text)) => {
+                        let shortened: String = text.chars().take(8192).collect();
+                        if shortened.len() < text.len() { json!({"value":shortened,"truncated":true}) } else { json!(shortened) }
+                    }
+                    Ok(None) => serde_json::Value::Null,
+                    Err(_) => json!({"type":type_name,"unsupported":true}),
+                }
+            };
+            estimated_bytes = estimated_bytes.saturating_add(value.to_string().len());
+            cells.push(value);
+        }
+        if estimated_bytes > 1024 * 1024 { truncated = true; break; }
+        values.push(cells);
+    }
+    drop(stream);
+    transaction.rollback().await.ok();
+    connection.close().await.ok();
+    Ok(Json(json!({"columns":columns,"rows":values,"row_count":values.len(),"truncated":truncated,"read_only":true})))
 }
 
 #[derive(Debug, Deserialize)]
