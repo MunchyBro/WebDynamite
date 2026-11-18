@@ -32,3 +32,6 @@
 /* Automated backup scheduling */
 .backup-layout .domain-form input[type="checkbox"]{width:18px;height:18px;accent-color:var(--accent);}
 .backup-layout .domain-form .health-row{margin:8px 0;}
+
+/* Release history actions */
+.row-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.row-actions .outline{white-space:nowrap}
