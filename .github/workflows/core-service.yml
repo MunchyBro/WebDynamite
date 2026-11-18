@@ -45,5 +45,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test Core Service
         run: cargo test --manifest-path core-service/Cargo.toml
+      - name: Build bundled Core Service
+        run: cargo build --release --manifest-path core-service/Cargo.toml
       - name: Check Tauri desktop backend
         run: cargo check --manifest-path src-tauri/Cargo.toml
