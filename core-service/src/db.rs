@@ -167,7 +167,7 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         username TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    INSERT OR IGNORE INTO schema_migrations(version) VALUES (14);")?
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (14);")?;
     Ok(())
 }
 
