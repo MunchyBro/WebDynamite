@@ -21,7 +21,9 @@ Build commands execute code from the selected project and should only be run for
 
 - Builds run synchronously in the Core Service request; there is no queue, cancellation, concurrency limit, timeout, or live log streaming yet.
 - Profiles do not store environment variables or secrets.
-- This phase verifies the configured output folder but does not copy artifacts to a separate release directory, create immutable deployments, roll back releases, or upload to external hosting.
+- Static websites can snapshot build output into immutable managed releases, activate a new release, and roll back to a previous snapshot. Release cleanup is manual; automatic release retention is not implemented.
+- Automated release activation is currently static-site-only. Node.js, PHP and Python build profiles can run builds, but their runtime deployment/rollback integration is not implemented.
+- Uploading releases to external hosting is not implemented.
 - Package-manager wrappers such as `npm.cmd` and shell scripts are not invoked automatically. Use an executable supported on the host and pass arguments separately.
 - The Core Service must have the selected executable available on its PATH.
 
