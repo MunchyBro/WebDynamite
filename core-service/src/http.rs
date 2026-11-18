@@ -1361,7 +1361,8 @@ fn mime_type(path:&PathBuf)->&'static str{
 
 #[cfg(test)]
 mod domain_tests {
-    use super::valid_local_hostname;
+    use super::{valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn runtime_log_byte_reservation_never_exceeds_the_limit(){
