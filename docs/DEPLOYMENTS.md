@@ -24,3 +24,10 @@ Build commands execute code from the selected project and should only be run for
 - This phase verifies the configured output folder but does not copy artifacts to a separate release directory, create immutable deployments, roll back releases, or upload to external hosting.
 - Package-manager wrappers such as `npm.cmd` and shell scripts are not invoked automatically. Use an executable supported on the host and pass arguments separately.
 - The Core Service must have the selected executable available on its PATH.
+
+
+## Release history cleanup
+
+The Git & Releases page can delete an inactive static release snapshot when its files are no longer needed. Deletion permanently removes the snapshot directory from the managed release store and removes its registry entry. The currently active release is protected by the Core Service and cannot be deleted; activate another snapshot first if you need to remove it. Rollback and deletion are scoped to the selected website. Release paths are canonicalized and checked against the managed release directory before filesystem removal.
+
+This is a manual cleanup control. Automatic release retention and scheduled pruning are not implemented yet.
