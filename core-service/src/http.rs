@@ -110,6 +110,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/postgres-connections", get(list_postgres_connections).post(create_postgres_connection))
         .route("/api/v1/postgres-connections/:id", axum::routing::delete(delete_postgres_connection))
         .route("/api/v1/postgres-connections/:id/test", axum::routing::post(test_postgres_connection))
+        .route("/api/v1/postgres-connections/:id/query", axum::routing::post(query_postgres_connection))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .merge(crate::deploy::router())
@@ -479,6 +480,61 @@ async fn test_postgres_connection(State(state):State<AppState>,Path(id):Path<Str
  tokio::spawn(async move{let _=connection.await;});
  let row=client.query_one("SELECT current_database(), current_user, version()", &[]).await.map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_query_failed",e.to_string()))?;
  Ok(Json(json!({"id":id,"connected":true,"database":row.get::<_,String>(0),"username":row.get::<_,String>(1),"server_version":row.get::<_,String>(2),"password_persisted":false})))
+}
+
+
+#[derive(Debug, Deserialize)]
+struct PostgresQuery { password:String, sql:String }
+async fn query_postgres_connection(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<PostgresQuery>)->Result<Json<serde_json::Value>,ApiError>{
+ if input.password.len()>1024{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_postgres_password","Password is too long.".into()));}
+ let sql=input.sql.trim();
+ if sql.is_empty()||sql.len()>64*1024||sql.contains(';')||sql.contains('\0'){
+  return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_postgres_query","Enter one SQL query up to 64 KiB without a semicolon. Only row-returning queries are supported.".into()));
+ }
+ let profile={
+  let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  db.query_row("SELECT host,port,database_name,username FROM postgres_connections WHERE id=?1",[&id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u16>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))
+   .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"postgres_profile_not_found","PostgreSQL connection profile was not found.".into())}else{database_error(e)})?
+ };
+ let (host,port,database_name,username)=profile;
+ let mut config=tokio_postgres::Config::new();
+ config.host(&host).port(port).dbname(&database_name).user(&username).password(&input.password).connect_timeout(std::time::Duration::from_secs(5));
+ let (client,connection)=config.connect(tokio_postgres::NoTls).await
+  .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_connection_failed",format!("PostgreSQL connection failed: {e}")))?;
+ tokio::spawn(async move{let _=connection.await;});
+ let transaction=client.build_transaction().read_only(true).start().await
+  .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_transaction_failed",format!("Could not start a read-only PostgreSQL transaction: {e}")))?;
+ transaction.batch_execute("SET LOCAL statement_timeout = '5s'; SET LOCAL idle_in_transaction_session_timeout = '10s';").await
+  .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_query_setup_failed",e.to_string()))?;
+ let wrapped=format!("SELECT row_to_json(_wd_row)::text FROM ({sql}) AS _wd_row LIMIT 201");
+ let result=transaction.query(&wrapped,&[]).await
+  .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"postgres_query_failed",format!("PostgreSQL query failed: {e}")))?;
+ let mut columns:Vec<String>=Vec::new();
+ let mut values:Vec<Vec<serde_json::Value>>=Vec::new();
+ let mut truncated=result.len()>200;
+ let mut estimated_bytes=0usize;
+ for row in result.iter().take(200){
+  let raw:String=row.get(0);
+  let mut object:serde_json::Map<String,serde_json::Value>=serde_json::from_str(&raw)
+   .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_result_invalid",format!("Could not decode PostgreSQL row: {e}")))?;
+  if columns.is_empty(){columns=object.keys().cloned().collect();}
+  for value in object.values_mut(){
+   if let Some(text)=value.as_str(){
+    if text.chars().count()>8192{
+     let shortened:String=text.chars().take(8192).collect();
+     *value=json!(format!("{shortened}…"));
+     truncated=true;
+    }
+   }
+  }
+  let cells:Vec<serde_json::Value>=columns.iter().map(|column|object.remove(column).unwrap_or(serde_json::Value::Null)).collect();
+  estimated_bytes=estimated_bytes.saturating_add(cells.iter().map(|v|v.to_string().len()).sum::<usize>());
+  if estimated_bytes>1024*1024{truncated=true;break;}
+  values.push(cells);
+ }
+ let row_count=values.len();
+ drop(transaction);
+ Ok(Json(json!({"id":id,"columns":columns,"rows":values,"row_count":row_count,"truncated":truncated,"read_only":true,"password_persisted":false,"statement_timeout_ms":5000})))
 }
 
 async fn list_databases(State(state): State<AppState>) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
