@@ -48,7 +48,7 @@ fn bundled_core_service_path(app: &tauri::AppHandle) -> Result<std::path::PathBu
     if resource_path.is_file() { return Ok(resource_path); }
 
     let development_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../core-service/target/release/webdynamite-core.exe");
+        .join("../target/release/webdynamite-core.exe");
     if development_path.is_file() { return Ok(development_path); }
     Err(format!("Bundled Core Service was not found. Expected {}. Build core-service in release mode before running the desktop app.", resource_path.display()))
 }
