@@ -572,7 +572,7 @@ async fn query_mysql_connection(
     let mut connection = tokio::time::timeout(std::time::Duration::from_secs(5), connect).await
         .map_err(|_| ApiError(StatusCode::GATEWAY_TIMEOUT, "mysql_connection_timeout", "MySQL/MariaDB connection timed out after five seconds.".into()))?
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_connection_failed", format!("MySQL/MariaDB connection failed: {e}")))?;
-    use sqlx::{Connection, Column, Row};
+    use sqlx::{Connection, Column, Row, TypeInfo};
     use futures_util::TryStreamExt;
     sqlx::query("SET SESSION MAX_EXECUTION_TIME=5000").execute(&mut connection).await
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_timeout_setup_failed", e.to_string()))?;
