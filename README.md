@@ -14,7 +14,7 @@ WebDynamite brings local website hosting, domains, deployment workflows, databas
 - **Public access:** LAN publishing and Cloudflare Quick Tunnel workflows. Public availability still depends on DNS, firewall/router rules, tunnel state, and the target machine remaining online.
 - **Databases:** managed SQLite databases, import/export and query tools, plus saved PostgreSQL and MySQL/MariaDB connection profiles with read-only query workflows.
 - **File manager:** browse website files, search/sort, create folders, rename, upload/download files and folders, and work with ZIP archives.
-- **Git and releases:** inspect repository state and manage website release snapshots.
+- **Git and releases:** inspect repository state, create and roll back static-site release snapshots, delete inactive snapshots, and automatically prune old releases using a configurable 1–100 release retention limit (default 10).
 - **Backups:** full-system backup/restore workflows, verification, and scheduled retention controls.
 - **Operations:** system metrics, diagnostics, SSL/security checks, logs, and application settings.
 

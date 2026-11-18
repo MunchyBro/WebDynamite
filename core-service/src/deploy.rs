@@ -177,9 +177,41 @@ async fn create_release(State(state):State<AppState>,Path(website_id):Path<Strin
  tx.execute("INSERT INTO releases(id,website_id,release_path,source,commit_hash,active,file_count,size_bytes) VALUES(?1,?2,?3,'build',?4,1,?5,?6)",params![id,website_id,release_path,commit,counts.0 as i64,counts.1 as i64]).map_err(db_error)?;
  let created_at:String=tx.query_row("SELECT created_at FROM releases WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
  tx.commit().map_err(db_error)?;
+ drop(db);
+ let retention=crate::settings::setting_number(&state,"release_retention_count",10).clamp(1,100);
+ let _=prune_release_history(&state,&website_id,retention);
  Ok((StatusCode::CREATED,Json(Release{id,website_id,website_name,source:"build".into(),commit_hash:commit,active:true,file_count:counts.0,size_bytes:counts.1,created_at})))
 }
 
+
+fn inactive_release_limit(keep_total:u64)->usize{keep_total.clamp(1,100).saturating_sub(1) as usize}
+
+fn prune_release_history(state:&AppState,website_id:&str,keep_total:u64)->Result<u64,DeployError>{
+ let inactive={
+  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let mut q=db.prepare("SELECT id,release_path FROM releases WHERE website_id=?1 AND active=0 ORDER BY created_at DESC,id DESC").map_err(db_error)?;
+  let rows=q.query_map(params![website_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(db_error)?;
+  rows.collect::<Result<Vec<_>,_>>().map_err(db_error)?
+ };
+ let root=state.releases_dir.canonicalize().map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_store_unavailable",e.to_string()))?;
+ let keep_inactive=inactive_release_limit(keep_total);
+ let mut removed=0u64;
+ for (index,(id,path)) in inactive.into_iter().enumerate(){
+  if index<keep_inactive{continue;}
+  // Re-check active state while holding the registry lock so a concurrent rollback
+  // cannot activate a snapshot between selection and filesystem deletion.
+  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let current:Option<(String,i64)>=db.query_row("SELECT release_path,active FROM releases WHERE id=?1 AND website_id=?2",params![id,website_id],|r|Ok((r.get(0)?,r.get(1)?))).ok();
+  let Some((current_path,active))=current else{continue;};
+  if active!=0||current_path!=path{continue;}
+  let candidate=FsPath::new(&current_path);
+  let Ok(target)=candidate.canonicalize() else{continue;};
+  if !target.starts_with(&root)||target==root||!target.is_dir(){continue;}
+  fs::remove_dir_all(&target).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_prune_failed",format!("Could not remove expired release files: {e}")))?;
+  removed+=db.execute("DELETE FROM releases WHERE id=?1 AND website_id=?2 AND active=0",params![id,website_id]).map_err(db_error)? as u64;
+ }
+ Ok(removed)
+}
 async fn delete_release(State(state):State<AppState>,Path((website_id,release_id)):Path<(String,String)>)->Result<Json<serde_json::Value>,DeployError>{
  let mut db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let (path,active):(String,i64)=db.query_row("SELECT release_path,active FROM releases WHERE id=?1 AND website_id=?2",params![release_id,website_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){DeployError(StatusCode::NOT_FOUND,"release_not_found","Release was not found for this website.".into())}else{db_error(e)})?;
@@ -211,6 +243,15 @@ async fn rollback_release(State(state):State<AppState>,Path((website_id,release_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_retention_always_preserves_active_and_keeps_configured_total() {
+        assert_eq!(inactive_release_limit(1), 0);
+        assert_eq!(inactive_release_limit(10), 9);
+        assert_eq!(inactive_release_limit(100), 99);
+        assert_eq!(inactive_release_limit(0), 0);
+        assert_eq!(inactive_release_limit(500), 99);
+    }
 
     #[test]
     fn output_directories_must_be_relative_and_contained() {
