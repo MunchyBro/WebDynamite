@@ -8,7 +8,7 @@ WebDynamite brings local website hosting, domains, deployment workflows, databas
 
 ## What it includes
 
-- **Website management:** register projects, start/stop/restart supported runtimes, inspect logs, and manage project files.
+- **Website management:** register projects, start/stop/restart supported runtimes, inspect logs, and manage project files. Runtime stdout/stderr is continuously drained and capped at 10 MiB per website process; log views read only the last 256 KiB.
 - **Runtime and builds:** static sites, Node.js process profiles, PHP/Python runtime support, and configurable build/deployment profiles. Build commands have a configurable 30–1,800 second timeout (default 600 seconds), and build history retains at most the last 256 KiB of output. The exact runtime adapter depends on the installed runtime and project configuration.
 - **Domains and routing:** local domain registry, Caddy configuration integration, DNS diagnostics for public domains, and TLS readiness/verification tools.
 - **Public access:** LAN publishing and Cloudflare Quick Tunnel workflows. Public availability still depends on DNS, firewall/router rules, tunnel state, and the target machine remaining online.
