@@ -28,13 +28,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build bundled Core Service
         run: cargo build --release --manifest-path core-service/Cargo.toml
