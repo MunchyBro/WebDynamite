@@ -50,7 +50,7 @@ The PostgreSQL console includes metadata shortcuts to list non-system schemas, l
 
 The **Local MySQL / MariaDB connections** section stores connection metadata for an existing MySQL or MariaDB server on this PC. Profiles accept only `localhost`, `127.0.0.1`, or `::1` and default to port `3306`. The database name may be left blank to connect without selecting a default database. The connection test reports the selected database (if any), authenticated account, and server version. The password is requested for each test and is never persisted. The initial integration disables TLS because it is restricted to loopback hosts; remote database connections are not supported.
 
-Removing a profile deletes only its saved metadata, not the database server or its data. MySQL/MariaDB SQL console and schema management are not yet included.
+Removing a profile deletes only its saved metadata, not the database server or its data. MySQL/MariaDB also includes a bounded read-only query console, metadata shortcuts, row preview and CSV export.
 
 ## Not yet implemented
 
@@ -62,3 +62,19 @@ Removing a profile deletes only its saved metadata, not the database server or i
 
 
 MySQL/MariaDB connection profiles are currently limited to loopback hosts and non-TLS connections; passwords are entered only when testing a profile and are not stored.
+
+
+## MySQL / MariaDB read-only SQL console
+
+Choose a saved local profile and run a single SQL statement. The password is requested for each execution and is not stored. The Core Service configures the next transaction as read-only and sets a five-second maximum execution time for statements where the MySQL server honors that setting. The connection remains restricted to loopback and TLS is disabled.
+
+Metadata shortcuts list databases, list tables in a selected database, inspect column definitions, and preview up to 200 rows using quoted identifiers. Results can be exported as UTF-8 CSV using the same spreadsheet-formula protections as the other database consoles.
+
+Response limits:
+- SQL input: 64 KiB
+- Result columns: 100
+- Returned rows: 200
+- Approximate serialized response budget: 1 MiB
+- Text previews: 8 KiB per cell; binary previews: 4 KiB as hexadecimal
+
+This is an inspection console, not an administrative client. The server must support read-only transactions and the execution-time setting. A read-only transaction is an additional safety layer, not a replacement for a least-privilege database account.
