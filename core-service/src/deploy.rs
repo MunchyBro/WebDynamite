@@ -36,6 +36,7 @@ pub fn router()->Router<AppState>{
   .route("/api/v1/deployments/releases",get(list_releases))
   .route("/api/v1/deployments/:website_id/release",axum::routing::post(create_release))
   .route("/api/v1/deployments/:website_id/rollback/:release_id",axum::routing::post(rollback_release))
+  .route("/api/v1/deployments/:website_id/releases/:release_id",axum::routing::delete(delete_release))
   .route("/api/v1/deployments/:website_id/run",axum::routing::post(run_build))
   .route("/api/v1/deployments/:website_id/deploy",axum::routing::post(deploy_website))
 }
@@ -177,6 +178,19 @@ async fn create_release(State(state):State<AppState>,Path(website_id):Path<Strin
  let created_at:String=tx.query_row("SELECT created_at FROM releases WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
  tx.commit().map_err(db_error)?;
  Ok((StatusCode::CREATED,Json(Release{id,website_id,website_name,source:"build".into(),commit_hash:commit,active:true,file_count:counts.0,size_bytes:counts.1,created_at})))
+}
+
+async fn delete_release(State(state):State<AppState>,Path((website_id,release_id)):Path<(String,String)>)->Result<Json<serde_json::Value>,DeployError>{
+ let mut db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let (path,active):(String,i64)=db.query_row("SELECT release_path,active FROM releases WHERE id=?1 AND website_id=?2",params![release_id,website_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){DeployError(StatusCode::NOT_FOUND,"release_not_found","Release was not found for this website.".into())}else{db_error(e)})?;
+ if active==1{return Err(DeployError(StatusCode::CONFLICT,"active_release_protected","The active release cannot be deleted. Activate another release first.".into()));}
+ let root=state.releases_dir.canonicalize().map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_store_unavailable",e.to_string()))?;
+ let target=FsPath::new(&path).canonicalize().map_err(|e|DeployError(StatusCode::NOT_FOUND,"release_files_missing",e.to_string()))?;
+ if !target.starts_with(&root)||target==root||!target.is_dir(){return Err(DeployError(StatusCode::FORBIDDEN,"release_path_forbidden","Release path is outside the managed release store.".into()));}
+ fs::remove_dir_all(&target).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"release_delete_failed",format!("Could not remove release files: {e}")))?;
+ let changed=db.execute("DELETE FROM releases WHERE id=?1 AND website_id=?2 AND active=0",params![release_id,website_id]).map_err(db_error)?;
+ if changed!=1{return Err(DeployError(StatusCode::CONFLICT,"release_state_changed","Release state changed while it was being deleted; refresh release history.".into()));}
+ Ok(Json(json!({"deleted":true,"release_id":release_id,"message":"Inactive release and its stored files were deleted."})))
 }
 async fn rollback_release(State(state):State<AppState>,Path((website_id,release_id)):Path<(String,String)>)->Result<Json<serde_json::Value>,DeployError>{
  let path:String={
