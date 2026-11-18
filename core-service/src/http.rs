@@ -10,7 +10,7 @@ use axum::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::File, io::{Cursor, Read, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::TcpListener};
+use std::{fs::File, io::{Cursor, Read, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::{TcpListener, TcpStream}, time::{Duration, Instant}};
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 use uuid::Uuid;
 
@@ -1212,12 +1212,43 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
         #[cfg(not(windows))]
         { let mut c=Command::new("npm");c.args(["run","start"]);c }
     };
-    let child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).spawn()
+    let mut child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).spawn()
       .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"runtime_start_failed",if runtime=="php"{format!("Could not start PHP. Verify PHP is installed and available on PATH: {e}")}else if runtime=="python"{format!("Could not start Python. Verify Python is installed and available as `python` on PATH: {e}")}else{format!("Could not start npm. Verify Node.js and npm are installed: {e}")}))?;
     let pid=child.id();
+    // A successful spawn is not proof that the application is serving requests.
+    // Wait for the assigned loopback port and detect early process exits before
+    // reporting the website as running to the desktop client.
+    let deadline=Instant::now()+Duration::from_secs(15);
+    let mut ready=false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let state_name=if status.success(){"stopped"}else{"crashed"};
+                let _=set_status(&state,&id,state_name);
+                return Err(ApiError(StatusCode::BAD_GATEWAY,"runtime_exited_during_startup",format!("The {runtime} process exited during startup (exit code: {}). Review the website logs.",status.code().map(|v|v.to_string()).unwrap_or_else(||"unknown".into()))));
+            }
+            Err(error) => {
+                let _=child.kill(); let _=child.wait();
+                let _=set_status(&state,&id,"failed");
+                return Err(ApiError(StatusCode::BAD_GATEWAY,"runtime_startup_check_failed",format!("Could not monitor the {runtime} process during startup: {error}")));
+            }
+            Ok(None) => {}
+        }
+        if TcpStream::connect_timeout(&("127.0.0.1",port).into(),Duration::from_millis(150)).is_ok() {
+            ready=true;
+            break;
+        }
+        if Instant::now()>=deadline { break; }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if !ready {
+        let _=child.kill(); let _=child.wait();
+        let _=set_status(&state,&id,"failed");
+        return Err(ApiError(StatusCode::GATEWAY_TIMEOUT,"runtime_startup_timeout",format!("The {runtime} process did not begin accepting connections on 127.0.0.1:{port} within 15 seconds. Review the website logs and launch profile.")));
+    }
     state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?.insert(id.clone(),child);
     set_status(&state,&id,"running")?;
-    Ok(Json(json!({"id":id,"status":"running","pid":pid,"port":port,"url":format!("http://127.0.0.1:{port}"),"log_path":log_path})))
+    Ok(Json(json!({"id":id,"status":"running","health":"accepting_connections","pid":pid,"port":port,"url":format!("http://127.0.0.1:{port}"),"log_path":log_path})))
 }
 async fn stop_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
     let _=project_details(&state,&id)?; stop_process(&state,&id)?; set_status(&state,&id,"stopped")?;
