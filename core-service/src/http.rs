@@ -10,7 +10,7 @@ use axum::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::File, io::{Cursor, Read, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::{SocketAddr, TcpListener, TcpStream}, time::{Duration, Instant}};
+use std::{fs::File, io::{Cursor, Read, Seek, SeekFrom, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::{SocketAddr, TcpListener, TcpStream}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::{Duration, Instant}};
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 use uuid::Uuid;
 
@@ -1102,7 +1102,9 @@ fn set_status(state:&AppState,id:&str,status:&str)->Result<(),ApiError>{
 fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
     if let Some(mut child)=map.remove(id){
-        let pid=child.id();
+        if let Some(stdout)=child.stdout.take(){pump_runtime_log(stdout,log_file.clone(),log_bytes.clone(),log_truncated.clone());}
+    if let Some(stderr)=child.stderr.take(){pump_runtime_log(stderr,log_file,log_bytes,log_truncated);}
+    let pid=child.id();
         #[cfg(windows)]
         { let _=Command::new("taskkill").args(["/PID",&pid.to_string(),"/T","/F"]).output(); }
         #[cfg(not(windows))]
@@ -1169,6 +1171,35 @@ fn http_readiness_probe(port: u16) -> bool {
     http_status_is_healthy(status)
 }
 
+const MAX_RUNTIME_LOG_BYTES:u64=10*1024*1024;
+const RUNTIME_LOG_TRUNCATED_MARKER:&[u8]=b"\n[WebDynamite] Runtime log limit reached (10 MiB); further output is discarded.\n";
+
+fn reserve_runtime_log_bytes(counter:&AtomicU64,requested:usize)->usize{
+    loop{
+        let current=counter.load(Ordering::Relaxed);
+        if current>=MAX_RUNTIME_LOG_BYTES{return 0;}
+        let allowed=(MAX_RUNTIME_LOG_BYTES-current).min(requested as u64);
+        if counter.compare_exchange_weak(current,current+allowed,Ordering::Relaxed,Ordering::Relaxed).is_ok(){return allowed as usize;}
+    }
+}
+
+fn pump_runtime_log<R:Read+Send+'static>(mut reader:R,file:Arc<Mutex<File>>,written:Arc<AtomicU64>,truncated:Arc<AtomicBool>){
+    std::thread::spawn(move||{
+        let mut buffer=[0u8;8192];
+        loop{
+            let count=match reader.read(&mut buffer){Ok(0)|Err(_)=>break,Ok(count)=>count};
+            let allowed=reserve_runtime_log_bytes(&written,count);
+            if allowed>0{
+                let Ok(mut output)=file.lock() else{break;};
+                if output.write_all(&buffer[..allowed]).is_err(){break;}
+            }
+            if allowed<count&&!truncated.swap(true,Ordering::Relaxed){
+                if let Ok(mut output)=file.lock(){let _=output.write_all(RUNTIME_LOG_TRUNCATED_MARKER);}
+            }
+        }
+    });
+}
+
 async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
     let (project,runtime)=project_details(&state,&id)?;
     if !FsPath::new(&project).is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"project_not_found","The project directory is no longer available.".into()));}
@@ -1185,8 +1216,9 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
         db.execute("UPDATE websites SET port=?1 WHERE id=?2",params![port,id]).map_err(database_error)?;
     }
     let log_path=state.logs_dir.join(format!("{id}.log"));
-    let stdout=File::create(&log_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
-    let stderr=stdout.try_clone().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?;
+    let log_file=Arc::new(Mutex::new(File::create(&log_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?));
+    let log_bytes=Arc::new(AtomicU64::new(0));
+    let log_truncated=Arc::new(AtomicBool::new(false));
     let custom_profile:Option<(String,Vec<String>)>={
         let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
         db.query_row("SELECT program,args_json FROM runtime_profiles WHERE website_id=?1",[&id],|r|{let raw:String=r.get(1)?;let args:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok((r.get(0)?,args))}).optional().map_err(database_error)?
@@ -1242,7 +1274,7 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
         #[cfg(not(windows))]
         { let mut c=Command::new("npm");c.args(["run","start"]);c }
     };
-    let mut child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).spawn()
+    let mut child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
       .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"runtime_start_failed",if runtime=="php"{format!("Could not start PHP. Verify PHP is installed and available on PATH: {e}")}else if runtime=="python"{format!("Could not start Python. Verify Python is installed and available as `python` on PATH: {e}")}else{format!("Could not start npm. Verify Node.js and npm are installed: {e}")}))?;
     let pid=child.id();
     // A successful spawn is not proof that the application is serving requests.
@@ -1292,8 +1324,13 @@ async fn website_logs(State(state):State<AppState>,Path(id):Path<String>)->Resul
     let path=state.logs_dir.join(format!("{id}.log"));
     if !path.exists(){return Ok(Json(json!({"id":id,"logs":"","message":"No process log has been created yet."})));}
     let mut file=File::open(path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_read_error",e.to_string()))?;
-    let mut data=String::new(); file.read_to_string(&mut data).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_read_error",e.to_string()))?;
-    let tail: String = data.chars().rev().take(24000).collect::<String>().chars().rev().collect();
+    let length=file.metadata().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_read_error",e.to_string()))?.len();
+    let start=length.saturating_sub(256*1024);
+    file.seek(SeekFrom::Start(start)).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_read_error",e.to_string()))?;
+    let mut bytes=Vec::with_capacity(length.saturating_sub(start) as usize);
+    file.read_to_end(&mut bytes).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_read_error",e.to_string()))?;
+    let mut tail=String::from_utf8_lossy(&bytes).to_string();
+    if start>0{tail=format!("[Earlier runtime log output omitted; showing the last 256 KiB.]\n{tail}");}
     Ok(Json(json!({"id":id,"logs":tail})))
 }
 async fn serve_static(State(state):State<AppState>,Path((id,relative)):Path<(String,String)>)->Response{
@@ -1325,6 +1362,20 @@ fn mime_type(path:&PathBuf)->&'static str{
 #[cfg(test)]
 mod domain_tests {
     use super::valid_local_hostname;
+
+    #[test]
+    fn runtime_log_byte_reservation_never_exceeds_the_limit(){
+        let counter=AtomicU64::new(MAX_RUNTIME_LOG_BYTES-3);
+        assert_eq!(reserve_runtime_log_bytes(&counter,8),3);
+        assert_eq!(reserve_runtime_log_bytes(&counter,8),0);
+        assert_eq!(counter.load(Ordering::Relaxed),MAX_RUNTIME_LOG_BYTES);
+    }
+
+    #[test]
+    fn runtime_log_limit_is_ten_mibibytes(){
+        assert_eq!(MAX_RUNTIME_LOG_BYTES,10*1024*1024);
+        assert!(RUNTIME_LOG_TRUNCATED_MARKER.windows(6).any(|part|part==b"10 MiB"));
+    }
 
     #[test]
     fn accepts_http_success_redirect_and_client_error_responses() {
