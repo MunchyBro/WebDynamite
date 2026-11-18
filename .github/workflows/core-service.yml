@@ -68,7 +68,6 @@ jobs:
       - name: Verify installer artifact
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.DirectoryName -match '[\\/]bundle[\\/]nsis
- }
+          $installer = Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' }
           if (-not $installer) { throw "NSIS installer was not produced in any bundle/nsis directory" }
           $installer | ForEach-Object { Write-Host $_.FullName }
