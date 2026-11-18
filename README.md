@@ -169,7 +169,7 @@ The current installer is **unsigned**. Windows SmartScreen may show an unknown-p
 
 ## Current limitations
 
-WebDynamite is actively evolving. The existence of a dashboard or configuration screen does not imply every hosting scenario is production-ready. Runtime behavior varies by framework and project. Dynamic runtime readiness currently checks only whether the assigned loopback TCP port accepts connections; it is not a full HTTP or application-level health check. Advanced multi-tenant hosting isolation, hardened sandboxing, signed releases, automatic desktop updates, and some advanced hosting-provider operations remain future work. Review the code and the Core Service documentation before using this on a production or multi-user server.
+WebDynamite is actively evolving. The existence of a dashboard or configuration screen does not imply every hosting scenario is production-ready. Runtime behavior varies by framework and project. Dynamic runtime startup now requires an HTTP response from the assigned loopback port (2xx–4xx); this is a basic readiness probe, not a configurable application-specific health check. Advanced multi-tenant hosting isolation, hardened sandboxing, signed releases, automatic desktop updates, and some advanced hosting-provider operations remain future work. Review the code and the Core Service documentation before using this on a production or multi-user server.
 
 ## Project links
 
