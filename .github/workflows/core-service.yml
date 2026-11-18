@@ -49,3 +49,25 @@ jobs:
         run: cargo build --release --manifest-path core-service/Cargo.toml
       - name: Check Tauri desktop backend
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+  installer:
+    name: Build Windows NSIS installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install frontend dependencies
+        run: npm install
+      - name: Build bundled Core Service
+        run: cargo build --release --manifest-path core-service/Cargo.toml
+      - name: Build WebDynamite NSIS installer
+        run: npm run tauri -- build --bundles nsis
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' }
+          if (-not $installer) { throw "NSIS installer was not produced in any bundle/nsis directory" }
+          $installer | ForEach-Object { Write-Host $_.FullName }

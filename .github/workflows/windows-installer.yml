@@ -1,0 +1,57 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "core-service/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/windows-installer.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-installer:
+    name: Build Windows NSIS installer
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build bundled Core Service
+        run: cargo build --release --manifest-path core-service/Cargo.toml
+
+      - name: Build WebDynamite NSIS installer
+        run: npm run tauri -- build --bundles nsis
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDynamite-Windows-Installer
+          path: "**/bundle/nsis/*.exe"
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: "**/bundle/nsis/*.exe"
