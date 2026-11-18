@@ -14,7 +14,6 @@ impl IntoResponse for BackupError{
 }
 fn db_error(e:rusqlite::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_error",e.to_string())}
 fn io_error(code:&'static str,e:std::io::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,code,e.to_string())}
-#[derive(Serialize,Deserialize)]
 fn legacy_checksum_algorithm()->String{"fnv1a-64".into()}
 #[derive(Serialize,Deserialize)]
 struct Manifest{version:u32,#[serde(default="legacy_checksum_algorithm")]checksum_algorithm:String,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,created_at:String}
