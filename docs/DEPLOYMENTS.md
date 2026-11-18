@@ -17,6 +17,12 @@ Save a profile, then choose **Run build**. The Core Service captures stdout and 
 
 Build commands execute code from the selected project and should only be run for projects you trust. The executable allowlist reduces shell-injection risk; it is not a sandbox. Builds inherit the Core Service environment and user permissions and can access files and network resources available to that account.
 
+## Runtime process logs
+
+Node.js, PHP, and Python process stdout/stderr are captured through background readers. WebDynamite continues draining both streams after the storage cap is reached, discarding excess output so a chatty application cannot block because its log is full. Each process log is limited to 10 MiB; when the limit is reached, a marker is appended and further output is discarded until the next process start. Starting a process creates a fresh log file.
+
+The website Logs endpoint seeks to the end of the file and returns at most the last 256 KiB (plus a short omission notice when earlier content exists), rather than loading the entire file into memory. The cap is fixed in this version and is not yet configurable.
+
 ## Current limitations
 
 - Builds run synchronously in the Core Service request with a configurable timeout (30–1,800 seconds; default 600 seconds) set in **Settings → Hosting defaults**. The timeout applies to new build runs. On Windows, timeout termination targets the build process tree; elsewhere it terminates the direct child process. Build output is redirected to a temporary file and only the last 256 KiB is retained in build history. There is no queue, user cancellation, concurrency limit, or live log streaming yet. Dynamic website startup waits up to 15 seconds for an HTTP response from the assigned loopback port. HTTP 2xx, 3xx and 4xx responses count as ready; 5xx responses, connection failures and early process exits do not.
