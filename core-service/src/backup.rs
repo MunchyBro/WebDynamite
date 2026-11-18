@@ -89,7 +89,7 @@ fn tree_checksum_sha256(root:&FsPath)->Result<(String,u64,u64),BackupError>{
    let kind=entry.file_type().map_err(|e|io_error("backup_metadata_failed",e))?;
    if kind.is_symlink(){return Err(backup_error(StatusCode::FORBIDDEN,"backup_symlink_forbidden","Backup contains a symbolic link."));}
    if kind.is_dir(){collect(root,&entry.path(),files)?;}
-   else if kind.is_file()&&entry.path().file_name().is_none_or(|name|name!="manifest.json"){files.push(entry.path());}
+   else if kind.is_file(){\n    let path=entry.path();\n    let relative=path.strip_prefix(root).unwrap_or(&path);\n    if relative!=FsPath::new("manifest.json"){files.push(path);}\n   }
   }
   Ok(())
  }
