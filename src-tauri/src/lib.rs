@@ -334,6 +334,8 @@ async fn list_deployment_releases(token:String,website_id:String)->Result<Vec<Va
 async fn create_deployment_release(token:String,website_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/deployments/{website_id}/release"),None).await?.json().await.map_err(|e|api_error("Could not create release snapshot",e))}
 #[tauri::command]
 async fn rollback_deployment_release(token:String,website_id:String,release_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/deployments/{website_id}/rollback/{release_id}"),None).await?.json().await.map_err(|e|api_error("Could not activate previous release",e))}
+#[tauri::command]
+async fn delete_deployment_release(token:String,website_id:String,release_id:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/deployments/{website_id}/releases/{release_id}"),None).await?.json().await.map_err(|e|api_error("Could not delete release snapshot",e))}
 
 
 #[tauri::command]
