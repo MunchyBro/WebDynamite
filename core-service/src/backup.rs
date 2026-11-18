@@ -15,7 +15,7 @@ impl IntoResponse for BackupError{
 fn db_error(e:rusqlite::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_error",e.to_string())}
 fn io_error(code:&'static str,e:std::io::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,code,e.to_string())}
 #[derive(Serialize,Deserialize)]
-struct Manifest{version:u32,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,created_at:String}
+fn legacy_checksum_algorithm()->String{"fnv1a-64".into()}\n#[derive(Serialize,Deserialize)]\nstruct Manifest{version:u32,#[serde(default="legacy_checksum_algorithm")]checksum_algorithm:String,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,created_at:String}
 #[derive(Serialize)]
 struct BackupRecord{id:String,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,verified:bool,created_at:String}
 #[derive(Deserialize)]
@@ -80,6 +80,30 @@ fn tree_checksum(root:&FsPath)->Result<(String,u64,u64),BackupError>{
  walk(root,root,&mut hash,&mut files,&mut size)?;
  Ok((format!("{hash:016x}"),files,size))
 }
+fn tree_checksum_sha256(root:&FsPath)->Result<(String,u64,u64),BackupError>{
+ use sha2::{Digest,Sha256};
+ fn collect(root:&FsPath,current:&FsPath,files:&mut Vec<PathBuf>)->Result<(),BackupError>{
+  for entry in fs::read_dir(current).map_err(|e|io_error("backup_read_failed",e))?{
+   let entry=entry.map_err(|e|io_error("backup_read_failed",e))?;
+   let kind=entry.file_type().map_err(|e|io_error("backup_metadata_failed",e))?;
+   if kind.is_symlink(){return Err(backup_error(StatusCode::FORBIDDEN,"backup_symlink_forbidden","Backup contains a symbolic link."));}
+   if kind.is_dir(){collect(root,&entry.path(),files)?;}
+   else if kind.is_file()&&entry.path().file_name().is_none_or(|name|name!="manifest.json"){files.push(entry.path());}
+  }
+  Ok(())
+ }
+ let mut paths=Vec::new();collect(root,root,&mut paths)?;
+ paths.sort_by(|a,b|a.strip_prefix(root).unwrap_or(a).cmp(b.strip_prefix(root).unwrap_or(b)));
+ let mut hasher=Sha256::new();let mut size=0u64;
+ for path in &paths{
+  let relative=path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+  let bytes=fs::read(path).map_err(|e|io_error("backup_read_failed",e))?;
+  hasher.update((relative.len() as u64).to_le_bytes());hasher.update(relative.as_bytes());
+  hasher.update((bytes.len() as u64).to_le_bytes());hasher.update(&bytes);
+  size=size.saturating_add(bytes.len() as u64);
+ }
+ Ok((format!("{:x}",hasher.finalize()),paths.len() as u64,size))
+}
 fn vacuum_database(source:&str,destination:&FsPath)->Result<(),BackupError>{
  let connection=Connection::open(source).map_err(db_error)?;
  let destination_text=destination.to_string_lossy().replace("'","''");
@@ -127,9 +151,9 @@ fn create_backup_sync(state:&AppState)->Result<BackupRecord,BackupError>{
  let metadata_size=fs::metadata(destination.join("metadata.json")).map_err(|e|io_error("backup_metadata_failed",e))?.len();
  counts.0+=1;counts.1=counts.1.saturating_add(metadata_size);
  if counts.0>100000||counts.1>10*1024*1024*1024{let _=fs::remove_dir_all(&destination);return Err(backup_error(StatusCode::PAYLOAD_TOO_LARGE,"backup_too_large","Backup limit is 100,000 files and 10 GiB."));}
- let (checksum,file_count,size_bytes)=tree_checksum(&destination)?;
+ let (checksum,file_count,size_bytes)=tree_checksum_sha256(&destination)?;
  let created_at=chrono_free_timestamp();
- let manifest=Manifest{version:1,checksum:checksum.clone(),file_count,size_bytes,website_count:websites.len() as u64,database_count:databases.len() as u64,created_at:created_at.clone()};
+ let manifest=Manifest{version:2,checksum_algorithm:"sha256".into(),checksum:checksum.clone(),file_count,size_bytes,website_count:websites.len() as u64,database_count:databases.len() as u64,created_at:created_at.clone()};
  fs::write(destination.join("manifest.json"),serde_json::to_vec_pretty(&manifest).map_err(|e|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"backup_manifest_failed",e.to_string()))?).map_err(|e|io_error("backup_write_failed",e))?;
  let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
  db.execute("INSERT INTO backups(id,backup_path,checksum,file_count,size_bytes,website_count,database_count,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![id,destination.to_string_lossy(),checksum,file_count as i64,size_bytes as i64,websites.len() as i64,databases.len() as i64,created_at]).map_err(db_error)?;
@@ -152,7 +176,7 @@ fn load_manifest(path:&FsPath)->Result<Manifest,BackupError>{
  serde_json::from_slice(&bytes).map_err(|e|backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_manifest_invalid",e.to_string()))
 }
 fn verify_sync(path:&FsPath)->Result<Manifest,BackupError>{
- let manifest=load_manifest(path)?;let (checksum,count,size)=tree_checksum(path)?;
+ let manifest=load_manifest(path)?;\n if manifest.version>2{return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_version_unsupported","This backup was created by a newer WebDynamite version."));}\n let (checksum,count,size)=match (manifest.version,manifest.checksum_algorithm.as_str()){(1,"fnv1a-64")=>tree_checksum(path)?,(2,"sha256")=>tree_checksum_sha256(path)?,_=>return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_checksum_unsupported","Backup checksum algorithm is not supported."))};
  if checksum!=manifest.checksum||count!=manifest.file_count||size!=manifest.size_bytes{return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_verification_failed","Backup checksum or file inventory does not match. Do not restore this backup."));}
  Ok(manifest)
 }
@@ -325,5 +349,20 @@ pub fn router()->Router<AppState>{
 mod tests{
  use super::*;
  #[test]fn fnv_hash_is_deterministic(){assert_eq!(format!("{:016x}",fnv_hash(b"webdynamite",14695981039346656037)),"6920feb25131f99a");}
+ #[test]fn sha256_tree_checksum_detects_content_changes(){
+  let root=std::env::temp_dir().join(format!("webdynamite-backup-test-{}",Uuid::new_v4()));
+  fs::create_dir_all(root.join("nested")).unwrap();
+  fs::write(root.join("nested/site.txt"),b"first").unwrap();
+  let first=tree_checksum_sha256(&root).unwrap();
+  let repeated=tree_checksum_sha256(&root).unwrap();
+  assert_eq!(first,repeated);
+  fs::write(root.join("nested/site.txt"),b"changed").unwrap();
+  let changed=tree_checksum_sha256(&root).unwrap();
+  assert_ne!(first.0,changed.0);
+  let _=fs::remove_dir_all(root);
+ }
+ #[test]fn sha256_manifest_versions_are_explicit(){
+  assert_eq!(legacy_checksum_algorithm(),"fnv1a-64");
+ }
  #[test]fn rejects_backup_ids_with_path_components(){assert!(!"../outside".bytes().all(|b|b.is_ascii_hexdigit()||b==b'-'));}
 }
