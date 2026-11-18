@@ -15,7 +15,9 @@ impl IntoResponse for BackupError{
 fn db_error(e:rusqlite::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_error",e.to_string())}
 fn io_error(code:&'static str,e:std::io::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,code,e.to_string())}
 #[derive(Serialize,Deserialize)]
-fn legacy_checksum_algorithm()->String{"fnv1a-64".into()}\n#[derive(Serialize,Deserialize)]\nstruct Manifest{version:u32,#[serde(default="legacy_checksum_algorithm")]checksum_algorithm:String,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,created_at:String}
+fn legacy_checksum_algorithm()->String{"fnv1a-64".into()}
+#[derive(Serialize,Deserialize)]
+struct Manifest{version:u32,#[serde(default="legacy_checksum_algorithm")]checksum_algorithm:String,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,created_at:String}
 #[derive(Serialize)]
 struct BackupRecord{id:String,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,verified:bool,created_at:String}
 #[derive(Deserialize)]
@@ -176,7 +178,9 @@ fn load_manifest(path:&FsPath)->Result<Manifest,BackupError>{
  serde_json::from_slice(&bytes).map_err(|e|backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_manifest_invalid",e.to_string()))
 }
 fn verify_sync(path:&FsPath)->Result<Manifest,BackupError>{
- let manifest=load_manifest(path)?;\n if manifest.version>2{return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_version_unsupported","This backup was created by a newer WebDynamite version."));}\n let (checksum,count,size)=match (manifest.version,manifest.checksum_algorithm.as_str()){(1,"fnv1a-64")=>tree_checksum(path)?,(2,"sha256")=>tree_checksum_sha256(path)?,_=>return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_checksum_unsupported","Backup checksum algorithm is not supported."))};
+ let manifest=load_manifest(path)?;
+ if manifest.version>2{return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_version_unsupported","This backup was created by a newer WebDynamite version."));}
+ let (checksum,count,size)=match (manifest.version,manifest.checksum_algorithm.as_str()){(1,"fnv1a-64")=>tree_checksum(path)?,(2,"sha256")=>tree_checksum_sha256(path)?,_=>return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_checksum_unsupported","Backup checksum algorithm is not supported."))};
  if checksum!=manifest.checksum||count!=manifest.file_count||size!=manifest.size_bytes{return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_verification_failed","Backup checksum or file inventory does not match. Do not restore this backup."));}
  Ok(manifest)
 }
