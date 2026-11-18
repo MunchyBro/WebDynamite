@@ -22,7 +22,20 @@ $env:WEBDYNAMITE_API_TOKEN = "replace-with-a-random-secret-at-least-32-character
 cargo run --manifest-path core-service/Cargo.toml
 ```
 
-Production provisioning must generate and protect the token using Windows DPAPI or Credential Manager. Do not commit it or write it to ordinary logs.
+The Windows desktop app generates a random API token on first launch and stores it in Windows Credential Manager under the current Windows account. It passes the token to the Core Service only through the child-process environment. Do not commit tokens or write them to ordinary logs.
+
+## Desktop lifecycle and packaging
+
+The Tauri desktop app starts the bundled webdynamite-core.exe automatically, waits up to 12 seconds for its loopback listener, and stops the child process when the desktop app exits. The API token is generated once and protected by Windows Credential Manager; the renderer retrieves it through a Tauri command and connects automatically. If port 47821 is already occupied, startup fails clearly instead of silently connecting to an unrelated process.
+
+The Windows bundle includes the Core Service as an application resource. Build it before launching the desktop app in development:
+
+```powershell
+cargo build --release --manifest-path core-service/Cargo.toml
+npm run tauri dev
+```
+
+The CI workflow builds this executable before checking the Tauri backend. The installer workflow and signed production release process are separate follow-up work.
 
 ## API
 

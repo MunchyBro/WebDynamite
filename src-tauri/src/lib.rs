@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use keyring::Entry;
+use std::{io, net::TcpStream, process::{Child, Command, Stdio}, sync::Mutex, thread, time::{Duration, Instant}};
+use tauri::Manager;
 const CORE_URL: &str = "http://127.0.0.1:47821";
 #[derive(Debug, Serialize, Deserialize)]
 struct Website { id:String, name:String, project_path:String, runtime:String, status:String, created_at:String, updated_at:String }
@@ -16,6 +18,75 @@ async fn authorized_request(token:&str,method:reqwest::Method,path:&str,body:Opt
  if !response.status().is_success(){let status=response.status();let detail=response.text().await.unwrap_or_default();return Err(format!("Core Service returned {status}: {detail}"));}
  Ok(response)
 }
+struct CoreServiceProcess(Mutex<Option<Child>>);
+
+fn core_service_token_entry() -> Result<Entry, String> {
+    Entry::new("WebDynamite.CoreService", "api-token")
+        .map_err(|e| api_error("Could not access the WebDynamite Core Service credential", e))
+}
+
+fn load_or_create_core_service_token() -> Result<String, String> {
+    let entry = core_service_token_entry()?;
+    if let Ok(token) = entry.get_password() {
+        if token.len() >= 32 { return Ok(token); }
+    }
+    let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    entry.set_password(&token)
+        .map_err(|e| api_error("Could not securely store the Core Service API token", e))?;
+    Ok(token)
+}
+
+#[tauri::command]
+fn core_service_token() -> Result<String, String> {
+    load_or_create_core_service_token()
+}
+
+fn bundled_core_service_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let resource_path = app.path().resource_dir()
+        .map_err(|e| api_error("Could not locate application resources", e))?
+        .join("webdynamite-core.exe");
+    if resource_path.is_file() { return Ok(resource_path); }
+
+    let development_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/release/webdynamite-core.exe");
+    if development_path.is_file() { return Ok(development_path); }
+    Err(format!("Bundled Core Service was not found. Expected {}. Build core-service in release mode before running the desktop app.", resource_path.display()))
+}
+
+fn start_core_service(app: &tauri::AppHandle) -> Result<Child, Box<dyn std::error::Error>> {
+    let token = load_or_create_core_service_token().map_err(io::Error::other)?;
+    let address = "127.0.0.1:47821".parse().map_err(io::Error::other)?;
+    if TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AddrInUse, "Another process is already listening on the WebDynamite Core Service port 47821").into());
+    }
+
+    let executable = bundled_core_service_path(app).map_err(io::Error::other)?;
+    let mut command = Command::new(executable);
+    command.env("WEBDYNAMITE_API_TOKEN", token)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            return Err(io::Error::other(format!("WebDynamite Core Service exited during startup: {status}")).into());
+        }
+        if TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok() {
+            return Ok(child);
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(io::Error::new(io::ErrorKind::TimedOut, "WebDynamite Core Service did not become ready within 12 seconds").into())
+}
+
 fn database_credential_entry(engine:&str,profile_id:&str)->Result<Entry,String>{
  let service=match engine{"mysql"=>"WebDynamite.Database.MySQL","postgres"=>"WebDynamite.Database.PostgreSQL",_=>return Err("Unsupported database credential type.".into())};
  let id=profile_id.trim();
@@ -308,4 +379,26 @@ async fn save_runtime_profile(token:String,website_id:String,program:String,args
 async fn delete_runtime_profile(token:String,website_id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/runtime-profiles/{website_id}"),None).await?;Ok(())}
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
-pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states]).run(tauri::generate_context!()).expect("error while running WebDynamite");}
+pub fn run(){
+ let app = tauri::Builder::default()
+ .setup(|app| {
+  let child = start_core_service(app.handle())?;
+  app.manage(CoreServiceProcess(Mutex::new(Some(child))));
+  Ok(())
+ })
+ .invoke_handler(tauri::generate_handler![core_service_token,save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states])
+ .build(tauri::generate_context!())
+ .expect("error while building WebDynamite");
+ app.run(|app_handle, event| {
+  if let tauri::RunEvent::Exit = event {
+   if let Some(service) = app_handle.try_state::<CoreServiceProcess>() {
+    if let Ok(mut child) = service.0.lock() {
+     if let Some(mut process) = child.take() {
+      let _ = process.kill();
+      let _ = process.wait();
+     }
+    }
+   }
+  }
+ });
+}
