@@ -32,7 +32,7 @@
     "category": "DeveloperTool",
     "icon": [],
     "resources": {
-      "../core-service/target/release/webdynamite-core.exe": "webdynamite-core.exe"
+      "../target/release/webdynamite-core.exe": "webdynamite-core.exe"
     }
   }
 }
