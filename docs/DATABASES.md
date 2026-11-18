@@ -59,3 +59,6 @@ Removing a profile deletes only its saved metadata, not the database server or i
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
 - MySQL/MariaDB support.
 - Application connection-string injection.
+
+
+MySQL/MariaDB connection profiles are currently limited to loopback hosts and non-TLS connections; passwords are entered only when testing a profile and are not stored.
