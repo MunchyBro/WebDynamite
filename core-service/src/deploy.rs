@@ -2,7 +2,7 @@ use axum::{extract::{Path, Query, State}, routing::get, Json, Router, http::Stat
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs, path::{Path as FsPath, PathBuf}, process::Command, time::Instant};
+use std::{fs::{self, File}, io::{Read, Seek, SeekFrom}, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}, thread, time::{Duration, Instant}};
 use uuid::Uuid;
 use crate::AppState;
 
@@ -98,15 +98,37 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  };
  let canonical=root.canonicalize().map_err(|e|DeployError(StatusCode::BAD_REQUEST,"website_folder_unavailable",e.to_string()))?;
  if !safe_output_dir(&profile.2){return Err(DeployError(StatusCode::BAD_REQUEST,"invalid_output_dir","Build output path is invalid.".into()));}
+ const BUILD_TIMEOUT:Duration=Duration::from_secs(600);
+ let build_log_path=state.logs_dir.join(format!("build-{}.log",Uuid::new_v4()));
+ let log_file=File::create(&build_log_path).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
+ let stderr=log_file.try_clone().map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
  let started=Instant::now();
- let result=Command::new(&profile.0).args(&profile.1).current_dir(&canonical).output()
+ let mut child=Command::new(&profile.0).args(&profile.1).current_dir(&canonical)
+  .stdout(Stdio::from(log_file)).stderr(Stdio::from(stderr)).spawn()
   .map_err(|e|DeployError(StatusCode::BAD_GATEWAY,"build_start_failed",format!("Could not start {}: {e}",profile.0)))?;
+ let mut timed_out=false;
+ let result_status=loop {
+  match child.try_wait() {
+   Ok(Some(status))=>break Some(status),
+   Ok(None) if started.elapsed()>=BUILD_TIMEOUT=>{
+    timed_out=true;
+    terminate_build_process(&mut child);
+    break child.wait().ok();
+   }
+   Ok(None)=>thread::sleep(Duration::from_millis(100)),
+   Err(error)=>{
+    terminate_build_process(&mut child);
+    let _=fs::remove_file(&build_log_path);
+    return Err(DeployError(StatusCode::BAD_GATEWAY,"build_monitor_failed",format!("Could not monitor build process: {error}")));
+   }
+  }
+ };
  let elapsed=started.elapsed().as_millis().min(i64::MAX as u128) as i64;
- let mut logs=String::from_utf8_lossy(&result.stdout).to_string();
- logs.push_str(&String::from_utf8_lossy(&result.stderr));
- if logs.len()>262_144{logs=format!("{}\n… build log truncated to 256 KiB",String::from_utf8_lossy(&logs.as_bytes()[logs.len()-262_144..]));}
- let mut status=if result.status.success(){"success"}else{"failed"};
- let mut exit_code=result.status.code();
+ let mut logs=read_log_tail(&build_log_path,262_144).unwrap_or_else(|e|format!("Could not read build log: {e}"));
+ let _=fs::remove_file(&build_log_path);
+ if timed_out{logs.push_str("\nBuild timed out after 10 minutes; the process was terminated.");}
+ let mut status=if !timed_out&&result_status.as_ref().is_some_and(|s|s.success()){"success"}else{"failed"};
+ let mut exit_code=result_status.and_then(|s|s.code());
  if result.status.success(){
   let output=canonical.join(&profile.2);
   match output.canonicalize(){
@@ -120,6 +142,26 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  let website_name:String=db.query_row("SELECT name FROM websites WHERE id=?1",params![website_id],|r|r.get(0)).map_err(db_error)?;
  let created_at:String=db.query_row("SELECT created_at FROM build_runs WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
 Ok((if status=="success"{StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},Json(BuildRun{id,website_id,website_name,program:profile.0,status:status.into(),exit_code,duration_ms:elapsed,logs,created_at})))
+}
+
+fn terminate_build_process(child:&mut Child){
+ #[cfg(windows)]
+ {let _=Command::new("taskkill").args(["/PID",&child.id().to_string(),"/T","/F"]).output();}
+ #[cfg(not(windows))]
+ {let _=child.kill();}
+ let _=child.wait();
+}
+
+fn read_log_tail(path:&FsPath,max_bytes:u64)->std::io::Result<String>{
+ let mut file=File::open(path)?;
+ let length=file.metadata()?.len();
+ let start=length.saturating_sub(max_bytes);
+ file.seek(SeekFrom::Start(start))?;
+ let mut bytes=Vec::with_capacity(length.saturating_sub(start) as usize);
+ file.read_to_end(&mut bytes)?;
+ let mut output=String::from_utf8_lossy(&bytes).to_string();
+ if start>0{output=format!("… earlier build output omitted (log capped at 256 KiB) …\n{output}");}
+ Ok(output)
 }
 
 fn copy_release_tree(source:&FsPath,destination:&FsPath,counts:&mut (u64,u64))->Result<(),DeployError>{
