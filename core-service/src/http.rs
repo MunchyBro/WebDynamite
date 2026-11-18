@@ -580,13 +580,13 @@ async fn query_mysql_connection(
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_read_only_failed", e.to_string()))?;
     let mut transaction = connection.begin().await
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_read_only_failed", e.to_string()))?;
-    {
-        let stream = sqlx::query(sql).fetch(&mut *transaction);
-        tokio::pin!(stream);
     let mut columns: Vec<String> = Vec::new();
     let mut values: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut truncated = false;
     let mut estimated_bytes = 0usize;
+    {
+        let stream = sqlx::query(sql).fetch(&mut *transaction);
+        tokio::pin!(stream);
     while let Some(row) = stream.try_next().await
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, "mysql_sql_query_failed", e.to_string()))? {
         if columns.is_empty() {
@@ -620,7 +620,7 @@ async fn query_mysql_connection(
         }
         if estimated_bytes > 1024 * 1024 { truncated = true; break; }
         values.push(cells);
-    }
+        }
     }
     // Dropping the transaction rolls back the read-only query; the connection closes on drop.
     Ok(Json(json!({"columns":columns,"rows":values,"row_count":values.len(),"truncated":truncated,"read_only":true})))
