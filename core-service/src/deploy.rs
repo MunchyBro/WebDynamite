@@ -296,6 +296,16 @@ mod tests {
     }
 
     #[test]
+    fn build_log_reader_keeps_only_the_requested_tail() {
+        let path=std::env::temp_dir().join(format!("webdynamite-build-log-{}.txt",Uuid::new_v4()));
+        fs::write(&path,vec![b'x';4096]).unwrap();
+        let tail=read_log_tail(&path,1024).unwrap();
+        assert!(tail.contains("earlier build output omitted"));
+        assert!(tail.ends_with(&"x".repeat(1024)));
+        let _=fs::remove_file(path);
+    }
+
+    #[test]
     fn output_directories_must_be_relative_and_contained() {
         assert!(safe_output_dir("dist"));
         assert!(safe_output_dir("build/site"));
