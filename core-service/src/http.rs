@@ -111,6 +111,9 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/postgres-connections/:id", axum::routing::delete(delete_postgres_connection))
         .route("/api/v1/postgres-connections/:id/test", axum::routing::post(test_postgres_connection))
         .route("/api/v1/postgres-connections/:id/query", axum::routing::post(query_postgres_connection))
+        .route("/api/v1/mysql-connections", get(list_mysql_connections).post(create_mysql_connection))
+        .route("/api/v1/mysql-connections/:id", axum::routing::delete(delete_mysql_connection))
+        .route("/api/v1/mysql-connections/:id/test", axum::routing::post(test_mysql_connection))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
         .merge(crate::deploy::router())
@@ -482,6 +485,57 @@ async fn test_postgres_connection(State(state):State<AppState>,Path(id):Path<Str
  Ok(Json(json!({"id":id,"connected":true,"database":row.get::<_,String>(0),"username":row.get::<_,String>(1),"server_version":row.get::<_,String>(2),"password_persisted":false})))
 }
 
+
+
+#[derive(Debug, Deserialize)]
+struct CreateMysqlConnection { name:String, host:String, port:u16, database_name:String, username:String }
+#[derive(Debug, Deserialize)]
+struct TestMysqlConnection { password:String }
+async fn list_mysql_connections(State(state):State<AppState>)->Result<Json<Vec<serde_json::Value>>,ApiError>{
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let mut q=db.prepare("SELECT id,name,host,port,database_name,username,created_at FROM mysql_connections ORDER BY name").map_err(database_error)?;
+ let rows=q.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"host":r.get::<_,String>(2)?,"port":r.get::<_,u16>(3)?,"database_name":r.get::<_,String>(4)?,"username":r.get::<_,String>(5)?,"engine":"mysql","created_at":r.get::<_,String>(6)?}))).map_err(database_error)?;
+ Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?))
+}
+async fn create_mysql_connection(State(state):State<AppState>,Json(input):Json<CreateMysqlConnection>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
+ let host=input.host.trim().to_ascii_lowercase();
+ if !["localhost","127.0.0.1","::1"].contains(&host.as_str()){return Err(ApiError(StatusCode::BAD_REQUEST,"mysql_host_not_allowed","MySQL/MariaDB profiles are restricted to this PC (localhost, 127.0.0.1, or ::1).".into()));}
+ if !validate_pg_field(&input.name,48)||!input.name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_'||b==b'-')||!validate_pg_field(&input.database_name,64)||!validate_pg_field(&input.username,96){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_mysql_profile","Profile name, database name, or username is invalid.".into()));}
+ if input.port==0{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_mysql_port","MySQL/MariaDB port must be between 1 and 65535.".into()));}
+ let id=Uuid::new_v4().to_string();
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ db.execute("INSERT INTO mysql_connections(id,name,host,port,database_name,username) VALUES(?1,?2,?3,?4,?5,?6)",params![id,input.name.trim(),host,input.port,input.database_name.trim(),input.username.trim()]).map_err(|e|if matches!(e,rusqlite::Error::SqliteFailure(ref x,_) if x.code==rusqlite::ErrorCode::ConstraintViolation){ApiError(StatusCode::CONFLICT,"mysql_profile_exists","A MySQL/MariaDB profile with that name already exists.".into())}else{database_error(e)})?;
+ let created_at:String=db.query_row("SELECT created_at FROM mysql_connections WHERE id=?1",[&id],|r|r.get(0)).map_err(database_error)?;
+ Ok((StatusCode::CREATED,Json(json!({"id":id,"name":input.name.trim(),"host":host,"port":input.port,"database_name":input.database_name.trim(),"username":input.username.trim(),"engine":"mysql","created_at":created_at}))))
+}
+async fn delete_mysql_connection(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,ApiError>{
+ let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+ let changed=db.execute("DELETE FROM mysql_connections WHERE id=?1",[id]).map_err(database_error)?;
+ if changed==0{return Err(ApiError(StatusCode::NOT_FOUND,"mysql_profile_not_found","MySQL/MariaDB connection profile was not found.".into()));}
+ Ok(StatusCode::NO_CONTENT)
+}
+async fn test_mysql_connection(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<TestMysqlConnection>)->Result<Json<serde_json::Value>,ApiError>{
+ if input.password.len()>1024{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_mysql_password","Password is too long.".into()));}
+ let (host,port,database_name,username)={
+  let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  db.query_row("SELECT host,port,database_name,username FROM mysql_connections WHERE id=?1",[&id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u16>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))
+   .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"mysql_profile_not_found","MySQL/MariaDB connection profile was not found.".into())}else{database_error(e)})?
+ };
+ let mut options=sqlx::mysql::MySqlConnectOptions::new().host(&host).port(port).username(&username).password(&input.password).ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+ if !database_name.is_empty(){options=options.database(&database_name);}
+ let connect=sqlx::mysql::MySqlConnection::connect_with(&options);
+ let mut connection=tokio::time::timeout(std::time::Duration::from_secs(5),connect).await
+  .map_err(|_|ApiError(StatusCode::GATEWAY_TIMEOUT,"mysql_connection_timeout","MySQL/MariaDB connection timed out after five seconds.".into()))?
+  .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"mysql_connection_failed",format!("MySQL/MariaDB connection failed: {e}")))?;
+ use sqlx::{Connection,Row};
+ let row=sqlx::query("SELECT DATABASE(), CURRENT_USER(), VERSION()").fetch_one(&mut connection).await
+  .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"mysql_query_failed",e.to_string()))?;
+ let database:Option<String>=row.try_get(0).unwrap_or(None);
+ let user:String=row.try_get(1).unwrap_or_default();
+ let version:String=row.try_get(2).unwrap_or_default();
+ connection.close().await.ok();
+ Ok(Json(json!({"id":id,"connected":true,"database":database,"username":user,"server_version":version,"password_persisted":false})))
+}
 
 #[derive(Debug, Deserialize)]
 struct PostgresQuery { password: String, sql: String }

@@ -156,7 +156,18 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         username TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    INSERT OR IGNORE INTO schema_migrations(version) VALUES (13);")?;
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (13);
+    -- Version 14 stores local MySQL/MariaDB connection metadata; passwords are never persisted.
+    CREATE TABLE IF NOT EXISTS mysql_connections (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        host TEXT NOT NULL CHECK (host IN ('localhost','127.0.0.1','::1')),
+        port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+        database_name TEXT NOT NULL,
+        username TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (14);")?;
     Ok(())
 }
 
@@ -170,7 +181,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());

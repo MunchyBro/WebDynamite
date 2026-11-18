@@ -46,6 +46,12 @@ The console is for inspection, not writes or administrative changes. Unsupported
 
 The PostgreSQL console includes metadata shortcuts to list non-system schemas, list tables in a schema, and inspect a table's columns (ordinal position, type, nullability, and default). These shortcuts query `information_schema` through the same read-only endpoint and use SQL-escaped schema/table values. They do not modify database objects. **Preview rows** builds a quoted-identifier `SELECT * ... LIMIT 200` for the selected schema and table, then runs it through the same read-only query endpoint. The preview is capped by the query console response limits and does not change data.
 
+## MySQL / MariaDB: local connection profiles
+
+The **Local MySQL / MariaDB connections** section stores connection metadata for an existing MySQL or MariaDB server on this PC. Profiles accept only `localhost`, `127.0.0.1`, or `::1` and default to port `3306`. The database name may be left blank to connect without selecting a default database. The connection test reports the selected database (if any), authenticated account, and server version. The password is requested for each test and is never persisted. The initial integration disables TLS because it is restricted to loopback hosts; remote database connections are not supported.
+
+Removing a profile deletes only its saved metadata, not the database server or its data. MySQL/MariaDB SQL console and schema management are not yet included.
+
 ## Not yet implemented
 
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
@@ -53,3 +59,6 @@ The PostgreSQL console includes metadata shortcuts to list non-system schemas, l
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
 - MySQL/MariaDB support.
 - Application connection-string injection.
+
+
+MySQL/MariaDB connection profiles are currently limited to loopback hosts and non-TLS connections; passwords are entered only when testing a profile and are not stored.
