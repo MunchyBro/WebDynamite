@@ -521,7 +521,8 @@ async fn test_mysql_connection(State(state):State<AppState>,Path(id):Path<String
   db.query_row("SELECT host,port,database_name,username FROM mysql_connections WHERE id=?1",[&id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u16>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))
    .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"mysql_profile_not_found","MySQL/MariaDB connection profile was not found.".into())}else{database_error(e)})?
  };
- let options=sqlx::mysql::MySqlConnectOptions::new().host(&host).port(port).username(&username).password(&input.password).database(&database_name).ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+ let mut options=sqlx::mysql::MySqlConnectOptions::new().host(&host).port(port).username(&username).password(&input.password).ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+ if !database_name.is_empty(){options=options.database(&database_name);}
  let connect=sqlx::mysql::MySqlConnection::connect_with(&options);
  let mut connection=tokio::time::timeout(std::time::Duration::from_secs(5),connect).await
   .map_err(|_|ApiError(StatusCode::GATEWAY_TIMEOUT,"mysql_connection_timeout","MySQL/MariaDB connection timed out after five seconds.".into()))?
