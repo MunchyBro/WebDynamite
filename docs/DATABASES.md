@@ -29,10 +29,23 @@ A profile stores its name, host, port, database name, and username. **Test** ask
 
 Removing a profile removes only its saved connection metadata. It does not stop PostgreSQL, delete a database, or modify server data.
 
+## PostgreSQL read-only SQL console
+
+Choose a saved local PostgreSQL profile in **PostgreSQL read-only query console** and run one SQL statement. The password is requested for every execution and is never stored. Queries run inside a PostgreSQL read-only transaction, with a five-second statement timeout. PostgreSQL extended-protocol preparation rejects multi-statement input.
+
+Response limits:
+- SQL input: 64 KiB
+- Result columns: 100
+- Returned rows: 200 (streamed; excess rows are not buffered)
+- Approximate serialized result budget: 1 MiB
+- Text and bytea previews: 8 KiB per cell
+
+The console is for inspection, not writes or administrative changes. Unsupported PostgreSQL data types are identified in the result instead of being decoded. The existing loopback-only NoTLS restriction still applies.
+
 ## Not yet implemented
 
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
-- PostgreSQL query console and database/user provisioning.
+- PostgreSQL server installation, initialization, process lifecycle, and data-directory management; database/user provisioning.
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
 - MySQL/MariaDB support.
 - Application connection-string injection.
