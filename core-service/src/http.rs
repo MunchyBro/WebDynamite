@@ -1153,7 +1153,7 @@ fn http_readiness_probe(port: u16) -> bool {
     let timeout = Some(Duration::from_millis(500));
     let _ = stream.set_read_timeout(timeout);
     let _ = stream.set_write_timeout(timeout);
-    if stream.write_all(b"GET / HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n").is_err() {
+    if stream.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
         return false;
     }
     let mut response = [0u8; 512];
