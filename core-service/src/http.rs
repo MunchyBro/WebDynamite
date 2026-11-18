@@ -622,8 +622,7 @@ async fn query_mysql_connection(
         values.push(cells);
     }
     }
-    transaction.rollback().await.ok();
-    connection.close().await.ok();
+    // Dropping the transaction rolls back the read-only query; the connection closes on drop.
     Ok(Json(json!({"columns":columns,"rows":values,"row_count":values.len(),"truncated":truncated,"read_only":true})))
 }
 
