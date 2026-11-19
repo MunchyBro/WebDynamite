@@ -20,6 +20,9 @@ fn defaults() -> BTreeMap<String, Value> {
         ("domain_suffix".into(), json!("localhost")),
         ("release_retention_count".into(), json!(10)),
         ("build_timeout_seconds".into(), json!(600)),
+        ("runtime_auto_restart".into(), json!(false)),
+        ("runtime_restart_limit".into(), json!(3)),
+        ("runtime_restart_delay_seconds".into(), json!(5)),
     ])
 }
 
@@ -58,6 +61,9 @@ fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
             let n=value.as_u64().ok_or("Monitoring interval must be an integer")?;
             if !(2..=60).contains(&n) { return Err("Monitoring interval must be between 2 and 60 seconds".into()); }
         }
+        "runtime_auto_restart" => { value.as_bool().ok_or("Automatic runtime restart must be true or false")?; }
+        "runtime_restart_limit" => { let n=value.as_u64().ok_or("Runtime restart limit must be an integer")?; if !(1..=10).contains(&n) { return Err("Runtime restart limit must be between 1 and 10".into()); } }
+        "runtime_restart_delay_seconds" => { let n=value.as_u64().ok_or("Runtime restart delay must be an integer")?; if !(1..=300).contains(&n) { return Err("Runtime restart delay must be between 1 and 300 seconds".into()); } }
         "build_timeout_seconds" => {
             let n=value.as_u64().ok_or("Build timeout must be an integer")?;
             if !(30..=1800).contains(&n) { return Err("Build timeout must be between 30 and 1800 seconds".into()); }
@@ -192,6 +198,12 @@ mod tests {
         assert!(validate_setting("build_timeout_seconds",&json!(1800)).is_ok());
         assert!(validate_setting("build_timeout_seconds",&json!(29)).is_err());
         assert!(validate_setting("build_timeout_seconds",&json!(1801)).is_err());
+        assert!(validate_setting("runtime_auto_restart",&json!(true)).is_ok());
+        assert!(validate_setting("runtime_auto_restart",&json!("yes")).is_err());
+        assert!(validate_setting("runtime_restart_limit",&json!(1)).is_ok());
+        assert!(validate_setting("runtime_restart_limit",&json!(11)).is_err());
+        assert!(validate_setting("runtime_restart_delay_seconds",&json!(300)).is_ok());
+        assert!(validate_setting("runtime_restart_delay_seconds",&json!(0)).is_err());
         assert!(validate_setting("release_retention_count",&json!(101)).is_err());
     }
 }
@@ -201,4 +213,12 @@ pub fn setting_number(state:&AppState,key:&str,fallback:u64)->u64 {
     db.query_row("SELECT value_json FROM settings WHERE key=?1",[key],|row|row.get::<_,String>(0)).ok()
         .and_then(|raw|serde_json::from_str::<Value>(&raw).ok())
         .and_then(|v|v.as_u64()).unwrap_or(fallback)
+}
+
+
+pub fn setting_bool(state:&AppState,key:&str,fallback:bool)->bool {
+    let Ok(db)=state.db.lock() else { return fallback; };
+    db.query_row("SELECT value_json FROM settings WHERE key=?1",[key],|row|row.get::<_,String>(0)).ok()
+        .and_then(|raw|serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v|v.as_bool()).unwrap_or(fallback)
 }
