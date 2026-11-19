@@ -69,11 +69,6 @@ async fn list_runs(State(state):State<AppState>,Query(query):Query<RunsQuery>)->
 }
 #[axum::debug_handler]
 async fn deploy_website(State(state):State<AppState>,Path(website_id):Path<String>)->Result<(StatusCode,Json<serde_json::Value>),DeployError>{
- let runtime:String={
-  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-  db.query_row("SELECT runtime FROM websites WHERE id=?1",params![website_id],|r|r.get(0))
-   .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){DeployError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())}else{db_error(e)})?
- };
  let (_,build)=run_build(State(state.clone()),Path(website_id.clone())).await?;
  if build.0.status!="success"{
   return Err(DeployError(StatusCode::UNPROCESSABLE_ENTITY,"deployment_build_failed","The build failed. Review the saved build history and logs; the active release was not changed.".into()));
@@ -225,14 +220,15 @@ async fn create_release(State(state):State<AppState>,Path(website_id):Path<Strin
   let running={let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;db.query_row("SELECT status FROM websites WHERE id=?1",params![website_id],|row|row.get::<_,String>(0)).map(|status|status=="running").unwrap_or(false)};
   if running {
    if let Err(error)=crate::http::restart_website_for_deployment(state.clone(),website_id.clone()).await {
-    let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-    let tx=db.unchecked_transaction().map_err(db_error)?;
-    tx.execute("UPDATE releases SET active=0 WHERE website_id=?1",params![website_id]).map_err(db_error)?;
-    if let Some(previous)=previous_active.as_deref(){tx.execute("UPDATE releases SET active=1 WHERE id=?1 AND website_id=?2",params![previous,website_id]).map_err(db_error)?;}
-    tx.execute("DELETE FROM releases WHERE id=?1 AND website_id=?2 AND active=0",params![id,website_id]).map_err(db_error)?;
-    tx.commit().map_err(db_error)?;
+    {
+     let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+     let tx=db.unchecked_transaction().map_err(db_error)?;
+     tx.execute("UPDATE releases SET active=0 WHERE website_id=?1",params![website_id]).map_err(db_error)?;
+     if let Some(previous)=previous_active.as_deref(){tx.execute("UPDATE releases SET active=1 WHERE id=?1 AND website_id=?2",params![previous,website_id]).map_err(db_error)?;}
+     tx.execute("DELETE FROM releases WHERE id=?1 AND website_id=?2 AND active=0",params![id,website_id]).map_err(db_error)?;
+     tx.commit().map_err(db_error)?;
+    }
     let _=fs::remove_dir_all(&destination);
-    drop(db);
     let _=crate::http::restart_website_for_deployment(state.clone(),website_id.clone()).await;
     return Err(DeployError(StatusCode::BAD_GATEWAY,"runtime_release_start_failed",format!("The new release could not start and activation was reverted. Previous runtime restored where possible. Details: {error}")));
    }
@@ -308,12 +304,13 @@ async fn rollback_release(State(state):State<AppState>,Path((website_id,release_
  }
  if runtime!="static"&&running {
   if let Err(error)=crate::http::restart_website_for_deployment(state.clone(),website_id.clone()).await {
-   let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-   let tx=db.unchecked_transaction().map_err(db_error)?;
-   tx.execute("UPDATE releases SET active=0 WHERE website_id=?1",params![website_id]).map_err(db_error)?;
-   if let Some(previous)=previous_active.as_deref(){tx.execute("UPDATE releases SET active=1 WHERE id=?1 AND website_id=?2",params![previous,website_id]).map_err(db_error)?;}
-   tx.commit().map_err(db_error)?;
-   drop(db);
+   {
+    let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let tx=db.unchecked_transaction().map_err(db_error)?;
+    tx.execute("UPDATE releases SET active=0 WHERE website_id=?1",params![website_id]).map_err(db_error)?;
+    if let Some(previous)=previous_active.as_deref(){tx.execute("UPDATE releases SET active=1 WHERE id=?1 AND website_id=?2",params![previous,website_id]).map_err(db_error)?;}
+    tx.commit().map_err(db_error)?;
+   }
    let _=crate::http::restart_website_for_deployment(state.clone(),website_id.clone()).await;
    return Err(DeployError(StatusCode::BAD_GATEWAY,"runtime_rollback_start_failed",format!("The selected release could not start; the previous active release was restored. Details: {error}")));
   }
