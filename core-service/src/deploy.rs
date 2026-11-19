@@ -207,14 +207,16 @@ async fn create_release(State(state):State<AppState>,Path(website_id):Path<Strin
  let clean_git=Command::new("git").arg("-C").arg(&root).args(["status","--short"]).output().ok().filter(|o|o.status.success()).map(|o|o.stdout.is_empty()).unwrap_or(false);
  let commit=if clean_git{Command::new("git").arg("-C").arg(&root).args(["rev-parse","HEAD"]).output().ok().filter(|o|o.status.success()).map(|o|String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s|!s.is_empty())}else{None};
  let release_path=destination.to_string_lossy().to_string();
- let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
- let tx=db.unchecked_transaction().map_err(db_error)?;
- let previous_active:Option<String>=tx.query_row("SELECT id FROM releases WHERE website_id=?1 AND active=1",params![website_id],|row|row.get(0)).optional().map_err(db_error)?;
- tx.execute("UPDATE releases SET active=0 WHERE website_id=?1",params![website_id]).map_err(db_error)?;
- tx.execute("INSERT INTO releases(id,website_id,release_path,source,commit_hash,active,file_count,size_bytes) VALUES(?1,?2,?3,'build',?4,1,?5,?6)",params![id,website_id,release_path,commit,counts.0 as i64,counts.1 as i64]).map_err(db_error)?;
- let created_at:String=tx.query_row("SELECT created_at FROM releases WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
- tx.commit().map_err(db_error)?;
- drop(db);
+ let (previous_active,created_at)={
+  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let tx=db.unchecked_transaction().map_err(db_error)?;
+  let previous_active:Option<String>=tx.query_row("SELECT id FROM releases WHERE website_id=?1 AND active=1",params![website_id],|row|row.get(0)).optional().map_err(db_error)?;
+  tx.execute("UPDATE releases SET active=0 WHERE website_id=?1",params![website_id]).map_err(db_error)?;
+  tx.execute("INSERT INTO releases(id,website_id,release_path,source,commit_hash,active,file_count,size_bytes) VALUES(?1,?2,?3,'build',?4,1,?5,?6)",params![id,website_id,release_path,commit,counts.0 as i64,counts.1 as i64]).map_err(db_error)?;
+  let created_at:String=tx.query_row("SELECT created_at FROM releases WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
+  tx.commit().map_err(db_error)?;
+  (previous_active,created_at)
+ };
  let retention=crate::settings::setting_number(&state,"release_retention_count",10).clamp(1,100);
  if runtime!="static" {
   let running={let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;db.query_row("SELECT status FROM websites WHERE id=?1",params![website_id],|row|row.get::<_,String>(0)).map(|status|status=="running").unwrap_or(false)};
