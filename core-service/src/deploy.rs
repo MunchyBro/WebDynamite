@@ -1,5 +1,5 @@
 use axum::{extract::{Path, Query, State}, routing::get, Json, Router, http::StatusCode, response::IntoResponse};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{fs::{self, File}, io::{Read, Seek, SeekFrom}, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}, thread, time::{Duration, Instant}};
@@ -82,7 +82,7 @@ async fn deploy_website(State(state):State<AppState>,Path(website_id):Path<Strin
   "status":"deployed",
   "build":build.0,
   "release":release.0,
-  "message":"Build succeeded and the new static release is now active. Previous releases remain available for rollback."
+  "message":"Build succeeded and the new release is now active. Previous releases remain available for rollback."
  }))))
 }
 
