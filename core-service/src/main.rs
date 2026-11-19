@@ -9,7 +9,7 @@ mod backup;
 mod settings;
 mod tunnel;
 
-use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
 
 #[derive(Clone)]
@@ -38,10 +38,15 @@ fn data_dir() -> PathBuf {
         .join("WebDynamite")
 }
 
+fn restart_attempts_remaining(used: u64, limit: u64) -> u64 {
+    limit.saturating_sub(used.min(limit))
+}
+
 fn supervise_processes(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(2));
-        let mut restart_attempts: HashMap<String, u64> = HashMap::new();
+        let restart_attempts = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
+        let restart_in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
         loop {
             interval.tick().await;
             let mut exited = Vec::new();
@@ -72,26 +77,60 @@ fn supervise_processes(state: AppState) {
                         rusqlite::params![status, id],
                     );
                 }
-                if success { restart_attempts.remove(&id); continue; }
-                if uptime >= Duration::from_secs(300) { restart_attempts.remove(&id); }
+                if success {
+                    if let Ok(mut attempts) = restart_attempts.lock() { attempts.remove(&id); }
+                    continue;
+                }
+                if uptime >= Duration::from_secs(300) {
+                    if let Ok(mut attempts) = restart_attempts.lock() { attempts.remove(&id); }
+                }
                 if !crate::settings::setting_bool(&state, "runtime_auto_restart", false) { continue; }
                 let limit = crate::settings::setting_number(&state, "runtime_restart_limit", 3).clamp(1, 10);
                 let delay = crate::settings::setting_number(&state, "runtime_restart_delay_seconds", 5).clamp(1, 300);
-                let used = restart_attempts.get(&id).copied().unwrap_or(0);
-                if used >= limit { continue; }
-                for _ in used..limit {
-                    restart_attempts.insert(id.clone(), restart_attempts.get(&id).copied().unwrap_or(0) + 1);
-                    tokio::time::sleep(Duration::from_secs(delay)).await;
-                    if crate::http::restart_after_crash(state.clone(), id.clone()).await {
-                        break;
+                let used = restart_attempts.lock().ok()
+                    .and_then(|attempts| attempts.get(&id).copied()).unwrap_or(0);
+                if restart_attempts_remaining(used, limit) == 0 { continue; }
+                let scheduled = restart_in_flight.lock()
+                    .map(|mut pending| pending.insert(id.clone())).unwrap_or(false);
+                if !scheduled { continue; }
+
+                // Each website recovers independently. A long delay or slow startup for
+                // one crashed site must never pause supervision of the other websites.
+                let task_state = state.clone();
+                let task_attempts = Arc::clone(&restart_attempts);
+                let task_in_flight = Arc::clone(&restart_in_flight);
+                tokio::spawn(async move {
+                    for _ in 0..restart_attempts_remaining(used, limit) {
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        if !crate::settings::setting_bool(&task_state, "runtime_auto_restart", false) {
+                            break;
+                        }
+                        let already_running = task_state.processes.lock()
+                            .map(|processes| processes.contains_key(&id)).unwrap_or(true);
+                        if already_running { break; }
+                        let still_crashed = task_state.db.lock().ok().and_then(|db| {
+                            db.query_row("SELECT status FROM websites WHERE id=?1", [&id], |row| row.get::<_, String>(0)).ok()
+                        }).is_some_and(|status| status == "error");
+                        if !still_crashed { break; }
+
+                        let counted = task_attempts.lock().map(|mut attempts| {
+                            let count = attempts.entry(id.clone()).or_insert(0);
+                            if *count >= limit { false } else { *count += 1; true }
+                        }).unwrap_or(false);
+                        if !counted { break; }
+
+                        if crate::http::restart_after_crash(task_state.clone(), id.clone()).await {
+                            break;
+                        }
+                        if let Ok(db) = task_state.db.lock() {
+                            let _ = db.execute(
+                                "UPDATE websites SET status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?1",
+                                rusqlite::params![id],
+                            );
+                        }
                     }
-                    if let Ok(db) = state.db.lock() {
-                        let _ = db.execute(
-                            "UPDATE websites SET status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?1",
-                            rusqlite::params![id],
-                        );
-                    }
-                }
+                    if let Ok(mut pending) = task_in_flight.lock() { pending.remove(&id); }
+                });
             }
         }
     });
@@ -157,3 +196,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn shutdown() { let _ = tokio::signal::ctrl_c().await; }
+
+#[cfg(test)]
+mod supervisor_tests {
+    use super::restart_attempts_remaining;
+
+    #[test]
+    fn restart_attempt_budget_is_bounded() {
+        assert_eq!(restart_attempts_remaining(0, 3), 3);
+        assert_eq!(restart_attempts_remaining(2, 3), 1);
+        assert_eq!(restart_attempts_remaining(3, 3), 0);
+        assert_eq!(restart_attempts_remaining(99, 3), 0);
+        assert_eq!(restart_attempts_remaining(0, 1), 1);
+    }
+}
