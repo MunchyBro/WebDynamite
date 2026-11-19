@@ -1201,9 +1201,21 @@ fn pump_runtime_log<R:Read+Send+'static>(mut reader:R,file:Arc<Mutex<File>>,writ
 }
 
 async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
-    let (project,runtime)=project_details(&state,&id)?;
+    let (mut project,runtime)=project_details(&state,&id)?;
     if !FsPath::new(&project).is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"project_not_found","The project directory is no longer available.".into()));}
     stop_process(&state,&id)?;
+    if runtime!="static" {
+        let active_release:Option<String>={
+            let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+            db.query_row("SELECT release_path FROM releases WHERE website_id=?1 AND active=1",params![id],|row|row.get(0)).optional().map_err(database_error)?
+        };
+        if let Some(path)=active_release {
+            let releases_root=state.releases_dir.canonicalize().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"release_store_unavailable",e.to_string()))?;
+            let snapshot=FsPath::new(&path).canonicalize().map_err(|e|ApiError(StatusCode::BAD_REQUEST,"active_release_missing",format!("The active runtime release is unavailable: {e}")))?;
+            if !snapshot.starts_with(&releases_root)||snapshot==releases_root||!snapshot.is_dir(){return Err(ApiError(StatusCode::FORBIDDEN,"active_release_path_forbidden","The active runtime release is outside the managed release store.".into()));}
+            project=snapshot.to_string_lossy().to_string();
+        }
+    }
     if runtime=="static" {
         if !FsPath::new(&project).join("index.html").is_file(){return Err(ApiError(StatusCode::BAD_REQUEST,"index_missing","Static projects must contain an index.html file.".into()));}
         set_status(&state,&id,"running")?;
@@ -1314,6 +1326,9 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
     if let Ok(mut times)=state.process_started_at.lock(){times.insert(id.clone(),Instant::now());}
     set_status(&state,&id,"running")?;
     Ok(Json(json!({"id":id,"status":"running","health":"accepting_connections","pid":pid,"port":port,"url":format!("http://127.0.0.1:{port}"),"log_path":log_path})))
+}
+pub(crate) async fn restart_website_for_deployment(state:AppState,id:String)->Result<(),String>{
+    start_website(State(state),Path(id)).await.map(|_|()).map_err(|error|format!("{}: {}",error.1,error.2))
 }
 async fn stop_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
     let _=project_details(&state,&id)?; stop_process(&state,&id)?; set_status(&state,&id,"stopped")?;
