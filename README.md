@@ -178,6 +178,11 @@ WebDynamite is actively evolving. The existence of a dashboard or configuration 
 - [Issues and bug reports](https://github.com/MunchyBro/WebDynamite/issues)
 - [Releases](https://github.com/MunchyBro/WebDynamite/releases)
 
+## Who
+
+```powershell
+   BrailStudio
+   ```
 ## License
 
 WebDynamite is distributed under the MIT License. See [LICENSE](LICENSE).
