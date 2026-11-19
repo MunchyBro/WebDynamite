@@ -1102,6 +1102,7 @@ fn set_status(state:&AppState,id:&str,status:&str)->Result<(),ApiError>{
 fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
     if let Some(mut child)=map.remove(id){
+        if let Ok(mut times)=state.process_started_at.lock(){times.remove(id);}
         let pid=child.id();
         #[cfg(windows)]
         { let _=Command::new("taskkill").args(["/PID",&pid.to_string(),"/T","/F"]).output(); }
@@ -1310,6 +1311,7 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
         return Err(ApiError(StatusCode::GATEWAY_TIMEOUT,"runtime_startup_timeout",format!("The {runtime} process did not begin accepting connections on 127.0.0.1:{port} within 15 seconds. Review the website logs and launch profile.")));
     }
     state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?.insert(id.clone(),child);
+    if let Ok(mut times)=state.process_started_at.lock(){times.insert(id.clone(),Instant::now());}
     set_status(&state,&id,"running")?;
     Ok(Json(json!({"id":id,"status":"running","health":"accepting_connections","pid":pid,"port":port,"url":format!("http://127.0.0.1:{port}"),"log_path":log_path})))
 }
@@ -1410,4 +1412,9 @@ mod domain_tests {
         assert!(!valid_local_hostname("bad name.localhost"));
         assert!(!valid_local_hostname("a..localhost"));
     }
+}
+
+
+pub(crate) async fn restart_after_crash(state: AppState, id: String) -> bool {
+    start_website(State(state), Path(id)).await.is_ok()
 }
