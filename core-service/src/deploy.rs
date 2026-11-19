@@ -2,7 +2,7 @@ use axum::{extract::{Path, Query, State}, routing::get, Json, Router, http::Stat
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::{self, File}, io::{Read, Seek, SeekFrom}, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}, thread, time::{Duration, Instant}};
+use std::{fs::{self, File}, io::{Read, Seek, SeekFrom, Write}, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}}, thread, time::{Duration, Instant}};
 use uuid::Uuid;
 use crate::AppState;
 
@@ -94,12 +94,18 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  let build_timeout_seconds=crate::settings::setting_number(&state,"build_timeout_seconds",600).clamp(30,1800);
  let build_timeout=Duration::from_secs(build_timeout_seconds);
  let build_log_path=state.logs_dir.join(format!("build-{}.log",Uuid::new_v4()));
+ const BUILD_LOG_LIMIT_BYTES:u64=10*1024*1024;
  let log_file=File::create(&build_log_path).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
- let stderr=log_file.try_clone().map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
+ let output=Arc::new(Mutex::new(log_file));
+ let remaining=Arc::new(AtomicU64::new(BUILD_LOG_LIMIT_BYTES));
  let started=Instant::now();
  let mut child=Command::new(&profile.0).args(&profile.1).current_dir(&canonical)
-  .stdout(Stdio::from(log_file)).stderr(Stdio::from(stderr)).spawn()
+  .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
   .map_err(|e|DeployError(StatusCode::BAD_GATEWAY,"build_start_failed",format!("Could not start {}: {e}",profile.0)))?;
+ let stdout=child.stdout.take().ok_or_else(||DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_output_unavailable","Could not capture build stdout.".into()))?;
+ let stderr=child.stderr.take().ok_or_else(||DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_output_unavailable","Could not capture build stderr.".into()))?;
+ let stdout_reader=drain_build_output(stdout,Arc::clone(&output),Arc::clone(&remaining));
+ let stderr_reader=drain_build_output(stderr,Arc::clone(&output),Arc::clone(&remaining));
  let mut timed_out=false;
  let result_status=loop {
   match child.try_wait() {
@@ -117,9 +123,13 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
    }
   }
  };
+ let _=stdout_reader.join();
+ let _=stderr_reader.join();
  let elapsed=started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+ let output_truncated=remaining.load(Ordering::Relaxed)==0;
  let mut logs=read_log_tail(&build_log_path,262_144).unwrap_or_else(|e|format!("Could not read build log: {e}"));
  let _=fs::remove_file(&build_log_path);
+ if output_truncated{logs.push_str("\nBuild output storage reached its 10 MiB limit; additional output was discarded while the process continued.");}
  if timed_out{logs.push_str(&format!("\nBuild timed out after {build_timeout_seconds} seconds; the process was terminated."));}
  let mut status=if !timed_out&&result_status.as_ref().is_some_and(|s|s.success()){"success"}else{"failed"};
  let mut exit_code=result_status.and_then(|s|s.code());
@@ -146,6 +156,19 @@ fn terminate_build_process(child:&mut Child){
  let _=child.wait();
 }
 
+fn drain_build_output<R:Read+Send+'static>(mut reader:R,output:Arc<Mutex<File>>,remaining:Arc<AtomicU64>)->thread::JoinHandle<()>{
+ thread::spawn(move||{
+  let mut buffer=[0u8;8192];
+  loop{
+   let read=match reader.read(&mut buffer){Ok(0)|Err(_)=>break,Ok(count)=>count};
+   let allowed=remaining.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|left|Some(left.saturating_sub(read as u64))).unwrap_or(0).min(read as u64) as usize;
+   if allowed>0{
+    if let Ok(mut file)=output.lock(){let _=file.write_all(&buffer[..allowed]);}else{break;}
+   }
+  }
+ })
+}
+
 fn read_log_tail(path:&FsPath,max_bytes:u64)->std::io::Result<String>{
  let mut file=File::open(path)?;
  let length=file.metadata()?.len();
@@ -154,7 +177,7 @@ fn read_log_tail(path:&FsPath,max_bytes:u64)->std::io::Result<String>{
  let mut bytes=Vec::with_capacity(length.saturating_sub(start) as usize);
  file.read_to_end(&mut bytes)?;
  let mut output=String::from_utf8_lossy(&bytes).to_string();
- if start>0{output=format!("… earlier build output omitted (log capped at 256 KiB) …\n{output}");}
+ if start>0{output=format!("… earlier build output omitted (stored log capped at 10 MiB; display tail capped at 256 KiB) …\n{output}");}
  Ok(output)
 }
 
@@ -323,6 +346,20 @@ async fn rollback_release(State(state):State<AppState>,Path((website_id,release_
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn build_output_drain_stops_writing_at_storage_limit_but_drains_input() {
+        let path=std::env::temp_dir().join(format!("webdynamite-build-output-{}.log",Uuid::new_v4()));
+        let file=File::create(&path).unwrap();
+        let output=Arc::new(Mutex::new(file));
+        let remaining=Arc::new(AtomicU64::new(64));
+        let reader=drain_build_output(Cursor::new(vec![b'x';128]),Arc::clone(&output),Arc::clone(&remaining));
+        reader.join().unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(),64);
+        assert_eq!(remaining.load(Ordering::Relaxed),0);
+        let _=fs::remove_file(path);
+    }
 
     #[test]
     fn release_retention_always_preserves_active_and_keeps_configured_total() {
