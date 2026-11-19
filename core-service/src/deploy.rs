@@ -67,6 +67,7 @@ async fn list_runs(State(state):State<AppState>,Query(query):Query<RunsQuery>)->
  let rows=if let Some(id)=query.website_id{q.query_map(params![id],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map([],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(Json(rows))
 }
+#[axum::debug_handler]
 async fn deploy_website(State(state):State<AppState>,Path(website_id):Path<String>)->Result<(StatusCode,Json<serde_json::Value>),DeployError>{
  let runtime:String={
   let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -190,6 +191,7 @@ async fn list_releases(State(state):State<AppState>,Query(query):Query<RunsQuery
  let rows=if let Some(id)=query.website_id{q.query_map(params![id],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map([],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(Json(rows))
 }
+#[axum::debug_handler]
 async fn create_release(State(state):State<AppState>,Path(website_id):Path<String>)->Result<(StatusCode,Json<Release>),DeployError>{
  let (root,output_dir,runtime,website_name):(PathBuf,String,String,String)={
   let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -281,6 +283,7 @@ async fn delete_release(State(state):State<AppState>,Path((website_id,release_id
  if changed!=1{return Err(DeployError(StatusCode::CONFLICT,"release_state_changed","Release state changed while it was being deleted; refresh release history.".into()));}
  Ok(Json(json!({"deleted":true,"release_id":release_id,"message":"Inactive release and its stored files were deleted."})))
 }
+#[axum::debug_handler]
 async fn rollback_release(State(state):State<AppState>,Path((website_id,release_id)):Path<(String,String)>)->Result<Json<serde_json::Value>,DeployError>{
  let path:String={
   let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
