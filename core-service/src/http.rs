@@ -1171,12 +1171,13 @@ fn http_readiness_probe(port: u16) -> bool {
 
 const MAX_RUNTIME_LOG_BYTES:u64=10*1024*1024;
 const RUNTIME_LOG_TRUNCATED_MARKER:&[u8]=b"\n[WebDynamite] Runtime log limit reached (10 MiB); further output is discarded.\n";
+const MAX_RUNTIME_LOG_CONTENT_BYTES:u64=MAX_RUNTIME_LOG_BYTES-RUNTIME_LOG_TRUNCATED_MARKER.len() as u64;
 
 fn reserve_runtime_log_bytes(counter:&AtomicU64,requested:usize)->usize{
     loop{
         let current=counter.load(Ordering::Relaxed);
-        if current>=MAX_RUNTIME_LOG_BYTES{return 0;}
-        let allowed=(MAX_RUNTIME_LOG_BYTES-current).min(requested as u64);
+        if current>=MAX_RUNTIME_LOG_CONTENT_BYTES{return 0;}
+        let allowed=(MAX_RUNTIME_LOG_CONTENT_BYTES-current).min(requested as u64);
         if counter.compare_exchange_weak(current,current+allowed,Ordering::Relaxed,Ordering::Relaxed).is_ok(){return allowed as usize;}
     }
 }
@@ -1366,10 +1367,11 @@ mod domain_tests {
 
     #[test]
     fn runtime_log_byte_reservation_never_exceeds_the_limit(){
-        let counter=AtomicU64::new(MAX_RUNTIME_LOG_BYTES-3);
+        let counter=AtomicU64::new(MAX_RUNTIME_LOG_CONTENT_BYTES-3);
         assert_eq!(reserve_runtime_log_bytes(&counter,8),3);
         assert_eq!(reserve_runtime_log_bytes(&counter,8),0);
-        assert_eq!(counter.load(Ordering::Relaxed),MAX_RUNTIME_LOG_BYTES);
+        assert_eq!(counter.load(Ordering::Relaxed),MAX_RUNTIME_LOG_CONTENT_BYTES);
+        assert_eq!(counter.load(Ordering::Relaxed)+RUNTIME_LOG_TRUNCATED_MARKER.len() as u64,MAX_RUNTIME_LOG_BYTES);
     }
 
     #[test]
