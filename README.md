@@ -11,7 +11,7 @@ WebDynamite brings local website hosting, domains, deployment workflows, databas
 - **Website management:** register projects, start/stop/restart supported runtimes, inspect logs, and manage project files. Runtime stdout/stderr is continuously drained and capped at 10 MiB per website process; log views read only the last 256 KiB.
 - **Runtime and builds:** static sites, Node.js process profiles, PHP/Python runtime support, and configurable build/deployment profiles. Build commands have a configurable 30–1,800 second timeout (default 600 seconds); build stdout/stderr is continuously drained but stored up to 10 MiB per build, while build history displays at most the last 256 KiB. The exact runtime adapter depends on the installed runtime and project configuration.
 - **Domains and routing:** local domain registry, Caddy configuration integration, DNS diagnostics for public domains, and TLS readiness/verification tools.
-- **Public access:** LAN publishing and Cloudflare Quick Tunnel workflows. Public availability still depends on DNS, firewall/router rules, tunnel state, and the target machine remaining online.
+- **Public access:** LAN publishing and Cloudflare Quick Tunnel workflows. A global public-exposure switch is off by default; disabling it stops active Quick Tunnels and removes public-domain routes from the generated Caddy configuration while leaving local/LAN routes independently managed. Public availability still depends on DNS, firewall/router rules, tunnel state, and the target machine remaining online.
 - **Databases:** managed SQLite databases, import/export and query tools, plus saved PostgreSQL and MySQL/MariaDB connection profiles with read-only query workflows.
 - **File manager:** browse website files, search/sort, create folders, rename, upload/download files and folders, and work with ZIP archives.
 - **Git and releases:** inspect repository state, create and roll back static-site release snapshots, delete inactive snapshots, and automatically prune old releases using a configurable 1–100 release retention limit (default 10).
@@ -31,7 +31,7 @@ Features that depend on external programs or network services require those prog
 | Local reverse proxy | Caddy integration | Local domain routing and HTTPS configuration workflows |
 | Optional public connectivity | Cloudflare Tunnel | Quick Tunnel publishing without directly opening an inbound router port |
 
-The Core Service currently listens on `127.0.0.1:47821`. It is designed as a local control API, not as an internet-facing management endpoint. The desktop app launches the bundled `webdynamite-core.exe`, waits for its listener, and passes a randomly generated API token through the child-process environment. The token is stored using Windows Credential Manager.
+The Core Service currently listens on `127.0.0.1:47821`. It is designed as a local control API, not as an internet-facing management endpoint. Public hosting is globally disabled by default and must be explicitly enabled in the Networking screen; this switch controls public-domain proxy routes and Cloudflare Quick Tunnels, not LAN sharing. The desktop app launches the bundled `webdynamite-core.exe`, waits for its listener, and passes a randomly generated API token through the child-process environment. The token is stored using Windows Credential Manager.
 
 ## Requirements
 
