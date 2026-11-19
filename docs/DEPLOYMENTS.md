@@ -39,3 +39,8 @@ The website Logs endpoint seeks to the end of the file and returns at most the l
 The Git & Releases page can delete an inactive static release snapshot when its files are no longer needed. Deletion permanently removes the snapshot directory from the managed release store and removes its registry entry. The currently active release is protected by the Core Service and cannot be deleted; activate another snapshot first if you need to remove it. Rollback and deletion are scoped to the selected website. Release paths are canonicalized and checked against the managed release directory before filesystem removal.
 
 Automatic pruning runs after a successful release activation. It is not a background timer: changing the retention limit takes effect on the next successful deployment. Manual deletion is also available.
+
+
+## Runtime crash recovery
+
+Automatic restart is an opt-in global setting, disabled by default. It applies to Node.js, PHP and Python child processes that exit unsuccessfully. Configure the maximum retry count (1–10) and delay (1–300 seconds) in Settings → Hosting. WebDynamite does not restart a manually stopped process or one that exits successfully. Failed launch attempts consume the retry budget; a process that runs for at least five minutes receives a fresh budget after a subsequent crash. This does not replace an external service manager and does not guarantee recovery after the Core Service or Windows exits.
