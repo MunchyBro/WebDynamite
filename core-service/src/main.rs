@@ -16,6 +16,7 @@ use rusqlite::Connection;
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
+    pub process_started_at: Arc<Mutex<HashMap<String, std::time::Instant>>>,
     pub logs_dir: PathBuf,
     pub releases_dir: PathBuf,
     pub backups_dir: PathBuf,
@@ -40,6 +41,7 @@ fn data_dir() -> PathBuf {
 fn supervise_processes(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(2));
+        let mut restart_attempts: HashMap<String, u64> = HashMap::new();
         loop {
             interval.tick().await;
             let mut exited = Vec::new();
@@ -50,20 +52,43 @@ fn supervise_processes(state: AppState) {
                 };
                 for (id, child) in processes.iter_mut() {
                     match child.try_wait() {
-                        Ok(Some(status)) => exited.push((id.clone(), status.success())),
+                        Ok(Some(status)) => {
+                            let started = state.process_started_at.lock().ok()
+                                .and_then(|mut times| times.remove(id));
+                            let uptime = started.map(|at| at.elapsed()).unwrap_or_default();
+                            exited.push((id.clone(), status.success(), uptime));
+                        }
                         Ok(None) => {}
-                        Err(_) => exited.push((id.clone(), false)),
+                        Err(_) => exited.push((id.clone(), false, Duration::ZERO)),
                     }
                 }
-                for (id, _) in &exited { processes.remove(id); }
+                for (id, _, _) in &exited { processes.remove(id); }
             }
-            if !exited.is_empty() {
+            for (id, success, uptime) in exited {
                 if let Ok(db) = state.db.lock() {
-                    for (id, success) in exited {
-                        let status = if success { "stopped" } else { "crashed" };
+                    let status = if success { "stopped" } else { "error" };
+                    let _ = db.execute(
+                        "UPDATE websites SET status=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+                        rusqlite::params![status, id],
+                    );
+                }
+                if success { restart_attempts.remove(&id); continue; }
+                if uptime >= Duration::from_secs(300) { restart_attempts.remove(&id); }
+                if !crate::settings::setting_bool(&state, "runtime_auto_restart", false) { continue; }
+                let limit = crate::settings::setting_number(&state, "runtime_restart_limit", 3).clamp(1, 10);
+                let delay = crate::settings::setting_number(&state, "runtime_restart_delay_seconds", 5).clamp(1, 300);
+                let used = restart_attempts.get(&id).copied().unwrap_or(0);
+                if used >= limit { continue; }
+                for _ in used..limit {
+                    restart_attempts.insert(id.clone(), restart_attempts.get(&id).copied().unwrap_or(0) + 1);
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    if crate::http::restart_after_crash(state.clone(), id.clone()).await {
+                        break;
+                    }
+                    if let Ok(db) = state.db.lock() {
                         let _ = db.execute(
-                            "UPDATE websites SET status=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",
-                            rusqlite::params![status, id],
+                            "UPDATE websites SET status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?1",
+                            rusqlite::params![id],
                         );
                     }
                 }
@@ -104,6 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         db: Arc::new(Mutex::new(connection)),
         processes: Arc::new(Mutex::new(HashMap::new())),
+        process_started_at: Arc::new(Mutex::new(HashMap::new())),
         logs_dir,
         releases_dir,
         backups_dir,
