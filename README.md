@@ -181,3 +181,8 @@ WebDynamite is actively evolving. The existence of a dashboard or configuration 
 ## License
 
 WebDynamite is distributed under the MIT License. See [LICENSE](LICENSE).
+
+
+### Runtime crash recovery
+
+Node.js, PHP, and Python websites can optionally restart after an unexpected non-zero process exit. This is disabled by default and is configurable in Settings → Hosting. When enabled, WebDynamite waits the configured delay and makes a bounded number of restart attempts (1–10). Manual stops and clean exits are not restarted. A website that remains healthy for five minutes gets a fresh retry budget after a later crash. This is process-exit recovery, not continuous HTTP health monitoring or a Windows service recovery guarantee.
