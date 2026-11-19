@@ -346,6 +346,20 @@ async fn rollback_release(State(state):State<AppState>,Path((website_id,release_
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn build_output_drain_stops_writing_at_storage_limit_but_drains_input() {
+        let path=std::env::temp_dir().join(format!("webdynamite-build-output-{}.log",Uuid::new_v4()));
+        let file=File::create(&path).unwrap();
+        let output=Arc::new(Mutex::new(file));
+        let remaining=Arc::new(AtomicU64::new(64));
+        let reader=drain_build_output(Cursor::new(vec![b'x';128]),Arc::clone(&output),Arc::clone(&remaining));
+        reader.join().unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(),64);
+        assert_eq!(remaining.load(Ordering::Relaxed),0);
+        let _=fs::remove_file(path);
+    }
 
     #[test]
     fn release_retention_always_preserves_active_and_keeps_configured_total() {
