@@ -100,6 +100,9 @@ pub async fn start(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
+    if !crate::settings::setting_bool(&state, "public_exposure_enabled", false) {
+        return Err(error(StatusCode::FORBIDDEN, "Public exposure is disabled globally. Enable it in Networking before starting a tunnel."));
+    }
     let (name, runtime, status, port) = {
         let db = state.db.lock().map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Database lock unavailable"))?;
         db.query_row(

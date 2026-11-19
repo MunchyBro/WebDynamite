@@ -23,6 +23,7 @@ fn defaults() -> BTreeMap<String, Value> {
         ("runtime_auto_restart".into(), json!(false)),
         ("runtime_restart_limit".into(), json!(3)),
         ("runtime_restart_delay_seconds".into(), json!(5)),
+        ("public_exposure_enabled".into(), json!(false)),
     ])
 }
 
@@ -62,6 +63,7 @@ fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
             if !(2..=60).contains(&n) { return Err("Monitoring interval must be between 2 and 60 seconds".into()); }
         }
         "runtime_auto_restart" => { value.as_bool().ok_or("Automatic runtime restart must be true or false")?; }
+        "public_exposure_enabled" => { value.as_bool().ok_or("Public exposure must be true or false")?; }
         "runtime_restart_limit" => { let n=value.as_u64().ok_or("Runtime restart limit must be an integer")?; if !(1..=10).contains(&n) { return Err("Runtime restart limit must be between 1 and 10".into()); } }
         "runtime_restart_delay_seconds" => { let n=value.as_u64().ok_or("Runtime restart delay must be an integer")?; if !(1..=300).contains(&n) { return Err("Runtime restart delay must be between 1 and 300 seconds".into()); } }
         "build_timeout_seconds" => {
@@ -86,6 +88,7 @@ async fn update_settings(State(state): State<AppState>, Json(input): Json<Map<St
         validate_setting(key,value).map_err(|e|(axum::http::StatusCode::BAD_REQUEST,e))?;
     }
     let retention=input.get("log_retention_days").and_then(Value::as_u64);
+    let public_exposure_change=input.get("public_exposure_enabled").and_then(Value::as_bool);
     {
         let mut db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,"Database lock is unavailable".into()))?;
         let tx=db.transaction().map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?;
@@ -95,6 +98,10 @@ async fn update_settings(State(state): State<AppState>, Json(input): Json<Map<St
         tx.commit().map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?;
     }
     if let Some(days)=retention { prune_logs(&state.logs_dir,days); }
+    if let Some(enabled)=public_exposure_change {
+        if !enabled { crate::tunnel::stop_all(&state); }
+        crate::proxy::refresh_running_config(&state);
+    }
     get_settings(State(state)).await
 }
 
@@ -200,6 +207,8 @@ mod tests {
         assert!(validate_setting("build_timeout_seconds",&json!(1801)).is_err());
         assert!(validate_setting("runtime_auto_restart",&json!(true)).is_ok());
         assert!(validate_setting("runtime_auto_restart",&json!("yes")).is_err());
+        assert!(validate_setting("public_exposure_enabled",&json!(false)).is_ok());
+        assert!(validate_setting("public_exposure_enabled",&json!("off")).is_err());
         assert!(validate_setting("runtime_restart_limit",&json!(1)).is_ok());
         assert!(validate_setting("runtime_restart_limit",&json!(11)).is_err());
         assert!(validate_setting("runtime_restart_delay_seconds",&json!(300)).is_ok());

@@ -906,6 +906,7 @@ async fn system_metrics()->Result<Json<serde_json::Value>,ApiError>{
 
 async fn networking_status(State(state): State<AppState>) -> Result<Json<serde_json::Value>,ApiError> {
     let lan_ip=crate::network::lan_ipv4().map(|ip|ip.to_string());
+    let public_exposure_enabled=crate::settings::setting_bool(&state,"public_exposure_enabled",false);
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     let mut q=db.prepare("SELECT id,name,runtime,status,lan_enabled,lan_port FROM websites ORDER BY name").map_err(database_error)?;
     let rows=q.query_map([],|r|Ok(json!({
@@ -917,7 +918,7 @@ async fn networking_status(State(state): State<AppState>) -> Result<Json<serde_j
         "lan_port":r.get::<_,Option<u16>>(5)?
     }))).map_err(database_error)?;
     let websites=rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
-    Ok(Json(json!({"lan_ipv4":lan_ip,"websites":websites,"management_api":"loopback_only","public_exposure_enabled":false})))
+    Ok(Json(json!({"lan_ipv4":lan_ip,"websites":websites,"management_api":"loopback_only","public_exposure_enabled":public_exposure_enabled})))
 }
 
 async fn set_lan_access(

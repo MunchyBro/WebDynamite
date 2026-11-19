@@ -14,6 +14,7 @@ pub fn router() -> Router<AppState> {
 }
 fn config_path(state:&AppState)->std::path::PathBuf { state.config_dir.join("Caddyfile") }
 pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),String>{
+ let public_exposure_enabled=crate::settings::setting_bool(state,"public_exposure_enabled",false);
  let db=state.db.lock().map_err(|_|"Database lock is unavailable".to_string())?;
  let mut q=db.prepare("SELECT d.hostname,d.website_id,w.runtime,w.port FROM domains d JOIN websites w ON w.id=d.website_id ORDER BY d.hostname").map_err(|e|e.to_string())?;
  let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<u16>>(3)?))).map_err(|e|e.to_string())?;
@@ -30,6 +31,7 @@ pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),Stri
   let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<u16>>(3)?))).map_err(|e|e.to_string())?;
   rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?
  };
+ if public_exposure_enabled {
  for (host,id,runtime,port) in public_sites {
   if runtime=="static" {
    config.push_str(&format!("{host} {{\n    @root path /\n    rewrite @root /hosted/{id}/index.html\n    @assets not path /\n    rewrite @assets /hosted/{id}{{uri}}\n    reverse_proxy 127.0.0.1:47821\n}}\n\n"));
@@ -38,6 +40,7 @@ pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),Stri
    config.push_str(&format!("{host} {{\n    reverse_proxy 127.0.0.1:{upstream}\n}}\n\n"));
    routes+=1;
   } else {pending+=1;}
+ }
  }
  // LAN publishing is opt-in per website and binds to the private interface only.
  let lan_sites={
@@ -66,6 +69,20 @@ fn caddy_output(state:&AppState,args:&[&str])->Result<String,String>{
  if !output.status.success(){return Err(format!("Caddy exited with {}: {}",output.status,text.trim()));}
  Ok(text.trim().to_string())
 }
+/// Regenerate and reload Caddy when it is already running. If a security-setting change
+/// cannot be applied, stop the proxy rather than leave stale public routes active.
+pub fn refresh_running_config(state:&AppState){
+ let running=if let Ok(mut slot)=state.proxy_process.lock(){
+  match slot.as_mut(){Some(child)=>match child.try_wait(){Ok(None)=>true,Ok(Some(_))=>{*slot=None;false},Err(_)=>true},None=>false}
+ }else{false};
+ if !running{return;}
+ let result=validate_config(state).and_then(|_|{
+  let path=config_path(state);let p=path.to_string_lossy().to_string();
+  caddy_output(state,&["reload","--config",&p,"--adapter","caddyfile"]).map(|_|())
+ });
+ if result.is_err(){stop_on_shutdown(state);}
+}
+
 fn validate_config(state:&AppState)->Result<String,String>{
  let (config,_,_)=generate_config(state)?;
  let path=config_path(state); let temp=path.with_extension("candidate");
