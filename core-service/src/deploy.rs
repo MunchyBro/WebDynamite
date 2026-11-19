@@ -177,7 +177,7 @@ fn read_log_tail(path:&FsPath,max_bytes:u64)->std::io::Result<String>{
  let mut bytes=Vec::with_capacity(length.saturating_sub(start) as usize);
  file.read_to_end(&mut bytes)?;
  let mut output=String::from_utf8_lossy(&bytes).to_string();
- if start>0{output=format!("… earlier build output omitted (log capped at 256 KiB) …\n{output}");}
+ if start>0{output=format!("… earlier build output omitted (stored log capped at 10 MiB; display tail capped at 256 KiB) …\n{output}");}
  Ok(output)
 }
 
