@@ -54,7 +54,7 @@ fn valid_local_hostname(value: &str) -> bool {
         && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
 }
 #[derive(Debug)]
-struct ApiError(StatusCode, &'static str, String);
+pub(crate) struct ApiError(StatusCode, &'static str, String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(json!({"error":{"code":self.1,"message":self.2}}))).into_response()
