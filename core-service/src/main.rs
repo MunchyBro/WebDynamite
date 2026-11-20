@@ -144,12 +144,6 @@ fn supervise_processes(state: AppState) {
                         if crate::http::restart_after_crash(task_state.clone(), id.clone()).await {
                             break;
                         }
-                        if let Ok(db) = task_state.db.lock() {
-                            let _ = db.execute(
-                                "UPDATE websites SET status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?1",
-                                rusqlite::params![id],
-                            );
-                        }
                     }
                     if let Ok(mut pending) = task_in_flight.lock() { pending.remove(&id); }
                 });
