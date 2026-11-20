@@ -153,7 +153,7 @@ fn website_root(state:&AppState,id:&str)->Result<PathBuf,ApiError>{
 }
 fn safe_relative_path(value:&str)->Result<PathBuf,ApiError>{
     let path=FsPath::new(value);
-    if value.is_empty() || path.is_absolute() || path.components().any(|component| {
+    if value.is_empty() || value.contains('\\\\') || path.is_absolute() || path.components().any(|component| {
         let std::path::Component::Normal(part)=component else { return true; };
         let name=part.to_string_lossy();
         let upper=name.to_ascii_uppercase();
