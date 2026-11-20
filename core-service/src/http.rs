@@ -1447,5 +1447,9 @@ mod domain_tests {
 
 
 pub(crate) async fn restart_after_crash(state: AppState, id: String) -> bool {
-    start_website(State(state), Path(id)).await.is_ok()
+    let Ok(_operation)=runtime_operation_guard(&state,&id).await else{return false;};
+    if !crate::settings::setting_bool(&state,"runtime_auto_restart",false){return false;}
+    let still_crashed=state.db.lock().ok().and_then(|db|db.query_row("SELECT status FROM websites WHERE id=?1",[&id],|row|row.get::<_,String>(0)).ok()).is_some_and(|status|status=="error");
+    if !still_crashed{return false;}
+    start_website_inner(state,id).await.is_ok()
 }
