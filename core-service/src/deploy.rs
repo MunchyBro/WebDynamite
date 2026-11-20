@@ -83,6 +83,7 @@ async fn deploy_website(State(state):State<AppState>,Path(website_id):Path<Strin
 }
 
 async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->Result<(StatusCode,Json<BuildRun>),DeployError>{
+ let _build_slot=state.build_slots.clone().try_acquire_owned().map_err(|_|DeployError(StatusCode::TOO_MANY_REQUESTS,"build_capacity_reached","Two builds are already running. Wait for one to finish before starting another.".into()))?;
  let (root,profile):(PathBuf,(String,Vec<String>,String,String))={
   let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
   let root:String=db.query_row("SELECT project_path FROM websites WHERE id=?1",params![website_id],|r|r.get(0)).map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){DeployError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())}else{db_error(e)})?;
