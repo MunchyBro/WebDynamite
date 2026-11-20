@@ -53,27 +53,45 @@ fn supervise_processes(state: AppState) {
         let restart_in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
         loop {
             interval.tick().await;
-            let mut exited = Vec::new();
-            {
-                let mut processes = match state.processes.lock() {
-                    Ok(value) => value,
-                    Err(_) => break,
+
+            // Snapshot IDs first, then serialize each lifecycle transition with the
+            // same per-website lock used by the HTTP handlers. Never await while the
+            // std process-registry mutex is held.
+            let ids = match state.processes.lock() {
+                Ok(processes) => processes.keys().cloned().collect::<Vec<_>>(),
+                Err(_) => break,
+            };
+
+            for id in ids {
+                let Ok(_operation) = crate::http::runtime_operation_guard(&state, &id).await else {
+                    continue;
                 };
-                for (id, child) in processes.iter_mut() {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            let started = state.process_started_at.lock().ok()
-                                .and_then(|mut times| times.remove(id));
-                            let uptime = started.map(|at| at.elapsed()).unwrap_or_default();
-                            exited.push((id.clone(), status.success(), uptime));
-                        }
-                        Ok(None) => {}
-                        Err(_) => exited.push((id.clone(), false, Duration::ZERO)),
+
+                let exited = {
+                    let mut processes = match state.processes.lock() {
+                        Ok(value) => value,
+                        Err(_) => break,
+                    };
+                    let outcome = match processes.get_mut(&id) {
+                        Some(child) => match child.try_wait() {
+                            Ok(Some(status)) => Some(status.success()),
+                            Err(_) => Some(false),
+                            Ok(None) => None,
+                        },
+                        None => None,
+                    };
+                    if let Some(success) = outcome {
+                        processes.remove(&id);
+                        let uptime = state.process_started_at.lock().ok()
+                            .and_then(|mut times| times.remove(&id))
+                            .map(|at| at.elapsed()).unwrap_or_default();
+                        Some((success, uptime))
+                    } else {
+                        None
                     }
-                }
-                for (id, _, _) in &exited { processes.remove(id); }
-            }
-            for (id, success, uptime) in exited {
+                };
+
+                let Some((success, uptime)) = exited else { continue; };
                 if let Ok(db) = state.db.lock() {
                     let status = if success { "stopped" } else { "error" };
                     let _ = db.execute(
