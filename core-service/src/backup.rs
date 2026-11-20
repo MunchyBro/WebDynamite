@@ -14,6 +14,9 @@ impl IntoResponse for BackupError{
 }
 fn db_error(e:rusqlite::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_error",e.to_string())}
 fn io_error(code:&'static str,e:std::io::Error)->BackupError{backup_error(StatusCode::INTERNAL_SERVER_ERROR,code,e.to_string())}
+fn valid_backup_entry_id(value:&str)->bool {
+ !value.is_empty()&&value.len()<=64&&value.bytes().all(|b|b.is_ascii_hexdigit()||b==b'-')
+}
 fn legacy_checksum_algorithm()->String{"fnv1a-64".into()}
 #[derive(Serialize,Deserialize)]
 struct Manifest{version:u32,#[serde(default="legacy_checksum_algorithm")]checksum_algorithm:String,checksum:String,file_count:u64,size_bytes:u64,website_count:u64,database_count:u64,created_at:String}
@@ -223,26 +226,46 @@ fn restore_sync(state:&AppState,id:&str)->Result<Value,BackupError>{
   let has_processes=!state.processes.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Website process registry is unavailable."))?.is_empty();
   if active>0||has_processes{return Err(backup_error(StatusCode::CONFLICT,"websites_must_be_stopped","Stop every website before restoring a full-system backup."));}
  }
- let safety=create_backup_sync(state)?;
- let sites=metadata["websites"].as_array().cloned().unwrap_or_default();
- for website in &sites{
-  let id=website[0].as_str().unwrap_or("");
-  let project=PathBuf::from(website[2].as_str().unwrap_or(""));
-  let root=project.canonicalize().map_err(|e|backup_error(StatusCode::NOT_FOUND,"restore_project_missing",format!("Restore destination must already exist: {e}")))?;
-  if !root.is_dir(){return Err(backup_error(StatusCode::BAD_REQUEST,"restore_project_invalid","A website restore destination is not a directory."));}
-  let source=path.join("websites").join(id);
-  if !source.is_dir(){return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_website_missing","Backup is missing a website folder."));}
-  replace_tree(&source,&root)?;
+ let sites=metadata["websites"].as_array().cloned().ok_or_else(||backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_metadata_invalid","Backup metadata is missing the website inventory."))?;
+ let databases=metadata["managed_databases"].as_array().cloned().ok_or_else(||backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_metadata_invalid","Backup metadata is missing the database inventory."))?;
+ if sites.len() as u64!=manifest.website_count||databases.len() as u64!=manifest.database_count{
+  return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_inventory_mismatch","Backup metadata inventory does not match its manifest."));
  }
- let databases=metadata["managed_databases"].as_array().cloned().unwrap_or_default();
+ // Validate every identifier and destination before creating the safety backup or
+ // changing any website/database files. A valid checksum alone does not make paths safe.
+ let websites_root=path.join("websites").canonicalize().map_err(|e|io_error("backup_website_store_missing",e))?;
+ let mut restore_sites=Vec::with_capacity(sites.len());
+ for website in &sites{
+  let website_id=website.get(0).and_then(Value::as_str).filter(|value|valid_backup_entry_id(value))
+   .ok_or_else(||backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_website_id_invalid","Backup contains an invalid website identifier."))?;
+  let project=website.get(2).and_then(Value::as_str).filter(|value|!value.trim().is_empty())
+   .ok_or_else(||backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_project_path_invalid","Backup contains an invalid website destination."))?;
+  let root=PathBuf::from(project).canonicalize().map_err(|e|backup_error(StatusCode::NOT_FOUND,"restore_project_missing",format!("Restore destination must already exist: {e}")))?;
+  if !root.is_dir(){return Err(backup_error(StatusCode::BAD_REQUEST,"restore_project_invalid","A website restore destination is not a directory."));}
+  let source=path.join("websites").join(website_id).canonicalize()
+   .map_err(|_|backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_website_missing","Backup is missing a website folder."))?;
+  if !source.starts_with(&websites_root)||!source.is_dir(){return Err(backup_error(StatusCode::FORBIDDEN,"backup_website_path_forbidden","A website backup folder resolves outside the managed backup."));}
+  restore_sites.push((source,root));
+ }
+ let database_root=path.join("databases").canonicalize().map_err(|e|io_error("backup_database_store_missing",e))?;
  let db_dir=state.config_dir.join("databases");fs::create_dir_all(&db_dir).map_err(|e|io_error("restore_database_dir_failed",e))?;
+ let mut restore_databases=Vec::with_capacity(databases.len());
  for database in &databases{
-  let id=database[0].as_str().unwrap_or("");
-  if id.is_empty()||!id.bytes().all(|b|b.is_ascii_hexdigit()||b==b'-'){return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_database_id_invalid","Backup contains an invalid database identifier."));}
-  let source=path.join("databases").join(format!("{id}.sqlite3"));
-  let target=db_dir.join(format!("{id}.sqlite3"));
-  if !source.is_file(){return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_database_missing","Backup is missing a managed database file."));}
-  let temporary=db_dir.join(format!("{id}.restore.tmp"));fs::copy(&source,&temporary).map_err(|e|io_error("restore_database_copy_failed",e))?;
+  let database_id=database.get(0).and_then(Value::as_str).filter(|value|valid_backup_entry_id(value))
+   .ok_or_else(||backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_database_id_invalid","Backup contains an invalid database identifier."))?;
+  if database.get(2).and_then(Value::as_str)!=Some("sqlite"){
+   return Err(backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_database_engine_invalid","Backup contains an unsupported managed database engine."));
+  }
+  let source=path.join("databases").join(format!("{database_id}.sqlite3")).canonicalize()
+   .map_err(|_|backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_database_missing","Backup is missing a managed database file."))?;
+  if !source.starts_with(&database_root)||!source.is_file(){return Err(backup_error(StatusCode::FORBIDDEN,"backup_database_path_forbidden","A database backup file resolves outside the managed backup."));}
+  restore_databases.push((database_id.to_string(),source,db_dir.join(format!("{database_id}.sqlite3"))));
+ }
+ let safety=create_backup_sync(state)?;
+ for (source,root) in restore_sites{replace_tree(&source,&root)?;}
+ for (id,source,target) in restore_databases{
+  let temporary=db_dir.join(format!("{id}.restore.tmp"));
+  fs::copy(&source,&temporary).map_err(|e|io_error("restore_database_copy_failed",e))?;
   let _=fs::remove_file(db_dir.join(format!("{id}.sqlite3-wal")));let _=fs::remove_file(db_dir.join(format!("{id}.sqlite3-shm")));
   if target.exists(){fs::remove_file(&target).map_err(|e|io_error("restore_database_replace_failed",e))?;}
   fs::rename(&temporary,&target).map_err(|e|io_error("restore_database_replace_failed",e))?;
@@ -373,5 +396,10 @@ mod tests{
  #[test]fn sha256_manifest_versions_are_explicit(){
   assert_eq!(legacy_checksum_algorithm(),"fnv1a-64");
  }
- #[test]fn rejects_backup_ids_with_path_components(){assert!(!"../outside".bytes().all(|b|b.is_ascii_hexdigit()||b==b'-'));}
+ #[test]fn backup_entry_ids_reject_path_components_and_empty_values(){
+  assert!(!valid_backup_entry_id("../outside"));
+  assert!(!valid_backup_entry_id(""));
+  assert!(!valid_backup_entry_id("site/name"));
+  assert!(valid_backup_entry_id("550e8400-e29b-41d4-a716-446655440000"));
+ }
 }
