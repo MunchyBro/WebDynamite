@@ -2,7 +2,7 @@ use axum::{extract::{Path, Query, State}, routing::get, Json, Router, http::Stat
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::{self, File}, io::{Read, Seek, SeekFrom, Write}, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}}, thread, time::{Duration, Instant}};
+use std::{fs::{self, File}, io::{Read, Seek, SeekFrom, Write}, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, thread, time::{Duration, Instant}};
 use uuid::Uuid;
 use crate::AppState;
 
@@ -98,14 +98,15 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  let log_file=File::create(&build_log_path).map_err(|e|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_log_create_failed",e.to_string()))?;
  let output=Arc::new(Mutex::new(log_file));
  let remaining=Arc::new(AtomicU64::new(BUILD_LOG_LIMIT_BYTES));
+ let output_truncated=Arc::new(AtomicBool::new(false));
  let started=Instant::now();
  let mut child=Command::new(&profile.0).args(&profile.1).current_dir(&canonical)
   .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
   .map_err(|e|DeployError(StatusCode::BAD_GATEWAY,"build_start_failed",format!("Could not start {}: {e}",profile.0)))?;
  let stdout=child.stdout.take().ok_or_else(||DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_output_unavailable","Could not capture build stdout.".into()))?;
  let stderr=child.stderr.take().ok_or_else(||DeployError(StatusCode::INTERNAL_SERVER_ERROR,"build_output_unavailable","Could not capture build stderr.".into()))?;
- let stdout_reader=drain_build_output(stdout,Arc::clone(&output),Arc::clone(&remaining));
- let stderr_reader=drain_build_output(stderr,Arc::clone(&output),Arc::clone(&remaining));
+ let stdout_reader=drain_build_output(stdout,Arc::clone(&output),Arc::clone(&remaining),Arc::clone(&output_truncated));
+ let stderr_reader=drain_build_output(stderr,Arc::clone(&output),Arc::clone(&remaining),Arc::clone(&output_truncated));
  let mut timed_out=false;
  let result_status=loop {
   match child.try_wait() {
@@ -126,7 +127,7 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  let _=stdout_reader.join();
  let _=stderr_reader.join();
  let elapsed=started.elapsed().as_millis().min(i64::MAX as u128) as i64;
- let output_truncated=remaining.load(Ordering::Relaxed)==0;
+ let output_truncated=output_truncated.load(Ordering::Relaxed);
  let mut logs=read_log_tail(&build_log_path,262_144).unwrap_or_else(|e|format!("Could not read build log: {e}"));
  let _=fs::remove_file(&build_log_path);
  if output_truncated{logs.push_str("\nBuild output storage reached its 10 MiB limit; additional output was discarded while the process continued.");}
@@ -156,12 +157,13 @@ fn terminate_build_process(child:&mut Child){
  let _=child.wait();
 }
 
-fn drain_build_output<R:Read+Send+'static>(mut reader:R,output:Arc<Mutex<File>>,remaining:Arc<AtomicU64>)->thread::JoinHandle<()>{
+fn drain_build_output<R:Read+Send+'static>(mut reader:R,output:Arc<Mutex<File>>,remaining:Arc<AtomicU64>,truncated:Arc<AtomicBool>)->thread::JoinHandle<()>{
  thread::spawn(move||{
   let mut buffer=[0u8;8192];
   loop{
    let read=match reader.read(&mut buffer){Ok(0)|Err(_)=>break,Ok(count)=>count};
    let allowed=remaining.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|left|Some(left.saturating_sub(read as u64))).unwrap_or(0).min(read as u64) as usize;
+   if allowed<read{truncated.store(true,Ordering::Relaxed);}
    if allowed>0{
     if let Ok(mut file)=output.lock(){let _=file.write_all(&buffer[..allowed]);}else{break;}
    }
@@ -354,10 +356,26 @@ mod tests {
         let file=File::create(&path).unwrap();
         let output=Arc::new(Mutex::new(file));
         let remaining=Arc::new(AtomicU64::new(64));
-        let reader=drain_build_output(Cursor::new(vec![b'x';128]),Arc::clone(&output),Arc::clone(&remaining));
+        let truncated=Arc::new(AtomicBool::new(false));
+        let reader=drain_build_output(Cursor::new(vec![b'x';128]),Arc::clone(&output),Arc::clone(&remaining),Arc::clone(&truncated));
         reader.join().unwrap();
         assert_eq!(fs::metadata(&path).unwrap().len(),64);
         assert_eq!(remaining.load(Ordering::Relaxed),0);
+        assert!(truncated.load(Ordering::Relaxed));
+        let _=fs::remove_file(path);
+    }
+
+    #[test]
+    fn build_output_exactly_at_storage_limit_is_not_marked_truncated() {
+        let path=std::env::temp_dir().join(format!("webdynamite-build-output-exact-{}.log",Uuid::new_v4()));
+        let file=File::create(&path).unwrap();
+        let output=Arc::new(Mutex::new(file));
+        let remaining=Arc::new(AtomicU64::new(64));
+        let truncated=Arc::new(AtomicBool::new(false));
+        let reader=drain_build_output(Cursor::new(vec![b'x';64]),Arc::clone(&output),Arc::clone(&remaining),Arc::clone(&truncated));
+        reader.join().unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(),64);
+        assert!(!truncated.load(Ordering::Relaxed));
         let _=fs::remove_file(path);
     }
 
