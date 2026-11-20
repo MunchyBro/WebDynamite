@@ -260,7 +260,9 @@ fn decode_base64(value:&str)->Result<Vec<u8>,ApiError>{
  let mut output=Vec::with_capacity(bytes.len()/4*3);
  for (index,chunk) in bytes.chunks_exact(4).enumerate(){
   let last=index==bytes.len()/4-1;let a=base64_value(chunk[0]);let b=base64_value(chunk[1]);let c=if chunk[2]==b'='{None}else{base64_value(chunk[2])};let d=if chunk[3]==b'='{None}else{base64_value(chunk[3])};
-  if a.is_none()||b.is_none()||(!last&&(chunk[2]==b'='||chunk[3]==b'='))||(chunk[2]==b'='&&chunk[3]!=b'=')||(chunk[2]!=b'='&&c.is_none())||(chunk[3]!=b'='&&d.is_none()){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_data","The uploaded file data is not valid Base64.".into()));}
+  let invalid_padding=(chunk[2]==b'='&&(chunk[3]!=b'='||b.is_some_and(|value|value&0x0f!=0)))
+   ||(chunk[3]==b'='&&chunk[2]!=b'='&&c.is_some_and(|value|value&0x03!=0));
+  if a.is_none()||b.is_none()||(!last&&(chunk[2]==b'='||chunk[3]==b'='))||invalid_padding||(chunk[2]!=b'='&&c.is_none())||(chunk[3]!=b'='&&d.is_none()){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_data","The uploaded file data is not valid Base64.".into()));}
   let a=a.unwrap();let b=b.unwrap();let c=c.unwrap_or(0);let d=d.unwrap_or(0);output.push((a<<2)|(b>>4));if chunk[2]!=b'='{output.push((b<<4)|(c>>2));}if chunk[3]!=b'='{output.push((c<<6)|d);}
  }
  if output.len()>16*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"file_too_large","File uploads are limited to 16 MiB.".into()));}Ok(output)
@@ -1398,7 +1400,7 @@ fn mime_type(path:&PathBuf)->&'static str{
 
 #[cfg(test)]
 mod domain_tests {
-    use super::{valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
+    use super::{decode_base64, encode_base64, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[tokio::test]
@@ -1449,6 +1451,29 @@ mod domain_tests {
     fn rejects_server_errors_and_invalid_status_codes() {
         for status in [0, 100, 500, 502, 503, 599, 600] {
             assert!(!super::http_status_is_healthy(status));
+        }
+    }
+
+    #[test]
+    fn base64_round_trips_binary_payloads_at_padding_boundaries() {
+        for bytes in [b"".as_slice(), b"a", b"ab", b"abc", b"binary\\0payload"] {
+            let encoded = encode_base64(bytes);
+            assert_eq!(decode_base64(&encoded).unwrap(), bytes);
+        }
+        assert_eq!(decode_base64("AA==").unwrap(), vec![0]);
+        assert_eq!(decode_base64("AAA=").unwrap(), vec![0, 0]);
+    }
+
+    #[test]
+    fn base64_rejects_non_canonical_padding_bits() {
+        assert!(decode_base64("AB==").is_err(), "unused low four bits must be zero for one-byte payloads");
+        assert!(decode_base64("AAB=").is_err(), "unused low two bits must be zero for two-byte payloads");
+    }
+
+    #[test]
+    fn base64_rejects_malformed_padding_and_alphabet() {
+        for value in ["A", "A===", "AA=A", "AAA===", "AA==AAAA", "AA A", "AA-_"] {
+            assert!(decode_base64(value).is_err(), "accepted malformed Base64: {value}");
         }
     }
 
