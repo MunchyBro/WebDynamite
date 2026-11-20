@@ -152,7 +152,16 @@ Ok((if status=="success"{StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},J
 
 fn terminate_build_process(child:&mut Child){
  #[cfg(windows)]
- {let _=Command::new("taskkill").args(["/PID",&child.id().to_string(),"/T","/F"]).output();}
+ {
+  // Terminate descendants as well as the build launcher. If taskkill is missing
+  // or cannot reach the process, still attempt to stop the direct child.
+  let pid=child.id().to_string();
+  let terminated=Command::new("taskkill")
+   .args(["/PID",&pid,"/T","/F"])
+   .status()
+   .is_ok_and(|status|status.success());
+  if !terminated{let _=child.kill();}
+ }
  #[cfg(not(windows))]
  {let _=child.kill();}
  let _=child.wait();
