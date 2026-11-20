@@ -216,7 +216,7 @@ mod supervisor_tests {
 
     #[tokio::test]
     async fn build_capacity_rejects_work_above_global_limit() {
-        let slots = tokio::sync::Semaphore::new(super::MAX_CONCURRENT_BUILDS);
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(super::MAX_CONCURRENT_BUILDS));
         let first = slots.clone().try_acquire_owned().unwrap();
         let second = slots.clone().try_acquire_owned().unwrap();
         assert!(slots.clone().try_acquire_owned().is_err());
