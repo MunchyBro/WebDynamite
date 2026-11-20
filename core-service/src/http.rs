@@ -153,8 +153,18 @@ fn website_root(state:&AppState,id:&str)->Result<PathBuf,ApiError>{
 }
 fn safe_relative_path(value:&str)->Result<PathBuf,ApiError>{
     let path=FsPath::new(value);
-    if path.is_absolute() || path.components().any(|c|!matches!(c,std::path::Component::Normal(_))) {
-        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","Use a relative path inside the website folder.".into()));
+    if value.is_empty() || path.is_absolute() || path.components().any(|component| {
+        let std::path::Component::Normal(part)=component else { return true; };
+        let name=part.to_string_lossy();
+        let upper=name.to_ascii_uppercase();
+        let device_stem=upper.split('.').next().unwrap_or("");
+        let reserved_device=device_stem=="CON" || device_stem=="PRN" || device_stem=="AUX" || device_stem=="NUL"
+            || (["COM","LPT"].iter().any(|prefix| device_stem.strip_prefix(prefix).is_some_and(|suffix| matches!(suffix,"1"|"2"|"3"|"4"|"5"|"6"|"7"|"8"|"9"))));
+        name.ends_with('.') || name.ends_with(' ')
+            || name.chars().any(|character| character.is_control() || matches!(character, '<'|'>'|':'|'"'|'|'|'?'|'*'))
+            || reserved_device
+    }) {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","Use a relative path with Windows-compatible file and folder names inside the website folder.".into()));
     }
     Ok(path.to_path_buf())
 }
@@ -547,8 +557,7 @@ async fn test_mysql_connection(State(state):State<AppState>,Path(id):Path<String
  let user:String=row.try_get(1).unwrap_or_default();
  let version:String=row.try_get(2).unwrap_or_default();
  connection.close().await.ok();
- Ok(Json(json!({"id":id,"connected":true,"database":database,"username":user,"server_version":version,"password_persisted":false})))
-}
+ Ok(Json(json!({"id":id,"connected":true,"database":database,"username":user,"server_version":version,"password_persisted":false})))}
 
 
 #[derive(Debug, Deserialize)]
@@ -1097,8 +1106,7 @@ fn project_details(state:&AppState,id:&str)->Result<(String,String),ApiError>{
     db.query_row("SELECT project_path,runtime FROM websites WHERE id=?1",params![id],|r|Ok((r.get(0)?,r.get(1)?)))
       .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into())}else{database_error(e)})
 }
-fn allocate_port(state:&AppState,id:&str)->Result<u16,ApiError>{
-    for _ in 0..32 {
+fn allocate_port(state:&AppState,id:&str)->Result<u16,ApiError>{    for _ in 0..32 {
         let listener=TcpListener::bind(("127.0.0.1",0)).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"port_allocation_failed",e.to_string()))?;
         let port=listener.local_addr().map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"port_allocation_failed",e.to_string()))?.port();
         let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -1410,8 +1418,23 @@ fn mime_type(path:&PathBuf)->&'static str{
 
 #[cfg(test)]
 mod domain_tests {
-    use super::{archive_entry_type_is_supported, decode_base64, encode_base64, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
+    use super::{archive_entry_type_is_supported, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn file_manager_paths_reject_windows_special_names_and_streams() {
+        for path in ["CON", "con.txt", "NUL.log", "PRN", "AUX.data", "COM1", "LPT9.txt", "folder/CON.txt",
+            "file.txt:secret", "bad<name>.txt", "bad|name.txt", "bad?name.txt", "bad*name.txt",
+            "trailing.", "trailing ", "folder/name. "] {
+            assert!(safe_relative_path(path).is_err(), "accepted Windows-incompatible path: {path:?}");
+        }
+        for path in ["index.html", "src/main.ts", "folder/my-site.test", "COM10.txt", "LPT0.txt"] {
+            assert!(safe_relative_path(path).is_ok(), "rejected valid relative path: {path:?}");
+        }
+        for path in ["", "../outside", "/absolute/path", "folder/../outside"] {
+            assert!(safe_relative_path(path).is_err(), "accepted unsafe relative path: {path:?}");
+        }
+    }
 
     #[tokio::test]
     async fn runtime_operations_for_the_same_website_share_one_lock(){
