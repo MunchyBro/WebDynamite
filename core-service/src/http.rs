@@ -949,7 +949,7 @@ async fn set_lan_access(
     })))
 }
 
-async fn diagnose_domain(Json(input): Json<DiagnoseDomain>) -> Result<Json<serde_json::Value>, ApiError> {
+async fn diagnose_domain(State(state): State<AppState>, Json(input): Json<DiagnoseDomain>) -> Result<Json<serde_json::Value>, ApiError> {
     let hostname=input.hostname.trim().trim_end_matches('.').to_ascii_lowercase();
     if hostname.len()>253 || !hostname.contains('.') || hostname.ends_with(".localhost") || hostname.ends_with(".test")
         || hostname.parse::<std::net::IpAddr>().is_ok()
@@ -974,7 +974,7 @@ async fn diagnose_domain(Json(input): Json<DiagnoseDomain>) -> Result<Json<serde
         "expected_ipv4":expected.map(|v|v.to_string()),"matches_expected_ipv4":matches,
         "ready_for_https":!addresses.is_empty() && matches.unwrap_or(true),
         "https_note":"DNS resolution is only a readiness signal. HTTPS issuance still requires the domain to reach this machine publicly and Caddy's ACME challenge to succeed.",
-        "public_exposure_enabled":false})))
+        "public_exposure_enabled":crate::settings::setting_bool(&state,"public_exposure_enabled",false)})))
 }
 
 async fn list_domains(State(state): State<AppState>) -> Result<Json<Vec<Domain>>, ApiError> {
