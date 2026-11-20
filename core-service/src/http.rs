@@ -345,6 +345,16 @@ async fn download_website_archive(State(state):State<AppState>,Path(id):Path<Str
     Ok(Json(json!({"website_id":id,"path":relative,"size_bytes":bytes.len(),"content_base64":encode_base64(&bytes)})))
 }
 
+fn archive_entry_type_is_supported(unix_mode: Option<u32>, is_directory: bool) -> bool {
+    let Some(mode) = unix_mode else { return true; };
+    match mode & 0o170000 {
+        0 => true,
+        0o040000 => is_directory,
+        0o100000 => !is_directory,
+        _ => false,
+    }
+}
+
 async fn extract_website_archive(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<ExtractWebsiteArchive>)->Result<(StatusCode,Json<serde_json::Value>),ApiError>{
     let root=website_root(&state,&id)?;
     let relative=safe_relative_path(&input.path)?;
@@ -372,8 +382,8 @@ async fn extract_website_archive(State(state):State<AppState>,Path(id):Path<Stri
             if enclosed.components().any(|c|!matches!(c,std::path::Component::Normal(_))) || enclosed.to_string_lossy().contains('\\') || enclosed.to_string_lossy().contains(':') {
                 return Err(ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains an unsafe path.".into()));
             }
-            if file.unix_mode().map(|mode|mode&0o170000==0o120000).unwrap_or(false){
-                return Err(ApiError(StatusCode::BAD_REQUEST,"archive_symlink_forbidden","ZIP symbolic links are not extracted.".into()));
+            if !archive_entry_type_is_supported(file.unix_mode(), file.is_dir()) {
+                return Err(ApiError(StatusCode::BAD_REQUEST,"archive_entry_type_forbidden","ZIP symbolic links and special filesystem entries are not extracted.".into()));
             }
             total=total.saturating_add(file.size());
             if total>256*1024*1024{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_uncompressed_limit","ZIP extraction is limited to 256 MiB uncompressed.".into()));}
@@ -1400,7 +1410,7 @@ fn mime_type(path:&PathBuf)->&'static str{
 
 #[cfg(test)]
 mod domain_tests {
-    use super::{decode_base64, encode_base64, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
+    use super::{archive_entry_type_is_supported, decode_base64, encode_base64, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[tokio::test]
@@ -1452,6 +1462,22 @@ mod domain_tests {
         for status in [0, 100, 500, 502, 503, 599, 600] {
             assert!(!super::http_status_is_healthy(status));
         }
+    }
+
+    #[test]
+    fn zip_extraction_accepts_only_regular_files_and_directories() {
+        assert!(archive_entry_type_is_supported(None, false));
+        assert!(archive_entry_type_is_supported(None, true));
+        assert!(archive_entry_type_is_supported(Some(0o100644), false));
+        assert!(archive_entry_type_is_supported(Some(0o40755), true));
+        assert!(archive_entry_type_is_supported(Some(0o644), false));
+
+        for mode in [0o120777, 0o010644, 0o020600, 0o060600, 0o140755] {
+            assert!(!archive_entry_type_is_supported(Some(mode), false), "accepted unsupported ZIP entry type: {mode:o}");
+            assert!(!archive_entry_type_is_supported(Some(mode), true), "accepted unsupported ZIP directory type: {mode:o}");
+        }
+        assert!(!archive_entry_type_is_supported(Some(0o100644), true));
+        assert!(!archive_entry_type_is_supported(Some(0o40755), false));
     }
 
     #[test]
