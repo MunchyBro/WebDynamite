@@ -1442,8 +1442,8 @@ fn mime_type(path:&PathBuf)->&'static str{
 
 #[cfg(test)]
 mod domain_tests {
-    use super::{archive_entry_type_is_supported, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use super::{archive_entry_type_is_supported, archive_path_has_case_collision, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
+    use std::{collections::HashMap, sync::atomic::{AtomicU64, Ordering}};
 
     #[test]
     fn zip_entry_paths_reject_case_insensitive_collisions() {
