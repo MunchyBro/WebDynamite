@@ -142,7 +142,24 @@ fn supervise_processes(state: AppState) {
 fn stop_all_processes(state: &AppState) {
     if let Ok(mut processes) = state.processes.lock() {
         for (_, mut child) in processes.drain() {
-            let _ = child.kill();
+            #[cfg(windows)]
+            {
+                // Runtime launchers (npm, PHP wrappers, Python launchers) can create
+                // descendants. Killing only the direct child can leave those servers
+                // listening after the Core Service exits.
+                let pid = child.id().to_string();
+                let terminated = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid, "/T", "/F"])
+                    .status()
+                    .is_ok_and(|status| status.success());
+                if !terminated {
+                    let _ = child.kill();
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = child.kill();
+            }
             let _ = child.wait();
         }
     }
