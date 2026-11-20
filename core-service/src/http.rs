@@ -1100,6 +1100,13 @@ fn set_status(state:&AppState,id:&str,status:&str)->Result<(),ApiError>{
     let n=db.execute("UPDATE websites SET status=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",params![status,id]).map_err(database_error)?;
     if n==0{return Err(ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into()));} Ok(())
 }
+async fn runtime_operation_guard(state:&AppState,id:&str)->Result<tokio::sync::OwnedMutexGuard<()>,ApiError>{
+    let lock={
+        let mut locks=state.runtime_operation_locks.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"runtime_lock_registry_unavailable","Website operation lock registry is unavailable.".into()))?;
+        locks.entry(id.to_string()).or_insert_with(||Arc::new(tokio::sync::Mutex::new(()))).clone()
+    };
+    Ok(lock.lock_owned().await)
+}
 fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
     if let Some(mut child)=map.remove(id){
@@ -1202,6 +1209,10 @@ fn pump_runtime_log<R:Read+Send+'static>(mut reader:R,file:Arc<Mutex<File>>,writ
 }
 
 async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
+    let _operation=runtime_operation_guard(&state,&id).await?;
+    start_website_inner(state.0,id).await
+}
+async fn start_website_inner(state:AppState,id:String)->Result<Json<serde_json::Value>,ApiError>{
     let (mut project,runtime)=project_details(&state,&id)?;
     if !FsPath::new(&project).is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"project_not_found","The project directory is no longer available.".into()));}
     stop_process(&state,&id)?;
@@ -1329,14 +1340,17 @@ async fn start_website(State(state):State<AppState>,Path(id):Path<String>)->Resu
     Ok(Json(json!({"id":id,"status":"running","health":"accepting_connections","pid":pid,"port":port,"url":format!("http://127.0.0.1:{port}"),"log_path":log_path})))
 }
 pub(crate) async fn restart_website_for_deployment(state:AppState,id:String)->Result<(),String>{
-    start_website(State(state),Path(id)).await.map(|_|()).map_err(|error|format!("{}: {}",error.1,error.2))
+    let _operation=runtime_operation_guard(&state,&id).await.map_err(|error|format!("{}: {}",error.1,error.2))?;
+    start_website_inner(state,id).await.map(|_|()).map_err(|error|format!("{}: {}",error.1,error.2))
 }
 async fn stop_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
+    let _operation=runtime_operation_guard(&state,&id).await?;
     let _=project_details(&state,&id)?; stop_process(&state,&id)?; set_status(&state,&id,"stopped")?;
     Ok(Json(json!({"id":id,"status":"stopped"})))
 }
 async fn restart_website(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
-    let _=project_details(&state,&id)?; stop_process(&state,&id)?; start_website(State(state),Path(id)).await
+    let _operation=runtime_operation_guard(&state,&id).await?;
+    let _=project_details(&state,&id)?; stop_process(&state,&id)?; start_website_inner(state.0,id).await
 }
 async fn website_logs(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
     let _=project_details(&state,&id)?;
