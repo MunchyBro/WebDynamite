@@ -1101,7 +1101,7 @@ fn set_status(state:&AppState,id:&str,status:&str)->Result<(),ApiError>{
     let n=db.execute("UPDATE websites SET status=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",params![status,id]).map_err(database_error)?;
     if n==0{return Err(ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into()));} Ok(())
 }
-async fn runtime_operation_guard(state:&AppState,id:&str)->Result<tokio::sync::OwnedMutexGuard<()>,ApiError>{
+pub(crate) async fn runtime_operation_guard(state:&AppState,id:&str)->Result<tokio::sync::OwnedMutexGuard<()>,ApiError>{
     let lock={
         let mut locks=state.runtime_operation_locks.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"runtime_lock_registry_unavailable","Website operation lock registry is unavailable.".into()))?;
         locks.entry(id.to_string()).or_insert_with(||Arc::new(tokio::sync::Mutex::new(()))).clone()
