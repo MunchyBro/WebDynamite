@@ -389,8 +389,9 @@ async fn extract_website_archive(State(state):State<AppState>,Path(id):Path<Stri
         for index in 0..archive.len(){
             let mut file=archive.by_index(index).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_zip_archive",e.to_string()))?;
             let enclosed=file.enclosed_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains an absolute or traversal path.".into()))?.to_path_buf();
-            if enclosed.components().any(|c|!matches!(c,std::path::Component::Normal(_))) || enclosed.to_string_lossy().contains('\\') || enclosed.to_string_lossy().contains(':') {
-                return Err(ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains an unsafe path.".into()));
+            let archive_path=enclosed.to_string_lossy();
+            if safe_relative_path(&archive_path).is_err() {
+                return Err(ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains a path that is unsafe or incompatible with Windows filenames.".into()));
             }
             if !archive_entry_type_is_supported(file.unix_mode(), file.is_dir()) {
                 return Err(ApiError(StatusCode::BAD_REQUEST,"archive_entry_type_forbidden","ZIP symbolic links and special filesystem entries are not extracted.".into()));
@@ -1420,6 +1421,16 @@ fn mime_type(path:&PathBuf)->&'static str{
 mod domain_tests {
     use super::{archive_entry_type_is_supported, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn zip_entry_paths_reject_windows_special_names_and_streams() {
+        for path in ["CON.txt", "folder/NUL", "COM1.log", "file.txt:secret", "bad<name>.txt", "trailing.", "trailing "] {
+            assert!(safe_relative_path(path).is_err(), "accepted unsafe ZIP entry path: {path:?}");
+        }
+        for path in ["index.html", "assets/site.css", "COM10.txt"] {
+            assert!(safe_relative_path(path).is_ok(), "rejected valid ZIP entry path: {path:?}");
+        }
+    }
 
     #[test]
     fn file_manager_paths_reject_windows_special_names_and_streams() {
