@@ -19,6 +19,7 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub build_slots: Arc<tokio::sync::Semaphore>,
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
+    pub runtime_operation_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     pub process_started_at: Arc<Mutex<HashMap<String, std::time::Instant>>>,
     pub logs_dir: PathBuf,
     pub releases_dir: PathBuf,
@@ -52,27 +53,45 @@ fn supervise_processes(state: AppState) {
         let restart_in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
         loop {
             interval.tick().await;
-            let mut exited = Vec::new();
-            {
-                let mut processes = match state.processes.lock() {
-                    Ok(value) => value,
-                    Err(_) => break,
+
+            // Snapshot IDs first, then serialize each lifecycle transition with the
+            // same per-website lock used by the HTTP handlers. Never await while the
+            // std process-registry mutex is held.
+            let ids = match state.processes.lock() {
+                Ok(processes) => processes.keys().cloned().collect::<Vec<_>>(),
+                Err(_) => break,
+            };
+
+            for id in ids {
+                let Ok(_operation) = crate::http::runtime_operation_guard(&state, &id).await else {
+                    continue;
                 };
-                for (id, child) in processes.iter_mut() {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            let started = state.process_started_at.lock().ok()
-                                .and_then(|mut times| times.remove(id));
-                            let uptime = started.map(|at| at.elapsed()).unwrap_or_default();
-                            exited.push((id.clone(), status.success(), uptime));
-                        }
-                        Ok(None) => {}
-                        Err(_) => exited.push((id.clone(), false, Duration::ZERO)),
+
+                let exited = {
+                    let mut processes = match state.processes.lock() {
+                        Ok(value) => value,
+                        Err(_) => break,
+                    };
+                    let outcome = match processes.get_mut(&id) {
+                        Some(child) => match child.try_wait() {
+                            Ok(Some(status)) => Some(status.success()),
+                            Err(_) => Some(false),
+                            Ok(None) => None,
+                        },
+                        None => None,
+                    };
+                    if let Some(success) = outcome {
+                        processes.remove(&id);
+                        let uptime = state.process_started_at.lock().ok()
+                            .and_then(|mut times| times.remove(&id))
+                            .map(|at| at.elapsed()).unwrap_or_default();
+                        Some((success, uptime))
+                    } else {
+                        None
                     }
-                }
-                for (id, _, _) in &exited { processes.remove(id); }
-            }
-            for (id, success, uptime) in exited {
+                };
+
+                let Some((success, uptime)) = exited else { continue; };
                 if let Ok(db) = state.db.lock() {
                     let status = if success { "stopped" } else { "error" };
                     let _ = db.execute(
@@ -124,12 +143,6 @@ fn supervise_processes(state: AppState) {
 
                         if crate::http::restart_after_crash(task_state.clone(), id.clone()).await {
                             break;
-                        }
-                        if let Ok(db) = task_state.db.lock() {
-                            let _ = db.execute(
-                                "UPDATE websites SET status='error',updated_at=CURRENT_TIMESTAMP WHERE id=?1",
-                                rusqlite::params![id],
-                            );
                         }
                     }
                     if let Ok(mut pending) = task_in_flight.lock() { pending.remove(&id); }
@@ -189,6 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: Arc::new(Mutex::new(connection)),
         build_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BUILDS)),
         processes: Arc::new(Mutex::new(HashMap::new())),
+        runtime_operation_locks: Arc::new(Mutex::new(HashMap::new())),
         process_started_at: Arc::new(Mutex::new(HashMap::new())),
         logs_dir,
         releases_dir,
