@@ -355,6 +355,25 @@ async fn download_website_archive(State(state):State<AppState>,Path(id):Path<Str
     Ok(Json(json!({"website_id":id,"path":relative,"size_bytes":bytes.len(),"content_base64":encode_base64(&bytes)})))
 }
 
+fn archive_path_has_case_collision(path: &str, seen: &mut HashMap<String, String>) -> bool {
+    let mut prefix = String::new();
+    for component in path.split('/') {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(component);
+        let key = prefix.to_lowercase();
+        if let Some(existing) = seen.get(&key) {
+            if existing != &prefix {
+                return true;
+            }
+        } else {
+            seen.insert(key, prefix.clone());
+        }
+    }
+    false
+}
+
 fn archive_entry_type_is_supported(unix_mode: Option<u32>, is_directory: bool) -> bool {
     let Some(mode) = unix_mode else { return true; };
     match mode & 0o170000 {
@@ -386,12 +405,16 @@ async fn extract_website_archive(State(state):State<AppState>,Path(id):Path<Stri
         let mut archive=ZipArchive::new(Cursor::new(bytes)).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_zip_archive",format!("The selected file is not a valid ZIP archive: {e}")))?;
         if archive.len()>1000{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"archive_entry_limit","ZIP extraction is limited to 1,000 entries.".into()));}
         let mut total=0u64;
+        let mut archive_path_spellings=HashMap::<String,String>::new();
         for index in 0..archive.len(){
             let mut file=archive.by_index(index).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_zip_archive",e.to_string()))?;
             let enclosed=file.enclosed_name().ok_or_else(||ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains an absolute or traversal path.".into()))?.to_path_buf();
             let archive_path=enclosed.to_string_lossy();
             if safe_relative_path(&archive_path).is_err() {
                 return Err(ApiError(StatusCode::BAD_REQUEST,"unsafe_archive_path","The ZIP contains a path that is unsafe or incompatible with Windows filenames.".into()));
+            }
+            if archive_path_has_case_collision(&archive_path, &mut archive_path_spellings) {
+                return Err(ApiError(StatusCode::BAD_REQUEST,"archive_case_collision","The ZIP contains paths that differ only by letter casing and are not portable across filesystems.".into()));
             }
             if !archive_entry_type_is_supported(file.unix_mode(), file.is_dir()) {
                 return Err(ApiError(StatusCode::BAD_REQUEST,"archive_entry_type_forbidden","ZIP symbolic links and special filesystem entries are not extracted.".into()));
@@ -1419,8 +1442,16 @@ fn mime_type(path:&PathBuf)->&'static str{
 
 #[cfg(test)]
 mod domain_tests {
-    use super::{archive_entry_type_is_supported, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use super::{archive_entry_type_is_supported, archive_path_has_case_collision, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
+    use std::{collections::HashMap, sync::atomic::{AtomicU64, Ordering}};
+
+    #[test]
+    fn zip_entry_paths_reject_case_insensitive_collisions() {
+        let mut seen = HashMap::new();
+        assert!(!archive_path_has_case_collision("Assets/site.css", &mut seen));
+        assert!(archive_path_has_case_collision("assets/app.js", &mut seen));
+        assert!(!archive_path_has_case_collision("README.md", &mut seen));
+    }
 
     #[test]
     fn zip_entry_paths_reject_windows_special_names_and_streams() {
