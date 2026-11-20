@@ -12,9 +12,12 @@ mod tunnel;
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
 
+const MAX_CONCURRENT_BUILDS: usize = 2;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
+    pub build_slots: Arc<tokio::sync::Semaphore>,
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
     pub process_started_at: Arc<Mutex<HashMap<String, std::time::Instant>>>,
     pub logs_dir: PathBuf,
@@ -167,6 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         db: Arc::new(Mutex::new(connection)),
+        build_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BUILDS)),
         processes: Arc::new(Mutex::new(HashMap::new())),
         process_started_at: Arc::new(Mutex::new(HashMap::new())),
         logs_dir,
@@ -208,5 +212,16 @@ mod supervisor_tests {
         assert_eq!(restart_attempts_remaining(3, 3), 0);
         assert_eq!(restart_attempts_remaining(99, 3), 0);
         assert_eq!(restart_attempts_remaining(0, 1), 1);
+    }
+
+    #[tokio::test]
+    async fn build_capacity_rejects_work_above_global_limit() {
+        let slots = tokio::sync::Semaphore::new(super::MAX_CONCURRENT_BUILDS);
+        let first = slots.clone().try_acquire_owned().unwrap();
+        let second = slots.clone().try_acquire_owned().unwrap();
+        assert!(slots.clone().try_acquire_owned().is_err());
+        drop(first);
+        assert!(slots.clone().try_acquire_owned().is_ok());
+        drop(second);
     }
 }
