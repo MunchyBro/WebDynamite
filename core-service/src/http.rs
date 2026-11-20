@@ -1101,12 +1101,15 @@ fn set_status(state:&AppState,id:&str,status:&str)->Result<(),ApiError>{
     let n=db.execute("UPDATE websites SET status=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",params![status,id]).map_err(database_error)?;
     if n==0{return Err(ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into()));} Ok(())
 }
+fn runtime_operation_lock(
+    registry:&Arc<Mutex<HashMap<String,Arc<tokio::sync::Mutex<()>>>>>,
+    id:&str,
+)->Result<Arc<tokio::sync::Mutex<()>>,ApiError>{
+    let mut locks=registry.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"runtime_lock_registry_unavailable","Website operation lock registry is unavailable.".into()))?;
+    Ok(locks.entry(id.to_string()).or_insert_with(||Arc::new(tokio::sync::Mutex::new(()))).clone())
+}
 pub(crate) async fn runtime_operation_guard(state:&AppState,id:&str)->Result<tokio::sync::OwnedMutexGuard<()>,ApiError>{
-    let lock={
-        let mut locks=state.runtime_operation_locks.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"runtime_lock_registry_unavailable","Website operation lock registry is unavailable.".into()))?;
-        locks.entry(id.to_string()).or_insert_with(||Arc::new(tokio::sync::Mutex::new(()))).clone()
-    };
-    Ok(lock.lock_owned().await)
+    Ok(runtime_operation_lock(&state.runtime_operation_locks,id)?.lock_owned().await)
 }
 fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
@@ -1397,6 +1400,28 @@ fn mime_type(path:&PathBuf)->&'static str{
 mod domain_tests {
     use super::{valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[tokio::test]
+    async fn runtime_operations_for_the_same_website_share_one_lock(){
+        let registry=std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let first=super::runtime_operation_lock(&registry,"site-a").unwrap();
+        let second=super::runtime_operation_lock(&registry,"site-a").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first,&second));
+        let held=first.clone().lock_owned().await;
+        assert!(second.try_lock().is_err(),"a concurrent operation must not acquire the same website lock");
+        drop(held);
+        assert!(second.try_lock().is_ok(),"the lock must become available after the operation finishes");
+    }
+
+    #[tokio::test]
+    async fn different_websites_have_independent_runtime_locks(){
+        let registry=std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let site_a=super::runtime_operation_lock(&registry,"site-a").unwrap();
+        let site_b=super::runtime_operation_lock(&registry,"site-b").unwrap();
+        let held=site_a.lock_owned().await;
+        assert!(site_b.try_lock().is_ok(),"one website must not block another website");
+        drop(held);
+    }
 
     #[test]
     fn runtime_log_byte_reservation_never_exceeds_the_limit(){
