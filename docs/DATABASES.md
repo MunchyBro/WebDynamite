@@ -91,3 +91,15 @@ When testing a connection or running a query, WebDynamite first checks Windows C
 - Credentials are scoped by database engine and profile ID. Removing and recreating a profile creates a new credential scope.
 
 Windows account access controls apply to Credential Manager. Anyone able to access the same Windows account may be able to use its saved credentials; protect the Windows account and device accordingly.
+
+
+## PostgreSQL provisioning (local profiles)
+
+A saved PostgreSQL profile can provision databases and login roles on its existing loopback server. Use a server account with the PostgreSQL CREATEDB and/or CREATEROLE privileges; WebDynamite does not elevate the account.
+
+- Create DB creates a new database and optionally assigns an existing owner role. Existing database names are never overwritten.
+- Create user creates a new LOGIN role with a password entered for that operation. The new role password is not saved by WebDynamite.
+- If a database is selected for the new role, WebDynamite grants CONNECT and TEMPORARY on that database, USAGE and CREATE on the public schema, DML access to existing public tables and sequences, and matching default privileges for future objects created by the connected administrator.
+- Role creation is not rolled back if a later grant fails. The error reports the partial result so the administrator can inspect and correct it.
+- Provisioning uses only the saved profile loopback host and requests the administrator password for each operation (or retrieves the optional Windows Credential Manager entry). Remote PostgreSQL access is not enabled.
+- No drop-database, drop-role, or password-reset operation is provided in this initial workflow.
