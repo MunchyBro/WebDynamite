@@ -61,12 +61,12 @@ fn existing_core_service_matches_token(address: &SocketAddr, token: &str) -> io:
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     write!(
         stream,
-        "GET /api/v1/websites HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nAuthorization: Bearer {token}\\r\\nConnection: close\\r\\n\\r\\n"
+        "GET /api/v1/websites HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
     )?;
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();
     reader.read_line(&mut status_line)?;
-    Ok(status_line.starts_with("HTTP/1.1 200 ") || status_line.starts_with("HTTP/1.0 200 "))
+    Ok(is_success_status_line(&status_line))
 }
 
 fn start_core_service(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -469,10 +469,10 @@ mod core_service_lifecycle_tests {
 
     #[test]
     fn authenticated_reuse_requires_success_status() {
-        assert!(is_success_status_line("HTTP/1.1 200 OK\\r\\n"));
-        assert!(is_success_status_line("HTTP/1.0 200 OK\\r\\n"));
-        assert!(!is_success_status_line("HTTP/1.1 401 Unauthorized\\r\\n"));
-        assert!(!is_success_status_line("HTTP/1.1 404 Not Found\\r\\n"));
+        assert!(is_success_status_line("HTTP/1.1 200 OK"));
+        assert!(is_success_status_line("HTTP/1.0 200 OK"));
+        assert!(!is_success_status_line("HTTP/1.1 401 Unauthorized"));
+        assert!(!is_success_status_line("HTTP/1.1 404 Not Found"));
     }
 }
 
