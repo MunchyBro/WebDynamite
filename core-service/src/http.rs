@@ -539,7 +539,7 @@ async fn test_postgres_connection(State(state):State<AppState>,Path(id):Path<Str
 struct ProvisionPostgresDatabase { password:String, database_name:String, username:String, user_password:String }
 
 fn quote_postgres_identifier(value:&str)->String { format!("\"{}\"",value.replace('"',"\"\"")) }
-fn quote_postgres_literal(value:&str)->String { format!("'{}'",value.replace('\'',"''")) }
+fn quote_postgres_literal(value:&str)->String { format!("E'{}'",value.replace('\\',"\\\\").replace('\'',"\\'")) }
 
 fn valid_postgres_identifier(value:&str)->bool {
     !value.is_empty() && value.len()<=63
@@ -1507,7 +1507,7 @@ mod domain_tests {
         for name in ["", "1db", "has-dash", "has space", "x;DROP", "a\"b", "é"] { assert!(!valid_postgres_identifier(name)); }
         assert!(!valid_postgres_identifier(&"a".repeat(64)));
         assert_eq!(quote_postgres_identifier("safe_name"), "\"safe_name\"");
-        assert_eq!(quote_postgres_literal("p'ass\\word"), "'p''ass\\word'");
+        assert_eq!(quote_postgres_literal("p'ass\\word"), "E'p\\'ass\\\\word'");
     }
 
     #[test]
