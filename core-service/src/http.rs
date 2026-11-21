@@ -699,6 +699,7 @@ fn quote_mysql_identifier(value: &str) -> String { format!("`{}`", value.replace
 async fn mysql_admin_connection(
     state: &AppState, id: &str, password: &str
 ) -> Result<(sqlx::mysql::MySqlConnection, String, u16), ApiError> {
+    use sqlx::Connection;
     if password.len() > 1024 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mysql_password", "Password is too long.".into()));
     }
