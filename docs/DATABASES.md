@@ -58,7 +58,7 @@ Removing a profile deletes only its saved metadata, not the database server or i
 - PostgreSQL database/user provisioning is available for existing local servers through a saved profile; server installation and lifecycle are not implemented.
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
 - MySQL/MariaDB server installation, process lifecycle, and data-directory management.
-- Application connection-string injection.
+- Automatic website connection-string injection is available for saved PostgreSQL and MySQL/MariaDB profiles through the **Connect website** action. SQLite connection-string injection is not yet included.
 
 
 MySQL/MariaDB connection profiles are currently limited to loopback hosts and non-TLS connections; passwords are entered only when testing a profile and are not stored.
@@ -130,3 +130,17 @@ Open **Websites** and choose the key icon on a website to manage its runtime env
 - The Core Service account must have access to the Windows Credential Manager entry created for it.
 
 Use a database connection string as a secret variable such as `DATABASE_URL`; WebDynamite passes it to the application without parsing or logging it. The application framework remains responsible for reading the variable and connecting to the database.
+
+
+## Connect a website to PostgreSQL or MySQL/MariaDB
+
+Use **Connect website** beside a saved PostgreSQL or MySQL/MariaDB profile. Choose a registered website and, when the profile has no default database, enter the target database name. WebDynamite requests the profile password (or retrieves its optional saved Windows Credential Manager password), builds a URL-encoded `DATABASE_URL`, and saves it as a protected website secret.
+
+- PostgreSQL URLs use the `postgresql://` scheme; MySQL/MariaDB URLs use `mysql://`.
+- The generated URL is stored in Windows Credential Manager through the website environment-secret facility. It is not stored in the registry database or returned by the environment list API.
+- An existing `DATABASE_URL` for that website is replaced only after explicit confirmation.
+- The variable is passed to the website's Node.js, PHP or Python process on its next start or restart. WebDynamite does not edit application source code or install framework-specific database drivers.
+- The connection uses the saved profile's database username and the password supplied for this operation. For production applications, create a dedicated least-privilege database user instead of using a server administrator account.
+- Removing or changing the profile later does not automatically rewrite an already-created website secret. Update or remove `DATABASE_URL` in the website's Environment Variables editor when credentials or database details change.
+
+The application framework must support `DATABASE_URL` (or be configured to read it). Frameworks that expect separate variables such as `DB_HOST`, `DB_DATABASE`, `DB_USERNAME` and `DB_PASSWORD` can still be configured manually in the website environment editor.
