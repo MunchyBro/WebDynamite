@@ -99,11 +99,11 @@ mod tests {
 
     #[test]
     fn accepts_only_service_sid_shape() {
-        assert!(valid_service_sid("S-1-5-80-123-456-789-101112"));
+        assert!(valid_service_sid("S-1-5-80-123-456-789-101112-131415"));
         assert!(!valid_service_sid("S-1-5-80-123"));
         assert!(!valid_service_sid("S-1-5-32-544"));
         assert!(!valid_service_sid("S-1-5-80-123-x-789-101112"));
-        assert!(!valid_service_sid("S-1-5-80-123-456-789-101112;OICI"));
+        assert!(!valid_service_sid("S-1-5-80-123-456-789-101112-131415;OICI"));
     }
 
     #[cfg(not(windows))]
@@ -111,7 +111,7 @@ mod tests {
     fn non_windows_reports_unsupported_platform() {
         assert!(super::secure_empty_directory(
             std::path::Path::new("."),
-            "S-1-5-80-123-456-789-101112"
+            "S-1-5-80-123-456-789-101112-131415"
         ).unwrap_err().contains("only on Windows"));
     }
 }
