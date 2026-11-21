@@ -10,7 +10,7 @@ mod windows_impl {
     use std::{io::{self, Read, Write}, path::Path};
     use windows_sys::Win32::{
         Foundation::{GetLastError, HANDLE, ERROR_PIPE_CONNECTED},
-        Storage::FileSystem::{ReadFile, WriteFile},
+        System::IO::{ReadFile, WriteFile},
         System::Pipes::{ConnectNamedPipe, DisconnectNamedPipe},
     };
 
