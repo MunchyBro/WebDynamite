@@ -691,6 +691,10 @@ async fn test_mysql_connection(State(state):State<AppState>,Path(id):Path<String
 
 
 
+fn is_mysql_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 fn valid_mysql_identifier(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len
         && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -711,6 +715,9 @@ async fn mysql_admin_connection(
                 ApiError(StatusCode::NOT_FOUND, "mysql_profile_not_found", "MySQL/MariaDB connection profile was not found.".into())
             } else { database_error(e) })?
     };
+    if !is_mysql_loopback_host(&host) {
+        return Err(ApiError(StatusCode::FORBIDDEN, "mysql_provisioning_loopback_only", "MySQL/MariaDB provisioning is restricted to localhost and loopback IP addresses; remote hosts are not supported.".into()));
+    }
     let mut options = sqlx::mysql::MySqlConnectOptions::new()
         .host(&host).port(port).username(&username).password(password)
         .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
@@ -786,6 +793,17 @@ async fn provision_mysql_user(
 #[cfg(test)]
 mod mysql_provisioning_tests {
     use super::{quote_mysql_identifier, valid_mysql_identifier};
+    #[test]
+    fn mysql_provisioning_accepts_only_loopback_hosts() {
+        use super::is_mysql_loopback_host;
+        assert!(is_mysql_loopback_host("localhost"));
+        assert!(is_mysql_loopback_host("LOCALHOST"));
+        assert!(is_mysql_loopback_host("127.0.0.1"));
+        assert!(is_mysql_loopback_host("::1"));
+        assert!(!is_mysql_loopback_host("192.168.1.10"));
+        assert!(!is_mysql_loopback_host("example.com"));
+    }
+
     #[test]
     fn mysql_identifiers_are_bounded_and_restricted() {
         for value in ["db", "app_user", "app-user", "DB2026"] { assert!(valid_mysql_identifier(value, 64)); }
