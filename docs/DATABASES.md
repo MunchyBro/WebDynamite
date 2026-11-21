@@ -29,6 +29,14 @@ A profile stores its name, host, port, database name, and username. **Test** ask
 
 Removing a profile removes only its saved connection metadata. It does not stop PostgreSQL, delete a database, or modify server data.
 
+## PostgreSQL database provisioning
+
+The **PostgreSQL database provisioning** panel can create a new database and a dedicated login role using a saved local PostgreSQL profile. Select a profile with sufficient server privileges, enter a new database name, a new role name, and a password of at least eight characters. The new database is created with that role as its owner.
+
+Provisioning is intentionally additive: it refuses to overwrite an existing database or role, never changes existing roles or database ownership, and only drops the newly created role if database creation fails after role creation. Database and role identifiers are restricted to ASCII letters, digits, and underscores, and are quoted before use in SQL. The new user's password is sent only for the provisioning request and is not stored by WebDynamite. The selected admin profile password is retrieved from Windows Credential Manager or requested for that operation.
+
+This feature requires the selected PostgreSQL account to have permission to create roles and databases. It does not install or start PostgreSQL, configure remote access, or grant broad privileges on other databases.
+
 ## PostgreSQL read-only SQL console
 
 Choose a saved local PostgreSQL profile in **PostgreSQL read-only query console** and run one SQL statement. The password is requested for every execution and is never stored. Queries run inside a PostgreSQL read-only transaction, with a five-second statement timeout. PostgreSQL extended-protocol preparation rejects multi-statement input.
@@ -55,7 +63,7 @@ Removing a profile deletes only its saved metadata, not the database server or i
 ## Not yet implemented
 
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
-- PostgreSQL server installation, initialization, process lifecycle, and data-directory management; database/user provisioning.
+- PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
 - MySQL/MariaDB support.
 - Application connection-string injection.
