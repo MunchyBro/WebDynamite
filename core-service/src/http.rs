@@ -538,6 +538,9 @@ async fn test_postgres_connection(State(state):State<AppState>,Path(id):Path<Str
 #[derive(Debug, Deserialize)]
 struct ProvisionPostgresDatabase { password:String, database_name:String, username:String, user_password:String }
 
+fn quote_postgres_identifier(value:&str)->String { format!("\"{}\"",value.replace('"',"\"\"")) }
+fn quote_postgres_literal(value:&str)->String { format!("'{}'",value.replace('\'',"''")) }
+
 fn valid_postgres_identifier(value:&str)->bool {
     !value.is_empty() && value.len()<=63
         && (value.as_bytes()[0].is_ascii_alphabetic() || value.as_bytes()[0]==b'_')
@@ -566,16 +569,18 @@ async fn provision_postgres_database(
     let (client,connection)=config.connect(tokio_postgres::NoTls).await
         .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_connection_failed",format!("PostgreSQL connection failed: {e}")))?;
     tokio::spawn(async move{let _=connection.await;});
+    client.batch_execute("SET statement_timeout = '10s'; SET lock_timeout = '5s'").await
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_timeout_setup_failed",e.to_string()))?;
     let role_exists:bool=client.query_one("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)",&[&input.username]).await
         .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_admin_query_failed",e.to_string()))?.get(0);
     if role_exists{return Err(ApiError(StatusCode::CONFLICT,"postgres_role_exists","That PostgreSQL role already exists. Choose a different user name; existing roles are never modified.".into()));}
     let database_exists:bool=client.query_one("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)",&[&input.database_name]).await
         .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_admin_query_failed",e.to_string()))?.get(0);
     if database_exists{return Err(ApiError(StatusCode::CONFLICT,"postgres_database_exists","That PostgreSQL database already exists. Choose a different database name; existing databases are never modified.".into()));}
-    let quoted_role=format!("\"{}\"",input.username.replace('"',"\"\""));
-    let quoted_database=format!("\"{}\"",input.database_name.replace('"',"\"\""));
-    let escaped_password=input.user_password.replace('\'',"''");
-    client.batch_execute(&format!("CREATE ROLE {quoted_role} LOGIN PASSWORD '{escaped_password}'")).await
+    let quoted_role=quote_postgres_identifier(&input.username);
+    let quoted_database=quote_postgres_identifier(&input.database_name);
+    let quoted_password=quote_postgres_literal(&input.user_password);
+    client.batch_execute(&format!("CREATE ROLE {quoted_role} LOGIN PASSWORD {quoted_password}")).await
         .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_role_create_failed",format!("Could not create the database user: {e}")))?;
     if let Err(error)=client.batch_execute(&format!("CREATE DATABASE {quoted_database} OWNER {quoted_role}")).await {
         let _=client.batch_execute(&format!("DROP ROLE {quoted_role}")).await;
@@ -1493,8 +1498,17 @@ fn mime_type(path:&PathBuf)->&'static str{
 
 #[cfg(test)]
 mod domain_tests {
-    use super::{archive_entry_type_is_supported, archive_path_has_case_collision, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
+    use super::{archive_entry_type_is_supported, archive_path_has_case_collision, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, valid_postgres_identifier, quote_postgres_identifier, quote_postgres_literal, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
     use std::{collections::HashMap, sync::atomic::{AtomicU64, Ordering}};
+
+    #[test]
+    fn postgres_provisioning_validates_identifiers_and_quotes_values() {
+        for name in ["app_db", "_private", "Db2026"] { assert!(valid_postgres_identifier(name)); }
+        for name in ["", "1db", "has-dash", "has space", "x;DROP", "a\"b", "é"] { assert!(!valid_postgres_identifier(name)); }
+        assert!(!valid_postgres_identifier(&"a".repeat(64)));
+        assert_eq!(quote_postgres_identifier("safe_name"), "\"safe_name\"");
+        assert_eq!(quote_postgres_literal("p'ass\\word"), "'p''ass\\word'");
+    }
 
     #[test]
     fn zip_entry_paths_reject_case_insensitive_collisions() {
