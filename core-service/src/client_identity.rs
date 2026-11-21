@@ -6,12 +6,12 @@
 mod windows_impl {
     use std::{path::{Path, PathBuf}, ptr};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, LocalFree, HANDLE},
+        Foundation::{CloseHandle, LocalFree, HANDLE, SYNCHRONIZE, WAIT_TIMEOUT},
         Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser},
         Security::Authorization::ConvertSidToStringSidW,
         System::{
             Pipes::{GetNamedPipeClientProcessId, GetNamedPipeClientSessionId},
-            Threading::{GetExitCodeProcess, GetProcessId, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
+            Threading::{GetProcessId, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION},
         },
     };
 
@@ -43,12 +43,11 @@ mod windows_impl {
             let mut pipe_session = 0u32;
             let pid_ok = unsafe { GetNamedPipeClientProcessId(pipe, &mut pipe_pid) };
             let session_ok = unsafe { GetNamedPipeClientSessionId(pipe, &mut pipe_session) };
-            let mut exit_code = 0u32;
-            let alive = unsafe { GetExitCodeProcess(self.process.0, &mut exit_code) };
+            let process_wait = unsafe { WaitForSingleObject(self.process.0, 0) };
             let handle_pid = unsafe { GetProcessId(self.process.0) };
-            if pid_ok == 0 || session_ok == 0 || alive == 0
+            if pid_ok == 0 || session_ok == 0 || process_wait != WAIT_TIMEOUT
                 || pipe_pid != self.pid || handle_pid != self.pid
-                || pipe_session != self.session_id || exit_code != 259
+                || pipe_session != self.session_id
             {
                 return Err("The verified desktop client is no longer connected.".into());
             }
@@ -139,7 +138,7 @@ mod windows_impl {
         if unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) } == 0 || pid == 0 {
             return Err("Could not identify the named-pipe client process.".into());
         }
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
         if process.is_null() {
             return Err("Could not open the named-pipe client process for verification.".into());
         }
