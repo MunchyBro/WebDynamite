@@ -13,9 +13,14 @@ DNS resolution or a running Caddy process alone does not prove that a certificat
 
 ## Live HTTPS verification
 
-The SSL & Security screen can run an on-demand HTTPS check for each registered public hostname. It invokes `curl` with certificate verification enabled, performs a HEAD request, records the HTTP status and elapsed time, and reports whether the TLS handshake and certificate validation succeeded. Redirects are not followed. `curl` must be installed and available on PATH. A failed check can indicate DNS, routing, Caddy, remote-server, or certificate trouble; inspect the displayed error and server logs.
+The SSL & Security screen provides two on-demand checks for each registered public hostname:
 
-This is a point-in-time probe, not continuous monitoring. It does not currently report certificate issuer, exact expiry date, renewal history, or automatically alert on future failures. A successful HEAD request also does not verify application routes or content.
+- **Check HTTPS** invokes `curl` with certificate verification enabled, performs a HEAD request, records the HTTP status and elapsed time, and reports whether the TLS handshake and certificate validation succeeded. Redirects are not followed. `curl` must be installed and available on PATH.
+- **Certificate details** connects to TCP port 443 using Windows PowerShell/.NET and reports the presented certificate's subject, issuer, validity start/end, thumbprint, and days remaining. The connection deliberately accepts the certificate for inspection, so this operation does **not** establish trust or hostname validity; use **Check HTTPS** for that. Inspection has a bounded connection timeout and is currently Windows-only.
+
+A failed check can indicate DNS, routing, Caddy, remote-server, or certificate trouble; inspect the displayed error and server logs.
+
+Both operations are point-in-time checks, not continuous monitoring. The certificate details view highlights certificates that are expired or have 30 days or less remaining, but it does not yet send background notifications or retain renewal history. A successful HEAD request also does not verify application routes or content.
 
 ## Local development domains
 
