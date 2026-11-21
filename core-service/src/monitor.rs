@@ -1,6 +1,6 @@
 use serde_json::json;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Networks, System};
-use std::time::Duration;
 
 /// Collects a short CPU sample and a point-in-time snapshot of host resources.
 /// Memory and disk values are reported in bytes; network counters are cumulative
@@ -30,7 +30,13 @@ pub fn snapshot() -> serde_json::Value {
 
     let memory_total = system.total_memory();
     let memory_used = system.used_memory();
+    let collected_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
     json!({
+        "collected_at_unix_ms": collected_at_unix_ms,
         "cpu_usage_percent": system.global_cpu_usage(),
         "memory_total_bytes": memory_total,
         "memory_used_bytes": memory_used,
@@ -47,4 +53,20 @@ pub fn snapshot() -> serde_json::Value {
         "os_version": System::os_version(),
         "uptime_seconds": System::uptime()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snapshot;
+
+    #[test]
+    fn snapshot_includes_collection_timestamp_and_resource_fields() {
+        let metrics = snapshot();
+        assert!(metrics["collected_at_unix_ms"].as_u64().unwrap_or_default() > 0);
+        assert!(metrics["cpu_usage_percent"].is_number());
+        assert!(metrics["memory_total_bytes"].is_number());
+        assert!(metrics["disk_total_bytes"].is_number());
+        assert!(metrics["network_received_bytes"].is_number());
+        assert!(metrics["network_transmitted_bytes"].is_number());
+    }
 }
