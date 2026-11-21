@@ -111,6 +111,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/postgres-connections/:id", axum::routing::delete(delete_postgres_connection))
         .route("/api/v1/postgres-connections/:id/test", axum::routing::post(test_postgres_connection))
         .route("/api/v1/postgres-connections/:id/query", axum::routing::post(query_postgres_connection))
+        .route("/api/v1/postgres-connections/:id/provision", axum::routing::post(provision_postgres_database))
         .route("/api/v1/mysql-connections", get(list_mysql_connections).post(create_mysql_connection))
         .route("/api/v1/mysql-connections/:id", axum::routing::delete(delete_mysql_connection))
         .route("/api/v1/mysql-connections/:id/test", axum::routing::post(test_mysql_connection))
@@ -533,6 +534,56 @@ async fn test_postgres_connection(State(state):State<AppState>,Path(id):Path<Str
 }
 
 
+
+#[derive(Debug, Deserialize)]
+struct ProvisionPostgresDatabase { password:String, database_name:String, username:String, user_password:String }
+
+fn valid_postgres_identifier(value:&str)->bool {
+    !value.is_empty() && value.len()<=63
+        && (value.as_bytes()[0].is_ascii_alphabetic() || value.as_bytes()[0]==b'_')
+        && value.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_')
+}
+
+async fn provision_postgres_database(
+    State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<ProvisionPostgresDatabase>
+)->Result<Json<serde_json::Value>,ApiError>{
+    if input.password.len()>1024 || input.user_password.len()<8 || input.user_password.len()>1024
+        || input.user_password.contains('\0') {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_postgres_password","Admin password must be at most 1024 bytes; the new database user's password must be 8–1024 bytes and contain no NUL character.".into()));
+    }
+    if !valid_postgres_identifier(&input.database_name) || !valid_postgres_identifier(&input.username) {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_postgres_identifier","Database and user names must start with an ASCII letter or underscore and contain only letters, numbers, and underscores (maximum 63 bytes).".into()));
+    }
+    let (host,port,database_name,admin_user)={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT host,port,database_name,username FROM postgres_connections WHERE id=?1",[&id],
+            |r|Ok((r.get::<_,String>(0)?,r.get::<_,u16>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))
+            .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"postgres_profile_not_found","PostgreSQL connection profile was not found.".into())}else{database_error(e)})?
+    };
+    let mut config=tokio_postgres::Config::new();
+    config.host(&host).port(port).dbname(&database_name).user(&admin_user)
+        .password(&input.password).connect_timeout(std::time::Duration::from_secs(5));
+    let (client,connection)=config.connect(tokio_postgres::NoTls).await
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_connection_failed",format!("PostgreSQL connection failed: {e}")))?;
+    tokio::spawn(async move{let _=connection.await;});
+    let role_exists:bool=client.query_one("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)",&[&input.username]).await
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_admin_query_failed",e.to_string()))?.get(0);
+    if role_exists{return Err(ApiError(StatusCode::CONFLICT,"postgres_role_exists","That PostgreSQL role already exists. Choose a different user name; existing roles are never modified.".into()));}
+    let database_exists:bool=client.query_one("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)",&[&input.database_name]).await
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_admin_query_failed",e.to_string()))?.get(0);
+    if database_exists{return Err(ApiError(StatusCode::CONFLICT,"postgres_database_exists","That PostgreSQL database already exists. Choose a different database name; existing databases are never modified.".into()));}
+    let quoted_role=format!("\"{}\"",input.username.replace('"',"\"\""));
+    let quoted_database=format!("\"{}\"",input.database_name.replace('"',"\"\""));
+    let escaped_password=input.user_password.replace('\'',"''");
+    client.batch_execute(&format!("CREATE ROLE {quoted_role} LOGIN PASSWORD '{escaped_password}'")).await
+        .map_err(|e|ApiError(StatusCode::BAD_GATEWAY,"postgres_role_create_failed",format!("Could not create the database user: {e}")))?;
+    if let Err(error)=client.batch_execute(&format!("CREATE DATABASE {quoted_database} OWNER {quoted_role}")).await {
+        let _=client.batch_execute(&format!("DROP ROLE {quoted_role}")).await;
+        return Err(ApiError(StatusCode::BAD_GATEWAY,"postgres_database_create_failed",format!("Could not create the database; the newly created user was cleaned up: {error}")));
+    }
+    Ok(Json(json!({"created":true,"database":input.database_name,"username":input.username,"owner":input.username,"profile_id":id,
+        "note":"Created a new database owned by a new login role. Existing databases and roles were not modified; passwords are not stored by WebDynamite."})))
+}
 
 #[derive(Debug, Deserialize)]
 struct CreateMysqlConnection { name:String, host:String, port:u16, database_name:String, username:String }
