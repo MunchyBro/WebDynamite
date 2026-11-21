@@ -65,7 +65,7 @@ Removing a profile deletes only its saved metadata, not the database server or i
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
-- MySQL/MariaDB support.
+- MySQL/MariaDB database and user provisioning; its current integration supports local connection profiles and read-only inspection.
 - Application connection-string injection.
 
 
