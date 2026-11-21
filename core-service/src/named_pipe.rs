@@ -16,8 +16,10 @@ fn valid_service_sid(value: &str) -> bool {
 
 fn valid_user_sid(value: &str) -> bool {
     let parts = value.split('-').collect::<Vec<_>>();
-    (8..=15).contains(&parts.len()) && parts[0] == "S" && parts[1] == "1" && parts[2] == "5"
-        && parts[3..].iter().all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    let recognized_user_authority = (parts.get(2) == Some(&"5") && parts.get(3) == Some(&"21"))
+        || (parts.get(2) == Some(&"12") && parts.get(3) == Some(&"1"));
+    parts.len() == 8 && parts[0] == "S" && parts[1] == "1" && recognized_user_authority
+        && parts[4..].iter().all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(windows)]
@@ -92,9 +94,11 @@ mod tests {
         assert!(valid_service_sid("S-1-5-80-123-456-789-101112-131415"));
         assert!(!valid_service_sid("S-1-5-21-123-456-789-1001"));
         assert!(valid_user_sid("S-1-5-21-123-456-789-1001"));
+        assert!(valid_user_sid("S-1-12-1-123-456-789-1001"));
         assert!(!valid_user_sid("S-1-5-80-123-456-789-101112-131415"));
         assert!(!valid_user_sid("S-1-5-21-123-x-789-1001"));
         assert!(!valid_user_sid("S-1-5-21-123-456-789-1001;OICI"));
+        assert!(!valid_user_sid("S-1-5-32-544"));
     }
 
     #[cfg(not(windows))]
