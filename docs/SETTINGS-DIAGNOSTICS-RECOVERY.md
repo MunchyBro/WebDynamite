@@ -28,7 +28,9 @@ Diagnostics do not transmit reports to a remote service. Executable version chec
 
 ## Recovery
 
-The reconciliation action inspects persisted website states against the Core Service's in-memory process registry. It resets stale `starting`, `stopping` or non-static `running` states to `stopped` when there is no tracked child process. A static website in `running` state is left unchanged because static hosting is served by the Core Service itself.
+At Core Service startup, interrupted `starting` and `stopping` transitions are reset to `stopped`. Persisted `running` records are deliberately left unchanged: a service restart alone cannot prove whether an untracked runtime child survived, so startup does not guess or terminate arbitrary processes.
+
+The manual reconciliation action inspects persisted website states against the Core Service's in-memory process registry. It resets stale `starting`, `stopping` or non-static `running` states to `stopped` when there is no tracked child process. A static website in `running` state is left unchanged because static hosting is served by the Core Service itself.
 
 The action does not kill arbitrary processes, alter firewall rules, modify DNS, rewrite Caddy configuration, or delete website data. Caddy can be independently validated, started, stopped and reloaded from the existing proxy controls.
 
