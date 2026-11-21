@@ -6,12 +6,12 @@
 mod windows_impl {
     use std::{path::{Path, PathBuf}, ptr};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, LocalFree, HANDLE, SYNCHRONIZE, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, LocalFree, HANDLE, WAIT_TIMEOUT},
         Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser},
         Security::Authorization::ConvertSidToStringSidW,
         System::{
             Pipes::{GetNamedPipeClientProcessId, GetNamedPipeClientSessionId},
-            Threading::{GetProcessId, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION},
+            Threading::{GetProcessId, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE},
         },
     };
 
@@ -141,7 +141,7 @@ mod windows_impl {
         if unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) } == 0 || pid == 0 {
             return Err("Could not identify the named-pipe client process.".into());
         }
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
         if process.is_null() {
             return Err("Could not open the named-pipe client process for verification.".into());
         }
