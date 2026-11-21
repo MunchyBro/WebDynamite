@@ -78,7 +78,7 @@ pub fn secure_empty_directory(path: &Path, service_sid: &str) -> Result<(), Stri
             descriptor,
         )
     };
-    unsafe { LocalFree(descriptor as isize); }
+    unsafe { LocalFree(descriptor); }
     if applied == 0 {
         return Err(format!(
             "Could not apply restrictive secret-store DACL: {}",
