@@ -1354,6 +1354,7 @@ async fn get_website(State(state):State<AppState>,Path(id):Path<String>)->Result
 async fn delete_website(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,ApiError>{
     let _operation=runtime_operation_guard(&state,&id).await?;
     stop_process(&state,&id)?;
+    crate::environment::delete_all_for_website(&state,&id);
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     let n=db.execute("DELETE FROM websites WHERE id=?1",params![id]).map_err(database_error)?;
     if n==0{return Err(ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into()));}
