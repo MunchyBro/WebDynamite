@@ -21,3 +21,4 @@ sha2 = "0.10"
 tokio-postgres = "0.7"
 futures-util = "0.3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "mysql"] }
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
