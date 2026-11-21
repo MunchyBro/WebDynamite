@@ -15,6 +15,7 @@ pub mod secret_store;
 pub mod ipc_protocol;
 pub mod named_pipe;
 pub mod client_identity;
+pub mod named_pipe_host;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
