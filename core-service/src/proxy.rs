@@ -8,6 +8,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/proxy/status", get(status))
         .route("/api/v1/proxy/tls-check/:hostname", axum::routing::post(tls_check))
         .route("/api/v1/proxy/tls-details/:hostname", get(tls_details))
+        .route("/api/v1/proxy/tls-history/:hostname", get(tls_history))
         .route("/api/v1/proxy/validate", axum::routing::post(validate))
         .route("/api/v1/proxy/start", axum::routing::post(start))
         .route("/api/v1/proxy/stop", axum::routing::post(stop))
