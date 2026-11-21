@@ -121,7 +121,7 @@ pub fn delete_secret(root: &Path, name: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 fn atomic_replace(source: &Path, destination: &Path) -> Result<(), String> {
-    use std::{os::windows::ffi::OsStrExt, ptr};
+    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
@@ -134,7 +134,6 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<(), String> {
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     };
-    let _ = ptr::null::<u8>(); // Keep pointer use explicit for the Windows FFI boundary.
     if moved == 0 {
         return Err(format!("Could not atomically replace protected secret: {}", std::io::Error::last_os_error()));
     }
