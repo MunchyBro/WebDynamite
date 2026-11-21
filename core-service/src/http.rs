@@ -1045,6 +1045,10 @@ async fn sqlite_database_connection(State(state): State<AppState>, Path(id): Pat
         db.query_row("SELECT file_path FROM managed_databases WHERE id=?1 AND engine='sqlite'",[&id],|r|r.get(0))
             .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"database_not_found","Managed SQLite database was not found.".into())}else{database_error(e)})?
     };
+    Ok(Json(json!({"database_id":id,"database_url":sqlite_database_url(&path)})))
+}
+
+fn sqlite_database_url(path:&str)->String {
     let normalized=path.replace('\\',"/");
     let mut encoded=String::with_capacity(normalized.len());
     for byte in normalized.bytes() {
@@ -1054,7 +1058,28 @@ async fn sqlite_database_connection(State(state): State<AppState>, Path(id): Pat
             encoded.push_str(&format!("%{byte:02X}"));
         }
     }
-    Ok(Json(json!({"database_id":id,"database_url":format!("sqlite:///{encoded}")})))
+    format!("sqlite:///{encoded}")
+}
+
+#[cfg(test)]
+mod sqlite_connection_url_tests {
+    use super::sqlite_database_url;
+
+    #[test]
+    fn sqlite_connection_url_normalizes_and_encodes_windows_paths() {
+        assert_eq!(
+            sqlite_database_url(r"C:\Program Files\WebDynamite\db.sqlite3"),
+            "sqlite:///C:/Program%20Files/WebDynamite/db.sqlite3"
+        );
+    }
+
+    #[test]
+    fn sqlite_connection_url_encodes_url_reserved_characters() {
+        assert_eq!(
+            sqlite_database_url(r"C:\data\app#1?.sqlite3"),
+            "sqlite:///C:/data/app%231%3F.sqlite3"
+        );
+    }
 }
 
 async fn test_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>,ApiError> {
