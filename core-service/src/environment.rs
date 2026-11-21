@@ -47,3 +47,26 @@ pub fn apply_to_command(s:&AppState,id:&str,c:&mut std::process::Command)->Resul
  let rows={let db=s.db.lock().map_err(|_|"Database lock is unavailable.".to_string())?;let mut q=db.prepare("SELECT name,value,is_secret FROM website_environment WHERE website_id=?1 ORDER BY name").map_err(|e|e.to_string())?;let mapped=q.query_map([id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).map_err(|e|e.to_string())?;mapped.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?};
  for(name,value,secret)in rows{let value=if secret==1{credential_entry(id,&name).map_err(|e|e.2)?.get_password().map_err(|e|format!("Secret environment variable {name} is unavailable in Windows Credential Manager: {e}"))?}else{value};c.env(name,value);}Ok(())
 }
+pub fn delete_all_for_website(state:&AppState,id:&str){
+ let names=state.db.lock().ok().and_then(|db|{
+  let mut q=db.prepare("SELECT name FROM website_environment WHERE website_id=?1").ok()?;
+  let rows=q.query_map([id],|r|r.get::<_,String>(0)).ok()?;
+  rows.collect::<Result<Vec<_>,_>>().ok()
+ }).unwrap_or_default();
+ for name in names{if let Ok(entry)=credential_entry(id,&name){let _=entry.delete_credential();}}
+}
+#[cfg(test)]
+mod tests{
+ use super::valid_name;
+ #[test]
+ fn environment_names_are_safe_and_reserved_names_are_rejected(){
+  assert!(valid_name("DATABASE_URL"));
+  assert!(valid_name("_FEATURE_FLAG2"));
+  assert!(!valid_name("database_url"));
+  assert!(!valid_name("2BAD"));
+  assert!(!valid_name("BAD-NAME"));
+  assert!(!valid_name("PORT"));
+  assert!(!valid_name("HOST"));
+  assert!(!valid_name("WEBDYNAMITE_API_TOKEN"));
+ }
+}
