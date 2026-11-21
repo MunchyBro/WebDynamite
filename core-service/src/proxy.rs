@@ -125,9 +125,9 @@ async fn tls_details(State(state):State<AppState>,Path(hostname):Path<String>)->
  };
  if !registered{return Err((axum::http::StatusCode::NOT_FOUND,Json(json!({"error":{"code":"public_domain_not_found","message":"Only a hostname registered in Public Hosting can be inspected."}}))));}
  if !cfg!(windows){return Err((axum::http::StatusCode::NOT_IMPLEMENTED,Json(json!({"error":{"code":"certificate_inspection_unavailable","message":"Certificate metadata inspection currently requires Windows PowerShell."}}))));}
- const SCRIPT:&str=r#"$ErrorActionPreference='Stop'; $hostName=$args[0]; $client=[System.Net.Sockets.TcpClient]::new(); try { $task=$client.ConnectAsync($hostName,443); if(-not $task.Wait(8000)){ throw 'Connection timed out while contacting port 443.' }; $callback=[System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$certificate,$chain,$errors) return $true }; $stream=[System.Net.Security.SslStream]::new($client.GetStream(),$false,$callback); try { $stream.ReadTimeout=8000; $stream.WriteTimeout=8000; $stream.AuthenticateAsClient($hostName); $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($stream.RemoteCertificate); [pscustomobject]@{ subject=$cert.Subject; issuer=$cert.Issuer; not_before=$cert.NotBefore.ToUniversalTime().ToString('o'); not_after=$cert.NotAfter.ToUniversalTime().ToString('o'); thumbprint=$cert.Thumbprint } | ConvertTo-Json -Compress } finally { $stream.Dispose() } } finally { $client.Dispose() }"#;
- let output=Command::new("powershell.exe").args(["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",SCRIPT,"--",hostname.as_str()])
-  .output().map_err(|e|(axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":{"code":"powershell_unavailable","message":format!("Could not start PowerShell certificate inspection: {e}")}}))))?;
+ const SCRIPT:&str=r#"$ErrorActionPreference='Stop'; $hostName=$env:WEBDYNAMITE_TLS_HOST; $client=[System.Net.Sockets.TcpClient]::new(); try { $task=$client.ConnectAsync($hostName,443); if(-not $task.Wait(8000)){ throw 'Connection timed out while contacting port 443.' }; $callback=[System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$certificate,$chain,$errors) return $true }; $stream=[System.Net.Security.SslStream]::new($client.GetStream(),$false,$callback); try { $stream.ReadTimeout=8000; $stream.WriteTimeout=8000; $stream.AuthenticateAsClient($hostName); $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($stream.RemoteCertificate); [pscustomobject]@{ subject=$cert.Subject; issuer=$cert.Issuer; not_before=$cert.NotBefore.ToUniversalTime().ToString('o'); not_after=$cert.NotAfter.ToUniversalTime().ToString('o'); thumbprint=$cert.Thumbprint } | ConvertTo-Json -Compress } finally { $stream.Dispose() } } finally { $client.Dispose() }"#;
+ let output=Command::new("powershell.exe").args(["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",SCRIPT])
+  .env("WEBDYNAMITE_TLS_HOST",&hostname).output().map_err(|e|(axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":{"code":"powershell_unavailable","message":format!("Could not start PowerShell certificate inspection: {e}")}}))))?;
  if !output.status.success(){let detail=String::from_utf8_lossy(&output.stderr).trim().to_string();return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"certificate_inspection_failed","message":if detail.is_empty(){"Could not retrieve the remote TLS certificate.".to_string()}else{detail}}}))));}
  let raw=String::from_utf8_lossy(&output.stdout);
  let cert:Value=serde_json::from_str(raw.trim()).map_err(|e|(axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"certificate_parse_failed","message":format!("PowerShell returned invalid certificate metadata: {e}")}}))))?;
@@ -154,7 +154,7 @@ fn chrono_free_parse_epoch(value:&str)->Option<i64>{
  let adjusted_month=month+if month>2{-3}else{9};
  let day_of_year=(153*adjusted_month+2).div_euclid(5)+day-1;
  let day_of_era=year_of_era*365+year_of_era.div_euclid(4)-year_of_era.div_euclid(100)+day_of_year;
- Some(era*146097+day_of_era-719468)*86400+hour*3600+minute*60+second
+ Some((era*146097+day_of_era-719468)*86400+hour*3600+minute*60+second)
 }
 
 async fn status(State(state):State<AppState>)->Json<Value>{
