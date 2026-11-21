@@ -187,15 +187,16 @@ mod windows_impl {
                 .revocation(verifysign::Revocation::Chain)
                 .allow_network(false),
         ).map_err(|_| "Could not initialize Authenticode verification policy.".to_string())?;
-        let signature = verifier.verify_file(&actual_path.to_string_lossy())
+        let signature = verifier.verify_file(&actual_path)
             .map_err(|_| "The WebDynamite desktop executable has no valid trusted Authenticode signature.".to_string())?;
         let signer = signature.sha256_thumbprint().to_ascii_lowercase();
         if signer != expected_thumbprint {
             return Err("The WebDynamite desktop executable is signed by an unexpected publisher.".into());
         }
 
-        let mut exit_code = 0u32;
-        if unsafe { GetExitCodeProcess(process.0, &mut exit_code) } == 0 || exit_code != STILL_ACTIVE {
+        // WaitForSingleObject on the retained process handle avoids the
+        // STILL_ACTIVE (259) exit-code ambiguity.
+        if unsafe { WaitForSingleObject(process.0, 0) } != WAIT_TIMEOUT {
             return Err("The named-pipe client exited during verification.".into());
         }
 
