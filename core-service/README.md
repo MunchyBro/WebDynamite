@@ -37,6 +37,10 @@ npm run tauri dev
 
 The CI workflow builds this executable before checking the Tauri backend. The installer workflow and signed production release process are separate follow-up work.
 
+## Monitoring
+
+The authenticated `GET /api/v1/monitoring/metrics` endpoint returns host CPU, memory, disk, network counters and OS uptime. Each response includes `collected_at_unix_ms`, a Unix epoch timestamp in milliseconds identifying when that sample was collected. Memory and disk sizes are bytes; network counters are cumulative since boot or interface reset.
+
 ## API
 
 Health (no token):
