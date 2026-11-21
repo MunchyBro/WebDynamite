@@ -1545,6 +1545,27 @@ fn mime_type(path:&PathBuf)->&'static str{
 }
 
 #[cfg(test)]
+mod postgres_provisioning_tests {
+    use super::{quote_postgres_identifier, quote_postgres_literal, valid_postgres_identifier};
+
+    #[test]
+    fn postgres_identifiers_are_bounded_and_restricted() {
+        for value in ["db", "app_user", "app-user", "DB2026"] {
+            assert!(valid_postgres_identifier(value));
+        }
+        for value in ["", "bad name", "bad.name", "bad;drop", "a".repeat(64).as_str(), "naïve"] {
+            assert!(!valid_postgres_identifier(value));
+        }
+    }
+
+    #[test]
+    fn postgres_identifiers_and_password_literals_are_quoted() {
+        assert_eq!(quote_postgres_identifier("a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_postgres_literal("p'ass"), "'p''ass'");
+    }
+}
+
+#[cfg(test)]
 mod domain_tests {
     use super::{archive_entry_type_is_supported, archive_path_has_case_collision, decode_base64, encode_base64, safe_relative_path, valid_local_hostname, reserve_runtime_log_bytes, MAX_RUNTIME_LOG_BYTES, MAX_RUNTIME_LOG_CONTENT_BYTES, RUNTIME_LOG_TRUNCATED_MARKER};
     use std::{collections::HashMap, sync::atomic::{AtomicU64, Ordering}};
