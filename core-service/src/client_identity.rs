@@ -4,9 +4,9 @@
 
 #[cfg(windows)]
 mod windows_impl {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr};
+    use std::{path::{Path, PathBuf}, ptr};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, LocalFree, HANDLE, STILL_ACTIVE},
+        Foundation::{CloseHandle, LocalFree, HANDLE},
         Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser},
         Security::Authorization::ConvertSidToStringSidW,
         System::{
@@ -48,7 +48,7 @@ mod windows_impl {
             let handle_pid = unsafe { GetProcessId(self.process.0) };
             if pid_ok == 0 || session_ok == 0 || alive == 0
                 || pipe_pid != self.pid || handle_pid != self.pid
-                || pipe_session != self.session_id || exit_code != STILL_ACTIVE
+                || pipe_session != self.session_id || exit_code != 259
             {
                 return Err("The verified desktop client is no longer connected.".into());
             }
