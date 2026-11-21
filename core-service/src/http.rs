@@ -1045,7 +1045,7 @@ async fn sqlite_database_connection(State(state): State<AppState>, Path(id): Pat
         db.query_row("SELECT file_path FROM managed_databases WHERE id=?1 AND engine='sqlite'",[&id],|r|r.get(0))
             .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"database_not_found","Managed SQLite database was not found.".into())}else{database_error(e)})?
     };
-    let normalized=path.replace('\\\\',"/");
+    let normalized=path.replace('\\',"/");
     let mut encoded=String::with_capacity(normalized.len());
     for byte in normalized.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte,b'/'|b':'|b'.'|b'_'|b'-'|b'~') {
