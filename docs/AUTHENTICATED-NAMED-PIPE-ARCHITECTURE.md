@@ -59,8 +59,10 @@ server must:
 5. Reject inaccessible, exited, ambiguous, unsigned, or unexpected clients. Do not
    fall back to PID-only, path-only, filename-only, or publisher-name-only checks.
 
+The verifier keeps the opened process handle for the connection, checks the pipe PID again after opening it, confirms the process is still alive, and compares the process token SID/session with the pipe session. It requires the exact canonical desktop executable path and a valid Authenticode signature whose SHA-256 leaf-certificate thumbprint matches a 64-character configured pin. The signer pin is mandatory; missing, malformed, unsigned, or mismatched signatures fail closed.
+
 The installer/release pipeline must establish a stable publisher identity and signed
-desktop binaries before this verification is enabled in production. Development builds
+desktop binaries before this verification is enabled in production. The pin must be supplied from trusted installer/build configuration, not from the connecting desktop process. The installation directory and executable must be writable only by trusted installers and administrators. Development builds
 may use an explicit development-only mode that cannot be enabled by an installed
 production service.
 
