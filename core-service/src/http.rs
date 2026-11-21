@@ -1553,7 +1553,7 @@ mod postgres_provisioning_tests {
         for value in ["db", "app_user", "app-user", "DB2026"] {
             assert!(valid_postgres_identifier(value));
         }
-        for value in ["", "bad name", "bad.name", "bad;drop", "a".repeat(64).as_str(), "naïve"] {
+        for value in ["", "bad name", "bad.name", "bad;drop", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "naïve"] {
             assert!(!valid_postgres_identifier(value));
         }
     }
