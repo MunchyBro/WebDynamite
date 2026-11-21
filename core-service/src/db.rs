@@ -168,6 +168,16 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (14);")?;
+    // Version 16 stores environment metadata; secret values remain in Windows Credential Manager.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS website_environment (
+        website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        value TEXT NOT NULL DEFAULT '',
+        is_secret INTEGER NOT NULL DEFAULT 0 CHECK (is_secret IN (0,1)),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (website_id,name)
+    );
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (16);")?;
     // Version 15 keeps a bounded audit trail of TLS certificate inspections.
     connection.execute_batch("CREATE TABLE IF NOT EXISTS tls_certificate_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,7 +204,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
