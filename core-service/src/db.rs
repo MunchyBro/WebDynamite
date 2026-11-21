@@ -168,6 +168,19 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (14);")?;
+    // Version 15 keeps a bounded audit trail of TLS certificate inspections.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS tls_certificate_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hostname TEXT NOT NULL COLLATE NOCASE,
+        subject TEXT NOT NULL,
+        issuer TEXT NOT NULL,
+        not_before TEXT NOT NULL,
+        not_after TEXT NOT NULL,
+        thumbprint TEXT NOT NULL,
+        checked_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tls_history_host_checked ON tls_certificate_history(hostname, checked_at DESC);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (15);")?;
     Ok(())
 }
 
@@ -181,7 +194,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
