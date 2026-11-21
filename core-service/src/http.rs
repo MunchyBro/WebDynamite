@@ -153,7 +153,7 @@ fn website_root(state:&AppState,id:&str)->Result<PathBuf,ApiError>{
 }
 fn safe_relative_path(value:&str)->Result<PathBuf,ApiError>{
     let path=FsPath::new(value);
-    if value.is_empty() || path.is_absolute() || path.components().any(|component| {
+    if value.is_empty() || value.contains('\\') || path.is_absolute() || path.components().any(|component| {
         let std::path::Component::Normal(part)=component else { return true; };
         let name=part.to_string_lossy();
         let upper=name.to_ascii_uppercase();
@@ -161,7 +161,7 @@ fn safe_relative_path(value:&str)->Result<PathBuf,ApiError>{
         let reserved_device=device_stem=="CON" || device_stem=="PRN" || device_stem=="AUX" || device_stem=="NUL"
             || (["COM","LPT"].iter().any(|prefix| device_stem.strip_prefix(prefix).is_some_and(|suffix| matches!(suffix,"1"|"2"|"3"|"4"|"5"|"6"|"7"|"8"|"9"))));
         name.ends_with('.') || name.ends_with(' ')
-            || name.chars().any(|character| character.is_control() || matches!(character, '<'|'>'|':'|'"'|'|'|'?'|'*'))
+            || name.chars().any(|character| character.is_control() || matches!(character, '<'|'>'|':'|'"'|'\\'|'|'|'?'|'*'))
             || reserved_device
     }) {
         return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_file_path","Use a relative path with Windows-compatible file and folder names inside the website folder.".into()));
@@ -1458,6 +1458,7 @@ mod domain_tests {
         for path in ["CON.txt", "folder/NUL", "COM1.log", "file.txt:secret", "bad<name>.txt", "trailing.", "trailing "] {
             assert!(safe_relative_path(path).is_err(), "accepted unsafe ZIP entry path: {path:?}");
         }
+        assert!(safe_relative_path("assets\\site.css").is_err());
         for path in ["index.html", "assets/site.css", "COM10.txt"] {
             assert!(safe_relative_path(path).is_ok(), "rejected valid ZIP entry path: {path:?}");
         }
@@ -1466,7 +1467,7 @@ mod domain_tests {
     #[test]
     fn file_manager_paths_reject_windows_special_names_and_streams() {
         for path in ["CON", "con.txt", "NUL.log", "PRN", "AUX.data", "COM1", "LPT9.txt", "folder/CON.txt",
-            "file.txt:secret", "bad<name>.txt", "bad|name.txt", "bad?name.txt", "bad*name.txt",
+            "file.txt:secret", "bad<name>.txt", "bad\\name.txt", "bad|name.txt", "bad?name.txt", "bad*name.txt",
             "trailing.", "trailing ", "folder/name. "] {
             assert!(safe_relative_path(path).is_err(), "accepted Windows-incompatible path: {path:?}");
         }
