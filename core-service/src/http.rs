@@ -110,6 +110,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/postgres-connections", get(list_postgres_connections).post(create_postgres_connection))
         .route("/api/v1/postgres-connections/:id", axum::routing::delete(delete_postgres_connection))
         .route("/api/v1/postgres-connections/:id/test", axum::routing::post(test_postgres_connection))
+        .route("/api/v1/postgres-connections/:id/provision/database", axum::routing::post(provision_postgres_database))
+        .route("/api/v1/postgres-connections/:id/provision/role", axum::routing::post(provision_postgres_role))
         .route("/api/v1/postgres-connections/:id/query", axum::routing::post(query_postgres_connection))
         .route("/api/v1/mysql-connections", get(list_mysql_connections).post(create_mysql_connection))
         .route("/api/v1/mysql-connections/:id", axum::routing::delete(delete_mysql_connection))
@@ -533,6 +535,108 @@ async fn test_postgres_connection(State(state):State<AppState>,Path(id):Path<Str
 }
 
 
+
+#[derive(Debug, Deserialize)]
+struct ProvisionPostgresDatabase { name: String, owner: Option<String> }
+#[derive(Debug, Deserialize)]
+struct ProvisionPostgresRole { name: String, password: String, database_name: Option<String> }
+fn valid_postgres_identifier(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 63
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+fn quote_postgres_identifier(value: &str) -> String { format!("\"{}\"", value.replace('"', "\"\"")) }
+fn quote_postgres_literal(value: &str) -> String { format!("'{}'", value.replace('\'', "''")) }
+async fn postgres_admin_client(state: &AppState, id: &str, password: &str) -> Result<(tokio_postgres::Client, String, u16, String, String), ApiError> {
+    if password.len() > 1024 { return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_postgres_password", "Password is too long.".into())); }
+    let (host, port, database_name, username) = {
+        let db = state.db.lock().map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "database_locked", "Database lock is unavailable.".into()))?;
+        db.query_row("SELECT host,port,database_name,username FROM postgres_connections WHERE id=?1", [id],
+            |r| Ok((r.get::<_,String>(0)?, r.get::<_,u16>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?)))
+            .map_err(|e| if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                ApiError(StatusCode::NOT_FOUND, "postgres_profile_not_found", "PostgreSQL profile was not found.".into())
+            } else { database_error(e) })?
+    };
+    let mut config = tokio_postgres::Config::new();
+    config.host(&host).port(port).dbname(&database_name).user(&username)
+        .password(password).connect_timeout(std::time::Duration::from_secs(5));
+    let (client, connection) = config.connect(tokio_postgres::NoTls).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_connection_failed", format!("PostgreSQL connection failed: {e}")))?;
+    tokio::spawn(async move { let _ = connection.await; });
+    Ok((client, host, port, database_name, username))
+}
+async fn provision_postgres_database(
+    State(state): State<AppState>, Path(id): Path<String>, Json(input): Json<serde_json::Value>
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let owner = input.get("owner").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
+    let password = input.get("password").and_then(|v| v.as_str()).unwrap_or("");
+    if !valid_postgres_identifier(name) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_postgres_database_name", "Use 1–63 letters, numbers, underscores or hyphens for the database name.".into()));
+    }
+    if owner.is_some_and(|value| !valid_postgres_identifier(value)) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_postgres_owner", "The database owner name is invalid.".into()));
+    }
+    let (client, _, _, _, _) = postgres_admin_client(&state, &id, password).await?;
+    let exists = client.query_one("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)", &[&name]).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_catalog_query_failed", e.to_string()))?.get::<_, bool>(0);
+    if exists { return Err(ApiError(StatusCode::CONFLICT, "postgres_database_exists", "A database with that name already exists; WebDynamite will not overwrite it.".into())); }
+    if let Some(owner_name) = owner {
+        let owner_exists = client.query_one("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)", &[&owner_name]).await
+            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_catalog_query_failed", e.to_string()))?.get::<_, bool>(0);
+        if !owner_exists { return Err(ApiError(StatusCode::NOT_FOUND, "postgres_owner_not_found", "The requested owner role does not exist.".into())); }
+    }
+    let statement = if let Some(owner_name) = owner {
+        format!("CREATE DATABASE {} OWNER {}", quote_postgres_identifier(name), quote_postgres_identifier(owner_name))
+    } else { format!("CREATE DATABASE {}", quote_postgres_identifier(name)) };
+    client.batch_execute(&statement).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_database_create_failed", format!("PostgreSQL could not create the database: {e}")))?;
+    Ok((StatusCode::CREATED, Json(json!({"id":id,"database_name":name,"owner":owner,"created":true}))))
+}
+async fn provision_postgres_role(
+    State(state): State<AppState>, Path(id): Path<String>, Json(input): Json<serde_json::Value>
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let new_password = input.get("role_password").and_then(|v| v.as_str()).unwrap_or("");
+    let database_name = input.get("database_name").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
+    let admin_password = input.get("password").and_then(|v| v.as_str()).unwrap_or("");
+    if !valid_postgres_identifier(name) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_postgres_role_name", "Use 1–63 letters, numbers, underscores or hyphens for the role name.".into()));
+    }
+    if new_password.is_empty() || new_password.len() > 1024 || new_password.chars().any(char::is_control) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_postgres_role_password", "The new role password must be 1–1024 characters and contain no control characters.".into()));
+    }
+    if database_name.is_some_and(|value| !valid_postgres_identifier(value)) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_postgres_database_name", "The database name is invalid.".into()));
+    }
+    let (client, host, port, _, admin_user) = postgres_admin_client(&state, &id, admin_password).await?;
+    let exists = client.query_one("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)", &[&name]).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_catalog_query_failed", e.to_string()))?.get::<_, bool>(0);
+    if exists { return Err(ApiError(StatusCode::CONFLICT, "postgres_role_exists", "A PostgreSQL role with that name already exists; WebDynamite will not change its password.".into())); }
+    let create = format!("CREATE ROLE {} LOGIN PASSWORD {}", quote_postgres_identifier(name), quote_postgres_literal(new_password));
+    client.batch_execute(&create).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_role_create_failed", format!("PostgreSQL could not create the role: {e}")))?;
+    if let Some(database) = database_name {
+        let exists = client.query_one("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)", &[&database]).await
+            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_catalog_query_failed", e.to_string()))?.get::<_, bool>(0);
+        if !exists { return Err(ApiError(StatusCode::NOT_FOUND, "postgres_database_not_found", "The role was created, but the requested database does not exist; no database grants were applied.".into())); }
+        let grant_db = format!("GRANT CONNECT, TEMPORARY ON DATABASE {} TO {}", quote_postgres_identifier(database), quote_postgres_identifier(name));
+        client.batch_execute(&grant_db).await
+            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_grant_failed", format!("Role was created, but database grants failed: {e}")))?;
+        let mut db_config = tokio_postgres::Config::new();
+        db_config.host(&host).port(port).dbname(database).user(&admin_user).password(admin_password)
+            .connect_timeout(std::time::Duration::from_secs(5));
+        let (db_client, db_connection) = db_config.connect(tokio_postgres::NoTls).await
+            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_schema_grant_failed", format!("Role was created and database access granted, but schema connection failed: {e}")))?;
+        tokio::spawn(async move { let _ = db_connection.await; });
+        let role = quote_postgres_identifier(name);
+        let schema_grants = format!(
+            "GRANT USAGE, CREATE ON SCHEMA public TO {role}; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {role}; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {role}; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {role};"
+        );
+        db_client.batch_execute(&schema_grants).await
+            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "postgres_schema_grant_failed", format!("Role was created and database access granted, but schema grants failed: {e}")))?;
+    }
+    Ok((StatusCode::CREATED, Json(json!({"id":id,"role":name,"database_name":database_name,"created":true,"grants_applied":database_name.is_some(),"password_persisted":false}))))
+}
 
 #[derive(Debug, Deserialize)]
 struct CreateMysqlConnection { name:String, host:String, port:u16, database_name:String, username:String }
