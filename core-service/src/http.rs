@@ -695,7 +695,7 @@ fn valid_mysql_identifier(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len
         && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
-fn quote_mysql_identifier(value: &str) -> String { format!("\`{}\`", value.replace('\`', "\`\`")) }
+fn quote_mysql_identifier(value: &str) -> String { format!("`{}`", value.replace('`', "``")) }
 async fn mysql_admin_connection(
     state: &AppState, id: &str, password: &str
 ) -> Result<(sqlx::mysql::MySqlConnection, String, u16), ApiError> {
@@ -794,7 +794,7 @@ mod mysql_provisioning_tests {
     }
     #[test]
     fn mysql_identifiers_are_backtick_quoted() {
-        assert_eq!(quote_mysql_identifier("a\`b"), "\`a\`\`b\`");
+        assert_eq!(quote_mysql_identifier("a`b"), "`a``b`");
     }
 }
 
