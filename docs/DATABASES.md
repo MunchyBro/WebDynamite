@@ -21,6 +21,12 @@ Response limits:
 
 BLOB previews are returned as Base64 objects. Text and BLOB previews may be shortened. Results can be exported as UTF-8 CSV; exports include only the bounded rows returned by the query API and guard text cells that could be interpreted as spreadsheet formulas. This console is for inspection, not writes or administrative changes.
 
+
+
+### SQLite schema browser shortcuts
+
+The SQLite query console includes **List tables**, **Inspect columns**, and **Preview rows** shortcuts. List tables shows user-created tables and views from `sqlite_master` (internal SQLite objects are hidden). Inspect columns runs `PRAGMA table_info` for the entered table or view name. Preview rows builds a safely quoted `SELECT * ... LIMIT 200` query and sends it through the same read-only query endpoint. These shortcuts do not modify database contents.
+
 ## PostgreSQL: local connection profiles
 
 The **Local PostgreSQL connections** section saves connection metadata for a PostgreSQL server already installed and running on this PC. The initial integration intentionally permits only `localhost`, `127.0.0.1`, and `::1`; remote hosts are rejected because this initial client uses PostgreSQL's NoTLS mode.
