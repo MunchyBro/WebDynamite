@@ -7,6 +7,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/proxy/status", get(status))
         .route("/api/v1/proxy/tls-check/:hostname", axum::routing::post(tls_check))
+        .route("/api/v1/proxy/tls-details/:hostname", get(tls_details))
         .route("/api/v1/proxy/validate", axum::routing::post(validate))
         .route("/api/v1/proxy/start", axum::routing::post(start))
         .route("/api/v1/proxy/stop", axum::routing::post(stop))
@@ -114,6 +115,46 @@ async fn tls_check(State(state):State<AppState>,Path(hostname):Path<String>)->Re
  let tls_valid=output.status.success()&&verify==Some(0);
  let error=if tls_valid{None}else{Some(String::from_utf8_lossy(&output.stderr).trim().to_string())};
  Ok(Json(json!({"hostname":hostname,"tls_valid":tls_valid,"http_status":http_status,"ssl_verify_result":verify,"elapsed_seconds":elapsed,"checked_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),"error":error,"method":"curl HEAD; certificate verification enabled; redirects not followed"})))
+}
+
+async fn tls_details(State(state):State<AppState>,Path(hostname):Path<String>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+ let registered={
+  let db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_locked","message":"Database lock is unavailable"}}))))?;
+  db.query_row("SELECT EXISTS(SELECT 1 FROM public_domains WHERE hostname=?1)",[&hostname],|r|r.get::<_,bool>(0))
+   .map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_error","message":e.to_string()}}))))?
+ };
+ if !registered{return Err((axum::http::StatusCode::NOT_FOUND,Json(json!({"error":{"code":"public_domain_not_found","message":"Only a hostname registered in Public Hosting can be inspected."}}))));}
+ if !cfg!(windows){return Err((axum::http::StatusCode::NOT_IMPLEMENTED,Json(json!({"error":{"code":"certificate_inspection_unavailable","message":"Certificate metadata inspection currently requires Windows PowerShell."}}))));}
+ const SCRIPT:&str=r#"$ErrorActionPreference='Stop'; $hostName=$args[0]; $client=[System.Net.Sockets.TcpClient]::new(); try { $task=$client.ConnectAsync($hostName,443); if(-not $task.Wait(8000)){ throw 'Connection timed out while contacting port 443.' }; $callback=[System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$certificate,$chain,$errors) return $true }; $stream=[System.Net.Security.SslStream]::new($client.GetStream(),$false,$callback); try { $stream.ReadTimeout=8000; $stream.WriteTimeout=8000; $stream.AuthenticateAsClient($hostName); $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($stream.RemoteCertificate); [pscustomobject]@{ subject=$cert.Subject; issuer=$cert.Issuer; not_before=$cert.NotBefore.ToUniversalTime().ToString('o'); not_after=$cert.NotAfter.ToUniversalTime().ToString('o'); thumbprint=$cert.Thumbprint } | ConvertTo-Json -Compress } finally { $stream.Dispose() } } finally { $client.Dispose() }"#;
+ let output=Command::new("powershell.exe").args(["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",SCRIPT,"--",hostname.as_str()])
+  .output().map_err(|e|(axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":{"code":"powershell_unavailable","message":format!("Could not start PowerShell certificate inspection: {e}")}}))))?;
+ if !output.status.success(){let detail=String::from_utf8_lossy(&output.stderr).trim().to_string();return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"certificate_inspection_failed","message":if detail.is_empty(){"Could not retrieve the remote TLS certificate.".to_string()}else{detail}}}))));}
+ let raw=String::from_utf8_lossy(&output.stdout);
+ let cert:Value=serde_json::from_str(raw.trim()).map_err(|e|(axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"certificate_parse_failed","message":format!("PowerShell returned invalid certificate metadata: {e}")}}))))?;
+ let not_after=cert.get("not_after").and_then(Value::as_str).unwrap_or("");
+ let expiry=chrono_free_parse_epoch(not_after);
+ let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+ let days_remaining=expiry.map(|value|(value-now).div_euclid(86400));
+ Ok(Json(json!({"hostname":hostname,"subject":cert.get("subject"),"issuer":cert.get("issuer"),"not_before":cert.get("not_before"),"not_after":not_after,"days_remaining":days_remaining,"thumbprint":cert.get("thumbprint"),"expired":days_remaining.is_some_and(|days|days<0),"checked_at":now,"note":"Certificate metadata is inspected without validating trust. Use Check HTTPS to verify the certificate chain and hostname."})))
+}
+fn chrono_free_parse_epoch(value:&str)->Option<i64>{
+ let normalized=value.trim_end_matches('Z');
+ let (date,time)=normalized.split_once('T')?;
+ let mut date_parts=date.split('-');
+ let year=date_parts.next()?.parse::<i64>().ok()?;
+ let month=date_parts.next()?.parse::<i64>().ok()?;
+ let day=date_parts.next()?.parse::<i64>().ok()?;
+ let mut time_parts=time.split(':');
+ let hour=time_parts.next()?.parse::<i64>().ok()?;
+ let minute=time_parts.next()?.parse::<i64>().ok()?;
+ let second=time_parts.next()?.split('.').next()?.parse::<i64>().ok()?;
+ let adjusted_year=year-if month<=2{1}else{0};
+ let era=adjusted_year.div_euclid(400);
+ let year_of_era=adjusted_year-era*400;
+ let adjusted_month=month+if month>2{-3}else{9};
+ let day_of_year=(153*adjusted_month+2).div_euclid(5)+day-1;
+ let day_of_era=year_of_era*365+year_of_era.div_euclid(4)-year_of_era.div_euclid(100)+day_of_year;
+ Some(era*146097+day_of_era-719468)*86400+hour*3600+minute*60+second
 }
 
 async fn status(State(state):State<AppState>)->Json<Value>{
