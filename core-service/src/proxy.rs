@@ -125,7 +125,7 @@ async fn tls_details(State(state):State<AppState>,Path(hostname):Path<String>)->
  };
  if !registered{return Err((axum::http::StatusCode::NOT_FOUND,Json(json!({"error":{"code":"public_domain_not_found","message":"Only a hostname registered in Public Hosting can be inspected."}}))));}
  if !cfg!(windows){return Err((axum::http::StatusCode::NOT_IMPLEMENTED,Json(json!({"error":{"code":"certificate_inspection_unavailable","message":"Certificate metadata inspection currently requires Windows PowerShell."}}))));}
- const SCRIPT:&str=r#"$ErrorActionPreference='Stop'; $hostName=$env:WEBDYNAMITE_TLS_HOST; $client=[System.Net.Sockets.TcpClient]::new(); try { $task=$client.ConnectAsync($hostName,443); if(-not $task.Wait(8000)){ throw 'Connection timed out while contacting port 443.' }; $callback=[System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$certificate,$chain,$errors) return $true }; $stream=[System.Net.Security.SslStream]::new($client.GetStream(),$false,$callback); try { $stream.ReadTimeout=8000; $stream.WriteTimeout=8000; $stream.AuthenticateAsClient($hostName); $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($stream.RemoteCertificate); [pscustomobject]@{ subject=$cert.Subject; issuer=$cert.Issuer; not_before=$cert.NotBefore.ToUniversalTime().ToString('o'); not_after=$cert.NotAfter.ToUniversalTime().ToString('o'); thumbprint=$cert.Thumbprint } | ConvertTo-Json -Compress } finally { $stream.Dispose() } } finally { $client.Dispose() }"#;
+ const SCRIPT:&str=r#"$ErrorActionPreference='Stop'; $hostName=$env:WEBDYNAMITE_TLS_HOST; $client=[System.Net.Sockets.TcpClient]::new(); $client.ReceiveTimeout=8000; $client.SendTimeout=8000; try { $task=$client.ConnectAsync($hostName,443); if(-not $task.Wait(8000)){ throw 'Connection timed out while contacting port 443.' }; $callback=[System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$certificate,$chain,$errors) return $true }; $stream=[System.Net.Security.SslStream]::new($client.GetStream(),$false,$callback); try { $stream.ReadTimeout=8000; $stream.WriteTimeout=8000; $stream.AuthenticateAsClient($hostName); $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($stream.RemoteCertificate); [pscustomobject]@{ subject=$cert.Subject; issuer=$cert.Issuer; not_before=$cert.NotBefore.ToUniversalTime().ToString('o'); not_after=$cert.NotAfter.ToUniversalTime().ToString('o'); thumbprint=$cert.Thumbprint } | ConvertTo-Json -Compress } finally { $stream.Dispose() } } finally { $client.Dispose() }"#;
  let output=Command::new("powershell.exe").args(["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",SCRIPT])
   .env("WEBDYNAMITE_TLS_HOST",&hostname).output().map_err(|e|(axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":{"code":"powershell_unavailable","message":format!("Could not start PowerShell certificate inspection: {e}")}}))))?;
  if !output.status.success(){let detail=String::from_utf8_lossy(&output.stderr).trim().to_string();return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"certificate_inspection_failed","message":if detail.is_empty(){"Could not retrieve the remote TLS certificate.".to_string()}else{detail}}}))));}
@@ -188,3 +188,15 @@ async fn reload(State(state):State<AppState>)->Result<Json<Value>,(axum::http::S
  match caddy_output(&state,&["reload","--config",&p,"--adapter","caddyfile"]){Ok(output)=>Ok(Json(json!({"running":true,"reloaded":true,"output":output}))),Err(e)=>Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_reload_failed","message":e}}))))}
 }
 pub fn stop_on_shutdown(state:&AppState){if let Ok(mut slot)=state.proxy_process.lock(){if let Some(mut child)=slot.take(){let _=child.kill();let _=child.wait();}}}
+
+#[cfg(test)]
+mod certificate_time_tests {
+    use super::chrono_free_parse_epoch;
+
+    #[test]
+    fn parses_utc_certificate_expiry_timestamps() {
+        assert_eq!(chrono_free_parse_epoch("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(chrono_free_parse_epoch("2000-02-29T12:34:56.0000000Z"), Some(951_827_696));
+        assert_eq!(chrono_free_parse_epoch("not-a-date"), None);
+    }
+}
