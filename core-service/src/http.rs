@@ -104,6 +104,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/databases", get(list_databases).post(create_database))
         .route("/api/v1/databases/:id", axum::routing::delete(delete_database))
         .route("/api/v1/databases/:id/test", axum::routing::post(test_database))
+        .route("/api/v1/databases/:id/connection", get(sqlite_database_connection))
         .route("/api/v1/databases/:id/query", axum::routing::post(query_database))
         .route("/api/v1/databases/:id/export", get(export_database))
         .route("/api/v1/databases/import", axum::routing::post(import_database))
@@ -1036,6 +1037,49 @@ async fn create_database(State(state): State<AppState>, Json(input): Json<serde_
     db.execute("INSERT INTO managed_databases(id,name,engine,file_path) VALUES (?1,?2,'sqlite',?3)",params![id,name,path_text]).map_err(database_error)?;
     let created_at:String=db.query_row("SELECT created_at FROM managed_databases WHERE id=?1",[&id],|r|r.get(0)).map_err(database_error)?;
     Ok((StatusCode::CREATED,Json(json!({"id":id,"name":name,"engine":"sqlite","size_bytes":0,"file_path":path_text,"created_at":created_at}))))
+}
+
+async fn sqlite_database_connection(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>,ApiError> {
+    let path:String={
+        let db=state.db.lock().map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT file_path FROM managed_databases WHERE id=?1 AND engine='sqlite'",[&id],|r|r.get(0))
+            .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"database_not_found","Managed SQLite database was not found.".into())}else{database_error(e)})?
+    };
+    Ok(Json(json!({"database_id":id,"database_url":sqlite_database_url(&path)})))
+}
+
+fn sqlite_database_url(path:&str)->String {
+    let normalized=path.replace('\\',"/");
+    let mut encoded=String::with_capacity(normalized.len());
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte,b'/'|b':'|b'.'|b'_'|b'-'|b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    format!("sqlite:///{encoded}")
+}
+
+#[cfg(test)]
+mod sqlite_connection_url_tests {
+    use super::sqlite_database_url;
+
+    #[test]
+    fn sqlite_connection_url_normalizes_and_encodes_windows_paths() {
+        assert_eq!(
+            sqlite_database_url(r"C:\Program Files\WebDynamite\db.sqlite3"),
+            "sqlite:///C:/Program%20Files/WebDynamite/db.sqlite3"
+        );
+    }
+
+    #[test]
+    fn sqlite_connection_url_encodes_url_reserved_characters() {
+        assert_eq!(
+            sqlite_database_url(r"C:\data\app#1?.sqlite3"),
+            "sqlite:///C:/data/app%231%3F.sqlite3"
+        );
+    }
 }
 
 async fn test_database(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>,ApiError> {

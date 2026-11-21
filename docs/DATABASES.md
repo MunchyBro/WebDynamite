@@ -144,3 +144,12 @@ Use **Connect website** beside a saved PostgreSQL or MySQL/MariaDB profile. Choo
 - Removing or changing the profile later does not automatically rewrite an already-created website secret. Update or remove `DATABASE_URL` in the website's Environment Variables editor when credentials or database details change.
 
 The application framework must support `DATABASE_URL` (or be configured to read it). Frameworks that expect separate variables such as `DB_HOST`, `DB_DATABASE`, `DB_USERNAME` and `DB_PASSWORD` can still be configured manually in the website environment editor.
+
+
+## Connect a managed SQLite database to a website
+
+Use **Connect website** beside a managed SQLite database, choose a registered website, and confirm the replacement of its `DATABASE_URL` secret. WebDynamite resolves the registered database ID to its managed file path on the Core Service and stores the generated URL through the protected website-environment API. The absolute path is URL-encoded and returned only to the authenticated desktop client for this operation.
+
+The generated value uses the SQLAlchemy-style `sqlite:///absolute/path` URL form (on Windows, for example, `sqlite:///C:/ProgramData/WebDynamite/...sqlite3`). This is not a universal SQLite URL convention: some frameworks and ORMs, including tools that expect a project-relative `file:./...` URL, require a different format. For those applications, use the Environment Variables editor to set the exact variable and value expected by the framework instead.
+
+The website process must run under a Windows account that can read and write the managed database file and its SQLite WAL/SHM sidecar files. WebDynamite does not copy the database into the project directory. Deleting the managed database removes its backing file and will break any website still using it; disconnect or update the website variable before deleting the database.
