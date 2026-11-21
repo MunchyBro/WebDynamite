@@ -174,7 +174,7 @@ mod windows_impl {
 
         let actual_path = process_image_path(process.0)?.canonicalize()
             .map_err(|_| "The named-pipe client executable path cannot be canonicalized.".to_string())?;
-        if !actual_path.as_os_str().encode_wide().eq(expected_path.as_os_str().encode_wide()) {
+        if !actual_path.to_string_lossy().eq_ignore_ascii_case(&expected_path.to_string_lossy()) {
             return Err("The named-pipe client is not the installed WebDynamite desktop executable.".into());
         }
 
