@@ -8,7 +8,6 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/proxy/status", get(status))
         .route("/api/v1/proxy/tls-check/:hostname", axum::routing::post(tls_check))
         .route("/api/v1/proxy/tls-details/:hostname", get(tls_details))
-        .route("/api/v1/proxy/tls-history/:hostname", get(tls_history))
         .route("/api/v1/proxy/validate", axum::routing::post(validate))
         .route("/api/v1/proxy/start", axum::routing::post(start))
         .route("/api/v1/proxy/stop", axum::routing::post(stop))
@@ -136,30 +135,7 @@ async fn tls_details(State(state):State<AppState>,Path(hostname):Path<String>)->
  let expiry=chrono_free_parse_epoch(not_after);
  let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
  let days_remaining=expiry.map(|value|(value-now).div_euclid(86400));
- let subject=cert.get("subject").and_then(Value::as_str).unwrap_or("");
- let issuer=cert.get("issuer").and_then(Value::as_str).unwrap_or("");
- let not_before=cert.get("not_before").and_then(Value::as_str).unwrap_or("");
- let thumbprint=cert.get("thumbprint").and_then(Value::as_str).unwrap_or("");
- {
-  let db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_locked","message":"Database lock is unavailable"}}))))?;
-  db.execute("INSERT INTO tls_certificate_history(hostname,subject,issuer,not_before,not_after,thumbprint,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",rusqlite::params![hostname,subject,issuer,not_before,not_after,thumbprint,now])
-   .map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"history_write_failed","message":e.to_string()}}))))?;
-  db.execute("DELETE FROM tls_certificate_history WHERE hostname=?1 AND id NOT IN (SELECT id FROM tls_certificate_history WHERE hostname=?1 ORDER BY checked_at DESC,id DESC LIMIT 30)",[&hostname])
-   .map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"history_retention_failed","message":e.to_string()}}))))?;
- }
- Ok(Json(json!({"hostname":hostname,"subject":subject,"issuer":issuer,"not_before":not_before,"not_after":not_after,"days_remaining":days_remaining,"thumbprint":thumbprint,"expired":days_remaining.is_some_and(|days|days<0),"checked_at":now,"note":"Certificate metadata is inspected without validating trust. Use Check HTTPS to verify the certificate chain and hostname."})))
-}
-async fn tls_history(State(state):State<AppState>,Path(hostname):Path<String>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
- let db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_locked","message":"Database lock is unavailable"}}))))?;
- let registered:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM public_domains WHERE hostname=?1)",[&hostname],|r|r.get(0))
-  .map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_error","message":e.to_string()}}))))?;
- if !registered{return Err((axum::http::StatusCode::NOT_FOUND,Json(json!({"error":{"code":"public_domain_not_found","message":"Only a registered public hostname has certificate history."}}))));}
- let mut statement=db.prepare("SELECT subject,issuer,not_before,not_after,thumbprint,checked_at FROM tls_certificate_history WHERE hostname=?1 ORDER BY checked_at DESC,id DESC LIMIT 30")
-  .map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"history_query_failed","message":e.to_string()}}))))?;
- let rows=statement.query_map([&hostname],|r|Ok(json!({"subject":r.get::<_,String>(0)?,"issuer":r.get::<_,String>(1)?,"not_before":r.get::<_,String>(2)?,"not_after":r.get::<_,String>(3)?,"thumbprint":r.get::<_,String>(4)?,"checked_at":r.get::<_,i64>(5)?})))
-  .map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"history_query_failed","message":e.to_string()}}))))?;
- let mut history=Vec::new(); for row in rows {history.push(row.map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"history_query_failed","message":e.to_string()}}))))?);}
- Ok(Json(json!({"hostname":hostname,"count":history.len(),"history":history,"retention_per_hostname":30})))
+ Ok(Json(json!({"hostname":hostname,"subject":cert.get("subject"),"issuer":cert.get("issuer"),"not_before":cert.get("not_before"),"not_after":not_after,"days_remaining":days_remaining,"thumbprint":cert.get("thumbprint"),"expired":days_remaining.is_some_and(|days|days<0),"checked_at":now,"note":"Certificate metadata is inspected without validating trust. Use Check HTTPS to verify the certificate chain and hostname."})))
 }
 fn chrono_free_parse_epoch(value:&str)->Option<i64>{
  let normalized=value.trim_end_matches('Z');
