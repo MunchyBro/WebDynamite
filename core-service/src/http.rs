@@ -116,6 +116,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/mysql-connections", get(list_mysql_connections).post(create_mysql_connection))
         .route("/api/v1/mysql-connections/:id", axum::routing::delete(delete_mysql_connection))
         .route("/api/v1/mysql-connections/:id/test", axum::routing::post(test_mysql_connection))
+        .route("/api/v1/mysql-connections/:id/provision/database", axum::routing::post(provision_mysql_database))
+        .route("/api/v1/mysql-connections/:id/provision/user", axum::routing::post(provision_mysql_user))
         .route("/api/v1/mysql-connections/:id/query", axum::routing::post(query_mysql_connection))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
         .merge(crate::proxy::router())
@@ -687,6 +689,133 @@ async fn test_mysql_connection(State(state):State<AppState>,Path(id):Path<String
  connection.close().await.ok();
  Ok(Json(json!({"id":id,"connected":true,"database":database,"username":user,"server_version":version,"password_persisted":false})))}
 
+
+
+fn is_mysql_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+fn valid_mysql_identifier(value: &str, max_len: usize) -> bool {
+    !value.is_empty() && value.len() <= max_len
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+fn quote_mysql_identifier(value: &str) -> String { format!("`{}`", value.replace('`', "``")) }
+async fn mysql_admin_connection(
+    state: &AppState, id: &str, password: &str
+) -> Result<(sqlx::mysql::MySqlConnection, String, u16), ApiError> {
+    use sqlx::Connection;
+    if password.len() > 1024 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mysql_password", "Password is too long.".into()));
+    }
+    let (host, port, database_name, username) = {
+        let db = state.db.lock().map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "database_locked", "Database lock is unavailable.".into()))?;
+        db.query_row("SELECT host,port,database_name,username FROM mysql_connections WHERE id=?1", [id],
+            |r| Ok((r.get::<_,String>(0)?, r.get::<_,u16>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?)))
+            .map_err(|e| if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                ApiError(StatusCode::NOT_FOUND, "mysql_profile_not_found", "MySQL/MariaDB connection profile was not found.".into())
+            } else { database_error(e) })?
+    };
+    if !is_mysql_loopback_host(&host) {
+        return Err(ApiError(StatusCode::FORBIDDEN, "mysql_provisioning_loopback_only", "MySQL/MariaDB provisioning is restricted to localhost and loopback IP addresses; remote hosts are not supported.".into()));
+    }
+    let mut options = sqlx::mysql::MySqlConnectOptions::new()
+        .host(&host).port(port).username(&username).password(password)
+        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+    if !database_name.is_empty() { options = options.database(&database_name); }
+    let connect = sqlx::mysql::MySqlConnection::connect_with(&options);
+    let connection = tokio::time::timeout(std::time::Duration::from_secs(5), connect).await
+        .map_err(|_| ApiError(StatusCode::GATEWAY_TIMEOUT, "mysql_connection_timeout", "MySQL/MariaDB connection timed out after five seconds.".into()))?
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_connection_failed", format!("MySQL/MariaDB connection failed: {e}")))?;
+    Ok((connection, host, port))
+}
+async fn provision_mysql_database(
+    State(state): State<AppState>, Path(id): Path<String>, Json(input): Json<serde_json::Value>
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    use sqlx::Connection;
+    let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let password = input.get("password").and_then(|v| v.as_str()).unwrap_or("");
+    if !valid_mysql_identifier(name, 64) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mysql_database_name", "Use 1–64 letters, numbers, underscores or hyphens for the database name.".into()));
+    }
+    let (mut connection, _, _) = mysql_admin_connection(&state, &id, password).await?;
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?")
+        .bind(name).fetch_one(&mut connection).await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_catalog_query_failed", format!("Could not inspect MySQL/MariaDB databases: {e}")))?;
+    if exists > 0 {
+        return Err(ApiError(StatusCode::CONFLICT, "mysql_database_exists", "A database with that name already exists; WebDynamite will not overwrite it.".into()));
+    }
+    let statement = format!("CREATE DATABASE {}", quote_mysql_identifier(name));
+    sqlx::query(&statement).execute(&mut connection).await
+        .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "mysql_database_create_failed", "MySQL/MariaDB could not create the database. Check the account's CREATE privilege and server logs.".into()))?;
+    connection.close().await.ok();
+    Ok((StatusCode::CREATED, Json(json!({"id":id,"database_name":name,"created":true}))))
+}
+async fn provision_mysql_user(
+    State(state): State<AppState>, Path(id): Path<String>, Json(input): Json<serde_json::Value>
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    use sqlx::Connection;
+    let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let new_password = input.get("user_password").and_then(|v| v.as_str()).unwrap_or("");
+    let database_name = input.get("database_name").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
+    let admin_password = input.get("password").and_then(|v| v.as_str()).unwrap_or("");
+    if !valid_mysql_identifier(name, 32) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mysql_username", "Use 1–32 letters, numbers, underscores or hyphens for the username.".into()));
+    }
+    if new_password.is_empty() || new_password.len() > 1024 || new_password.chars().any(char::is_control) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mysql_user_password", "The new user password must be 1–1024 characters and contain no control characters.".into()));
+    }
+    if database_name.is_some_and(|value| !valid_mysql_identifier(value, 64)) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mysql_database_name", "The database name is invalid.".into()));
+    }
+    let (mut connection, _, _) = mysql_admin_connection(&state, &id, admin_password).await?;
+    if let Some(database) = database_name {
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?")
+            .bind(database).fetch_one(&mut connection).await
+            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, "mysql_catalog_query_failed", format!("Could not inspect MySQL/MariaDB databases: {e}")))?;
+        if exists == 0 {
+            return Err(ApiError(StatusCode::NOT_FOUND, "mysql_database_not_found", "The selected database does not exist; no user was created.".into()));
+        }
+    }
+    // The account is scoped to localhost; the password is a bound parameter,
+    // never interpolated into SQL or persisted by WebDynamite.
+    let create = format!("CREATE USER '{}'@'localhost' IDENTIFIED BY ?", name);
+    sqlx::query(&create).bind(new_password).execute(&mut connection).await
+        .map_err(|_| ApiError(StatusCode::CONFLICT, "mysql_user_create_failed", "MySQL/MariaDB could not create this user. It may already exist, or the administrator account may lack CREATE USER privilege.".into()))?;
+    if let Some(database) = database_name {
+        let grant = format!("GRANT ALL PRIVILEGES ON {}.* TO '{}'@'localhost'", quote_mysql_identifier(database), name);
+        sqlx::query(&grant).execute(&mut connection).await
+            .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "mysql_grant_failed", "The user was created, but database grants failed. Review the account manually; WebDynamite does not remove or reset the user.".into()))?;
+    }
+    connection.close().await.ok();
+    Ok((StatusCode::CREATED, Json(json!({"id":id,"username":name,"host":"localhost","database_name":database_name,"created":true,"grants_applied":database_name.is_some(),"password_persisted":false}))))
+}
+
+#[cfg(test)]
+mod mysql_provisioning_tests {
+    use super::{quote_mysql_identifier, valid_mysql_identifier};
+    #[test]
+    fn mysql_provisioning_accepts_only_loopback_hosts() {
+        use super::is_mysql_loopback_host;
+        assert!(is_mysql_loopback_host("localhost"));
+        assert!(is_mysql_loopback_host("LOCALHOST"));
+        assert!(is_mysql_loopback_host("127.0.0.1"));
+        assert!(is_mysql_loopback_host("::1"));
+        assert!(!is_mysql_loopback_host("192.168.1.10"));
+        assert!(!is_mysql_loopback_host("example.com"));
+    }
+
+    #[test]
+    fn mysql_identifiers_are_bounded_and_restricted() {
+        for value in ["db", "app_user", "app-user", "DB2026"] { assert!(valid_mysql_identifier(value, 64)); }
+        for value in ["", "bad name", "bad.name", "bad;drop", "naïve"] { assert!(!valid_mysql_identifier(value, 64)); }
+        assert!(!valid_mysql_identifier("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 64));
+        assert!(!valid_mysql_identifier("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 32));
+    }
+    #[test]
+    fn mysql_identifiers_are_backtick_quoted() {
+        assert_eq!(quote_mysql_identifier("a`b"), "`a``b`");
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct MysqlQuery { password: String, sql: String }
