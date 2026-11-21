@@ -43,6 +43,16 @@ fn data_dir() -> PathBuf {
         .join("WebDynamite")
 }
 
+fn reconcile_interrupted_website_operations(connection: &Connection) -> Result<usize, rusqlite::Error> {
+    // Only transient transitions are unambiguously stale after a service restart.
+    // A persisted RUNNING process may have survived, so do not guess or kill it here.
+    connection.execute(
+        "UPDATE websites SET status='stopped', updated_at=CURRENT_TIMESTAMP
+         WHERE status IN ('starting', 'stopping')",
+        [],
+    )
+}
+
 fn restart_attempts_remaining(used: u64, limit: u64) -> u64 {
     limit.saturating_sub(used.min(limit))
 }
@@ -198,6 +208,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&backups_dir)?;
     let connection = Connection::open(database_dir.join("webdynamite.sqlite3"))?;
     db::initialize(&connection)?;
+    let reconciled = reconcile_interrupted_website_operations(&connection)?;
+    if reconciled > 0 {
+        println!("Recovered {reconciled} interrupted website operation(s) after Core Service startup.");
+    }
 
     let state = AppState {
         db: Arc::new(Mutex::new(connection)),
@@ -235,7 +249,7 @@ async fn shutdown() { let _ = tokio::signal::ctrl_c().await; }
 
 #[cfg(test)]
 mod supervisor_tests {
-    use super::restart_attempts_remaining;
+    use super::{reconcile_interrupted_website_operations, restart_attempts_remaining};
 
     #[test]
     fn restart_attempt_budget_is_bounded() {
@@ -244,6 +258,31 @@ mod supervisor_tests {
         assert_eq!(restart_attempts_remaining(3, 3), 0);
         assert_eq!(restart_attempts_remaining(99, 3), 0);
         assert_eq!(restart_attempts_remaining(0, 1), 1);
+    }
+
+    #[test]
+    fn startup_reconciliation_resets_only_interrupted_transitions() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE websites (id TEXT PRIMARY KEY, status TEXT NOT NULL, updated_at TEXT);
+             INSERT INTO websites (id,status) VALUES
+               ('starting-site','starting'),
+               ('stopping-site','stopping'),
+               ('running-site','running'),
+               ('failed-site','failed'),
+               ('stopped-site','stopped');"
+        ).unwrap();
+
+        assert_eq!(reconcile_interrupted_website_operations(&connection).unwrap(), 2);
+        let status = |id: &str| connection.query_row(
+            "SELECT status FROM websites WHERE id=?1", [id], |row| row.get::<_, String>(0)
+        ).unwrap();
+        assert_eq!(status("starting-site"), "stopped");
+        assert_eq!(status("stopping-site"), "stopped");
+        assert_eq!(status("running-site"), "running");
+        assert_eq!(status("failed-site"), "failed");
+        assert_eq!(status("stopped-site"), "stopped");
+        assert_eq!(reconcile_interrupted_website_operations(&connection).unwrap(), 0);
     }
 
     #[tokio::test]
