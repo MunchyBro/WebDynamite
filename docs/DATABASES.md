@@ -57,7 +57,7 @@ Removing a profile deletes only its saved metadata, not the database server or i
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
 - PostgreSQL database/user provisioning is available for existing local servers through a saved profile; server installation and lifecycle are not implemented.
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
-- MySQL/MariaDB server installation, process lifecycle, and data-directory management.
+- MySQL/MariaDB user and database provisioning.
 - Application connection-string injection.
 
 
@@ -103,15 +103,3 @@ A saved PostgreSQL profile can provision databases and login roles on its existi
 - Role creation is not rolled back if a later grant fails. The error reports the partial result so the administrator can inspect and correct it.
 - Provisioning uses only the saved profile loopback host and requests the administrator password for each operation (or retrieves the optional Windows Credential Manager entry). Remote PostgreSQL access is not enabled.
 - No drop-database, drop-role, or password-reset operation is provided in this initial workflow.
-
-
-## MySQL / MariaDB provisioning (local profiles)
-
-A saved loopback MySQL/MariaDB profile can create databases and local login users on an existing server. Use an administrator account with the server privileges required for `CREATE DATABASE`, `CREATE USER`, and grants.
-
-- **Create DB** creates a new database. Existing database names are never overwritten.
-- **Create user** creates a new account scoped to the `localhost` host. The password is bound to the SQL operation and is never saved by WebDynamite.
-- If a database is selected, WebDynamite grants `ALL PRIVILEGES` on that database only; it does not grant global privileges or `WITH GRANT OPTION`.
-- If a requested database does not exist, user creation is stopped before creating the user. If the later grant operation fails, the user remains created and the error reports the partial result.
-- Provisioning uses the saved loopback host and requests the administrator password for each operation (or retrieves the optional Windows Credential Manager entry). Remote MySQL/MariaDB access is not enabled.
-- No drop-database, drop-user, or password-reset operation is provided in this initial workflow.
