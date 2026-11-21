@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use keyring::Entry;
-use std::{io, net::TcpStream, process::{Child, Command, Stdio}, sync::Mutex, thread, time::{Duration, Instant}};
+use std::{io::{self, BufRead, BufReader, Write}, net::{SocketAddr, TcpStream}, process::{Command, Stdio}, thread, time::{Duration, Instant}};
 use tauri::Manager;
 const CORE_URL: &str = "http://127.0.0.1:47821";
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,8 +18,6 @@ async fn authorized_request(token:&str,method:reqwest::Method,path:&str,body:Opt
  if !response.status().is_success(){let status=response.status();let detail=response.text().await.unwrap_or_default();return Err(format!("Core Service returned {status}: {detail}"));}
  Ok(response)
 }
-struct CoreServiceProcess(Mutex<Option<Child>>);
-
 fn core_service_token_entry() -> Result<Entry, String> {
     Entry::new("WebDynamite.CoreService", "api-token")
         .map_err(|e| api_error("Could not access the WebDynamite Core Service credential", e))
@@ -53,16 +51,43 @@ fn bundled_core_service_path(app: &tauri::AppHandle) -> Result<std::path::PathBu
     Err(format!("Bundled Core Service was not found. Expected {}. Build core-service in release mode before running the desktop app.", resource_path.display()))
 }
 
-fn start_core_service(app: &tauri::AppHandle) -> Result<Child, Box<dyn std::error::Error>> {
+fn existing_core_service_matches_token(address: &SocketAddr, token: &str) -> io::Result<bool> {
+    let mut stream = match TcpStream::connect_timeout(address, Duration::from_millis(250)) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    write!(
+        stream,
+        "GET /api/v1/websites HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nAuthorization: Bearer {token}\\r\\nConnection: close\\r\\n\\r\\n"
+    )?;
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line)?;
+    Ok(status_line.starts_with("HTTP/1.1 200 ") || status_line.starts_with("HTTP/1.0 200 "))
+}
+
+fn start_core_service(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let token = load_or_create_core_service_token().map_err(io::Error::other)?;
-    let address = "127.0.0.1:47821".parse().map_err(io::Error::other)?;
+    let address: SocketAddr = "127.0.0.1:47821".parse().map_err(io::Error::other)?;
+
+    // Reuse the background service only when it proves possession of our protected token.
+    // A different process on the management port must never be treated as WebDynamite.
+    if existing_core_service_matches_token(&address, &token)? {
+        return Ok(());
+    }
     if TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
-        return Err(io::Error::new(io::ErrorKind::AddrInUse, "Another process is already listening on the WebDynamite Core Service port 47821").into());
+        return Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "Another process is already listening on the WebDynamite Core Service port 47821, and it did not authenticate as this installation.",
+        ).into());
     }
 
     let executable = bundled_core_service_path(app).map_err(io::Error::other)?;
     let mut command = Command::new(executable);
-    command.env("WEBDYNAMITE_API_TOKEN", token)
+    command.env("WEBDYNAMITE_API_TOKEN", &token)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -78,7 +103,10 @@ fn start_core_service(app: &tauri::AppHandle) -> Result<Child, Box<dyn std::erro
             return Err(io::Error::other(format!("WebDynamite Core Service exited during startup: {status}")).into());
         }
         if TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok() {
-            return Ok(child);
+            // Dropping std::process::Child does not terminate the process. The Core Service
+            // intentionally outlives this desktop window and is reattached on the next launch.
+            drop(child);
+            return Ok(());
         }
         thread::sleep(Duration::from_millis(150));
     }
@@ -425,23 +453,29 @@ async fn delete_runtime_profile(token:String,website_id:String)->Result<(),Strin
 pub fn run(){
  let app = tauri::Builder::default()
  .setup(|app| {
-  let child = start_core_service(app.handle())?;
-  app.manage(CoreServiceProcess(Mutex::new(Some(child))));
+  start_core_service(app.handle())?;
   Ok(())
  })
  .invoke_handler(tauri::generate_handler![core_service_token,save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_tls_details,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,sqlite_database_connection_url,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,provision_mysql_database,provision_mysql_user,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,provision_postgres_database,provision_postgres_role,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_website_environment,save_website_environment,delete_website_environment,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,delete_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states])
  .build(tauri::generate_context!())
  .expect("error while building WebDynamite");
- app.run(|app_handle, event| {
-  if let tauri::RunEvent::Exit = event {
-   if let Some(service) = app_handle.try_state::<CoreServiceProcess>() {
-    if let Ok(mut child) = service.0.lock() {
-     if let Some(mut process) = child.take() {
-      let _ = process.kill();
-      let _ = process.wait();
-     }
+ app.run(|_, _| {});
+}
+
+
+#[cfg(test)]
+mod core_service_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_reuse_requires_success_status() {
+        assert!(is_success_status_line("HTTP/1.1 200 OK\\r\\n"));
+        assert!(is_success_status_line("HTTP/1.0 200 OK\\r\\n"));
+        assert!(!is_success_status_line("HTTP/1.1 401 Unauthorized\\r\\n"));
+        assert!(!is_success_status_line("HTTP/1.1 404 Not Found\\r\\n"));
     }
-   }
-  }
- });
+}
+
+fn is_success_status_line(status_line: &str) -> bool {
+    status_line.starts_with("HTTP/1.1 200 ") || status_line.starts_with("HTTP/1.0 200 ")
 }
