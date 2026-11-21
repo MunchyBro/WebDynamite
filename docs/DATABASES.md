@@ -115,3 +115,18 @@ A saved loopback MySQL/MariaDB profile can create databases and local login user
 - If a requested database does not exist, user creation is stopped before creating the user. If the later grant operation fails, the user remains created and the error reports the partial result.
 - Provisioning uses the saved loopback host and requests the administrator password for each operation (or retrieves the optional Windows Credential Manager entry). Remote MySQL/MariaDB access is not enabled.
 - No drop-database, drop-user, or password-reset operation is provided in this initial workflow.
+
+
+## Website environment variables
+
+Open **Websites** and choose the key icon on a website to manage its runtime environment. Variables are applied to Node.js, PHP and Python processes on the next start or restart; they are not injected into static file hosting.
+
+- Names must use uppercase letters, digits and underscores, and must start with a letter or underscore.
+- `PORT`, `HOST`, and the Core Service API token are reserved.
+- Non-secret values are stored in the WebDynamite registry. Mark passwords, tokens and connection strings as secrets to store them in Windows Credential Manager instead.
+- Secret values are never returned by the list API and are not written to website logs by WebDynamite.
+- Removing a website also removes its saved environment credentials. Removing a variable deletes its corresponding secret.
+- Environment changes take effect after restarting the website. Existing running processes keep their current environment.
+- The Core Service account must have access to the Windows Credential Manager entry created for it.
+
+Use a database connection string as a secret variable such as `DATABASE_URL`; WebDynamite passes it to the application without parsing or logging it. The application framework remains responsible for reading the variable and connecting to the database.

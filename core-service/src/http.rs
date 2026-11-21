@@ -120,6 +120,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/mysql-connections/:id/provision/user", axum::routing::post(provision_mysql_user))
         .route("/api/v1/mysql-connections/:id/query", axum::routing::post(query_mysql_connection))
         .route("/api/v1/websites/:id/lan", axum::routing::put(set_lan_access))
+        .merge(crate::environment::router())
         .merge(crate::proxy::router())
         .merge(crate::deploy::router())
         .merge(crate::git::router())
@@ -1353,6 +1354,7 @@ async fn get_website(State(state):State<AppState>,Path(id):Path<String>)->Result
 async fn delete_website(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,ApiError>{
     let _operation=runtime_operation_guard(&state,&id).await?;
     stop_process(&state,&id)?;
+    crate::environment::delete_all_for_website(&state,&id);
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     let n=db.execute("DELETE FROM websites WHERE id=?1",params![id]).map_err(database_error)?;
     if n==0{return Err(ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into()));}
@@ -1579,6 +1581,7 @@ async fn start_website_inner(state:AppState,id:String)->Result<Json<serde_json::
         #[cfg(not(windows))]
         { let mut c=Command::new("npm");c.args(["run","start"]);c }
     };
+    crate::environment::apply_to_command(&state,&id,&mut command).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"environment_load_failed",e))?;
     let mut child=command.current_dir(&project).env("PORT",port.to_string()).env("HOST","127.0.0.1").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
       .map_err(|e|ApiError(StatusCode::BAD_REQUEST,"runtime_start_failed",if runtime=="php"{format!("Could not start PHP. Verify PHP is installed and available on PATH: {e}")}else if runtime=="python"{format!("Could not start Python. Verify Python is installed and available as `python` on PATH: {e}")}else{format!("Could not start npm. Verify Node.js and npm are installed: {e}")}))?;
     if let Some(stdout)=child.stdout.take(){pump_runtime_log(stdout,log_file.clone(),log_bytes.clone(),log_truncated.clone());}
