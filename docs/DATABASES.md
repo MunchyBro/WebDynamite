@@ -55,9 +55,9 @@ Removing a profile deletes only its saved metadata, not the database server or i
 ## Not yet implemented
 
 - PostgreSQL server installation, initialization, process lifecycle, and data-directory management.
-- PostgreSQL server installation, initialization, process lifecycle, and data-directory management; database/user provisioning.
+- PostgreSQL database/user provisioning is available for existing local servers through a saved profile; server installation and lifecycle are not implemented.
 - Remote PostgreSQL TLS connections and protected persistent credential storage.
-- MySQL/MariaDB support.
+- MySQL/MariaDB user and database provisioning.
 - Application connection-string injection.
 
 
