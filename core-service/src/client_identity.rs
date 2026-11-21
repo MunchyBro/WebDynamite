@@ -16,6 +16,9 @@ mod windows_impl {
     };
 
     struct OwnedHandle(HANDLE);
+    // SAFETY: Windows kernel handles may be used from any thread; ownership is unique
+    // and Drop closes the handle exactly once.
+    unsafe impl Send for OwnedHandle {}
     impl Drop for OwnedHandle {
         fn drop(&mut self) { unsafe { CloseHandle(self.0); } }
     }
@@ -115,7 +118,7 @@ mod windows_impl {
             .map_err(|_| "The desktop process executable path is invalid.".to_string())?))
     }
 
-    fn normalize_thumbprint(value: &str) -> Result<String, String> {
+    pub(super) fn normalize_thumbprint(value: &str) -> Result<String, String> {
         let normalized = value.trim().replace(':', "").replace(' ', "").to_ascii_lowercase();
         if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("A pinned publisher SHA-256 thumbprint is required.".into());
@@ -179,7 +182,12 @@ mod windows_impl {
 
         // The installer must protect this exact executable path from modification
         // by unprivileged users. Signature verification is path-based by design.
-        let signature = verifysign::verify_file(&actual_path.to_string_lossy())
+        let verifier = verifysign::CodeSignVerifier::new(
+            verifysign::VerifyPolicy::new()
+                .revocation(verifysign::Revocation::Chain)
+                .allow_network(false),
+        ).map_err(|_| "Could not initialize Authenticode verification policy.".to_string())?;
+        let signature = verifier.verify_file(&actual_path.to_string_lossy())
             .map_err(|_| "The WebDynamite desktop executable has no valid trusted Authenticode signature.".to_string())?;
         let signer = signature.sha256_thumbprint().to_ascii_lowercase();
         if signer != expected_thumbprint {
