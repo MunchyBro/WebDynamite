@@ -10,7 +10,7 @@ mod windows_impl {
         Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser},
         Security::Authorization::ConvertSidToStringSidW,
         System::{
-            Pipes::{GetNamedPipeClientProcessId, GetNamedPipeClientSessionId},
+            Pipes::{GetNamedPipeClientProcessId, GetNamedPipeClientSessionId, GetNamedPipeServerProcessId},
             Threading::{GetProcessId, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE},
         },
     };
@@ -126,6 +126,102 @@ mod windows_impl {
         Ok(normalized)
     }
 
+    /// Keeps the verified Core Service process object alive on the desktop side.
+    /// The client must verify the server before sending any secret-bearing request.
+    pub struct VerifiedServer {
+        process: OwnedHandle,
+        pid: u32,
+        executable: PathBuf,
+        service_sid: String,
+        publisher_sha256: String,
+    }
+
+    impl VerifiedServer {
+        pub fn pid(&self) -> u32 { self.pid }
+        pub fn executable(&self) -> &Path { &self.executable }
+        pub fn service_sid(&self) -> &str { &self.service_sid }
+        pub fn publisher_sha256(&self) -> &str { &self.publisher_sha256 }
+
+        pub fn verify_still_connected(&self, pipe: HANDLE) -> Result<(), String> {
+            let mut pipe_pid = 0u32;
+            let pipe_ok = unsafe { GetNamedPipeServerProcessId(pipe, &mut pipe_pid) };
+            let process_wait = unsafe { WaitForSingleObject(self.process.0, 0) };
+            let handle_pid = unsafe { GetProcessId(self.process.0) };
+            if pipe_ok == 0 || process_wait != WAIT_TIMEOUT
+                || pipe_pid != self.pid || handle_pid != self.pid
+            {
+                return Err("The verified Core Service server is no longer connected.".into());
+            }
+            Ok(())
+        }
+    }
+
+    /// Verifies the named-pipe server's service SID, exact executable path and
+    /// pinned Authenticode publisher before the desktop sends request bytes.
+    pub fn verify_connected_server(
+        pipe: HANDLE,
+        expected_service_sid: &str,
+        expected_executable: &Path,
+        expected_publisher_sha256: &str,
+    ) -> Result<VerifiedServer, String> {
+        let expected_thumbprint = normalize_thumbprint(expected_publisher_sha256)?;
+        let expected_path = expected_executable.canonicalize()
+            .map_err(|_| "The installed WebDynamite Core Service executable is unavailable.".to_string())?;
+
+        let mut pid = 0u32;
+        if unsafe { GetNamedPipeServerProcessId(pipe, &mut pid) } == 0 || pid == 0 {
+            return Err("Could not identify the named-pipe server process.".into());
+        }
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
+        if process.is_null() {
+            return Err("Could not open the named-pipe server process for verification.".into());
+        }
+        let process = OwnedHandle(process);
+
+        let mut confirmed_pid = 0u32;
+        if unsafe { GetNamedPipeServerProcessId(pipe, &mut confirmed_pid) } == 0 || confirmed_pid != pid
+            || unsafe { GetProcessId(process.0) } != pid
+        {
+            return Err("The named-pipe server identity changed during verification.".into());
+        }
+
+        let mut token = ptr::null_mut();
+        if unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token) } == 0 || token.is_null() {
+            return Err("Could not open the named-pipe server access token.".into());
+        }
+        let token = OwnedHandle(token);
+        let actual_sid = token_sid(token.0)?;
+        if !actual_sid.eq_ignore_ascii_case(expected_service_sid) {
+            return Err("The named-pipe server is running under an unexpected Windows service identity.".into());
+        }
+
+        let actual_path = process_image_path(process.0)?.canonicalize()
+            .map_err(|_| "The named-pipe server executable path cannot be canonicalized.".to_string())?;
+        if !actual_path.to_string_lossy().eq_ignore_ascii_case(&expected_path.to_string_lossy()) {
+            return Err("The named-pipe server is not the installed WebDynamite Core Service executable.".into());
+        }
+
+        let verifier = verifysign::CodeSignVerifier::new(
+            verifysign::VerifyPolicy::new()
+                .revocation(verifysign::Revocation::Chain)
+                .allow_network(false),
+        ).map_err(|_| "Could not initialize Authenticode verification policy.".to_string())?;
+        let signature = verifier.verify_file(&actual_path)
+            .map_err(|_| "The WebDynamite Core Service executable has no valid trusted Authenticode signature.".to_string())?;
+        let signer = signature.sha256_thumbprint().to_ascii_lowercase();
+        if signer != expected_thumbprint {
+            return Err("The WebDynamite Core Service executable is signed by an unexpected publisher.".into());
+        }
+        if unsafe { WaitForSingleObject(process.0, 0) } != WAIT_TIMEOUT {
+            return Err("The named-pipe server exited during verification.".into());
+        }
+
+        Ok(VerifiedServer {
+            process, pid, executable: actual_path, service_sid: actual_sid,
+            publisher_sha256: signer,
+        })
+    }
+
     pub fn verify_connected_client(
         pipe: HANDLE,
         expected_user_sid: &str,
@@ -208,7 +304,7 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{verify_connected_client, VerifiedClient};
+pub use windows_impl::{verify_connected_client, verify_connected_server, VerifiedClient, VerifiedServer};
 
 #[cfg(not(windows))]
 pub struct VerifiedClient;
@@ -222,6 +318,19 @@ pub fn verify_connected_client(
     _expected_publisher_sha256: &str,
 ) -> Result<VerifiedClient, String> {
     Err("Desktop client identity verification is available only on Windows.".into())
+}
+
+#[cfg(not(windows))]
+pub struct VerifiedServer;
+
+#[cfg(not(windows))]
+pub fn verify_connected_server(
+    _pipe: *mut std::ffi::c_void,
+    _expected_service_sid: &str,
+    _expected_executable: &std::path::Path,
+    _expected_publisher_sha256: &str,
+) -> Result<VerifiedServer, String> {
+    Err("Core Service identity verification is available only on Windows.".into())
 }
 
 #[cfg(test)]
