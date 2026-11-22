@@ -3,7 +3,7 @@
 //! The caller must supply the service SID obtained from trusted SCM/service-token
 //! context, never from the config file or an environment variable. ACL policy is
 //! checked against that independently trusted identity before config bytes are read.
-use std::{io::{Read, Cursor}, path::{Path, PathBuf}};
+use std::{io::Read, path::Path};
 
 use crate::trusted_service_config::{TrustedServiceConfig, MAX_SERVICE_CONFIG_BYTES};
 
