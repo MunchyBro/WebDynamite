@@ -8,11 +8,10 @@ use std::{ffi::OsStr, fs::File, os::{windows::{ffi::OsStrExt, io::FromRawHandle}
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree};
 #[cfg(windows)]
-use windows_sys::Win32::Security::{Authorization::ConvertStringSidToSidW, GetSecurityDescriptorControl, GetSecurityInfo, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, GetAclInformation, GetAce, EqualSid, ACL_SIZE_INFORMATION, AclSizeInformation, ACCESS_ALLOWED_ACE, ACCESS_ALLOWED_ACE_TYPE, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SE_FILE_OBJECT, SE_DACL_PROTECTED};
+use windows_sys::Win32::Security::{Authorization::ConvertStringSidToSidW, GetSecurityDescriptorControl, GetSecurityInfo, GetSecurityDescriptorDacl, GetAclInformation, GetAce, EqualSid, ACL_SIZE_INFORMATION, AclSizeInformation, ACCESS_ALLOWED_ACE, ACCESS_ALLOWED_ACE_TYPE, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SE_FILE_OBJECT, SE_DACL_PROTECTED};
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, OPEN_EXISTING, GENERIC_READ, READ_CONTROL};
 #[cfg(windows)]
-use windows_sys::Win32::System::IO::ReadFile;
 
 use crate::trusted_service_config::{TrustedServiceConfig, MAX_SERVICE_CONFIG_BYTES};
 
@@ -87,7 +86,7 @@ fn verify_handle_security(handle: HANDLE, service_sid: &str) -> Result<(), Strin
             return Err("Trusted configuration owner is not SYSTEM, Administrators, or the WebDynamite service.".into());
         }
         let mut control = 0u16;
-        let mut revision = 0u32;
+        let mut revision = 0u16;
         if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
             || control & SE_DACL_PROTECTED == 0 {
             return Err("Trusted configuration DACL must be protected from inheritance.".into());
@@ -103,6 +102,9 @@ fn verify_handle_security(handle: HANDLE, service_sid: &str) -> Result<(), Strin
             || info.AceCount != 3 {
             return Err("Trusted configuration DACL must contain exactly three trusted principals.".into());
         }
+        let mut seen_system = false;
+        let mut seen_admins = false;
+        let mut seen_service = false;
         for index in 0..info.AceCount {
             let mut ace = ptr::null_mut();
             if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
@@ -114,9 +116,21 @@ fn verify_handle_security(handle: HANDLE, service_sid: &str) -> Result<(), Strin
             }
             let allowed = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
             let sid = unsafe { &allowed.SidStart as *const u32 as *mut c_void };
-            if !is_trusted_sid(sid, service_sid) {
+            if sid_matches(sid, "S-1-5-18") {
+                if seen_system { return Err("Trusted configuration DACL contains a duplicate SYSTEM entry.".into()); }
+                seen_system = true;
+            } else if sid_matches(sid, "S-1-5-32-544") {
+                if seen_admins { return Err("Trusted configuration DACL contains a duplicate Administrators entry.".into()); }
+                seen_admins = true;
+            } else if sid_matches(sid, service_sid) {
+                if seen_service { return Err("Trusted configuration DACL contains a duplicate service entry.".into()); }
+                seen_service = true;
+            } else {
                 return Err("Trusted configuration DACL grants access to an untrusted principal.".into());
             }
+        }
+        if !(seen_system && seen_admins && seen_service) {
+            return Err("Trusted configuration DACL must grant access to SYSTEM, Administrators, and this service.".into());
         }
         Ok(())
     })();
