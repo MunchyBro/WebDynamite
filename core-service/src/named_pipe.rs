@@ -39,6 +39,18 @@ impl Drop for NamedPipeHandle {
 /// the connected process before reading or dispatching any request.
 #[cfg(windows)]
 pub fn create_server_pipe(service_sid: &str, client_user_sid: &str) -> Result<NamedPipeHandle, String> {
+    create_server_pipe_with_mode(service_sid, client_user_sid, false)
+}
+
+/// Creates the same protected first-instance pipe with overlapped I/O enabled.
+/// Every operation on this handle must supply its own OVERLAPPED structure.
+#[cfg(windows)]
+pub fn create_overlapped_server_pipe(service_sid: &str, client_user_sid: &str) -> Result<NamedPipeHandle, String> {
+    create_server_pipe_with_mode(service_sid, client_user_sid, true)
+}
+
+#[cfg(windows)]
+fn create_server_pipe_with_mode(service_sid: &str, client_user_sid: &str, overlapped: bool) -> Result<NamedPipeHandle, String> {
     use windows_sys::Win32::{
         Foundation::{GetLastError, LocalFree, INVALID_HANDLE_VALUE},
         Security::{Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES},
@@ -67,7 +79,7 @@ pub fn create_server_pipe(service_sid: &str, client_user_sid: &str) -> Result<Na
     let handle = unsafe {
         CreateNamedPipeW(
             wide_name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | if overlapped { windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED } else { 0 },
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1, PIPE_BUFFER_BYTES, PIPE_BUFFER_BYTES, PIPE_DEFAULT_TIMEOUT_MS, &mut attributes,
         )
