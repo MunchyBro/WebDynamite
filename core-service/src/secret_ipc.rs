@@ -7,6 +7,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    ipc_authorization::authorize_request,
     ipc_protocol::{IpcRequest, IpcResponse, PROTOCOL_VERSION},
     secret_store,
 };
@@ -46,6 +47,9 @@ fn storage_key(website_id: &str, name: &str) -> String {
 /// never returned over IPC. The store root must already have its installer-set
 /// restrictive DACL; this dispatcher deliberately does not create it.
 pub fn dispatch_secret_request(root: &Path, request: &IpcRequest) -> IpcResponse {
+    if let Err(code) = authorize_request(&request.operation, &request.data) {
+        return response(request, Err(code));
+    }
     let result = match request.operation.as_str() {
         "secret.put" => {
             let website_id = request.data.get("website_id").and_then(serde_json::Value::as_str);
