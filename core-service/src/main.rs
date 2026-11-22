@@ -19,6 +19,7 @@ pub mod named_pipe;
 pub mod client_identity;
 pub mod named_pipe_host;
 pub mod named_pipe_accept;
+pub mod named_pipe_io;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
