@@ -1,0 +1,262 @@
+//! Authenticated, bounded desktop client for the Core Service named pipe.
+//!
+//! This transport is deliberately not wired into Tauri commands yet. The installer
+//! must first provide protected executable-path and publisher-pin values. Callers
+//! must pass those trusted values; this module never reads them from UI input or
+//! ordinary user-writable settings.
+use crate::ipc_protocol::{read_response_for_request, write_request, IpcRequest, IpcResponse, PROTOCOL_VERSION};
+use serde_json::Value;
+use std::{path::Path, time::{Duration, Instant}};
+
+const PIPE_NAME: &str = r"\\.\pipe\WebDynamite.Core.v1";
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(windows)]
+mod windows_impl {
+    use super::*;
+    use std::{io, path::PathBuf, ptr};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Storage::FileSystem::{CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, OPEN_EXISTING},
+        System::{
+            IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+            Pipes::{GetNamedPipeServerProcessId, WaitNamedPipeW},
+            Threading::{CreateEventW, GetProcessId, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE},
+        },
+    };
+
+    struct OwnedHandle(HANDLE);
+    unsafe impl Send for OwnedHandle {}
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            if !self.0.is_null() && self.0 as isize != -1 {
+                unsafe { CloseHandle(self.0); }
+            }
+        }
+    }
+
+    struct VerifiedServer {
+        process: OwnedHandle,
+        pid: u32,
+    }
+
+    impl VerifiedServer {
+        fn verify_still_connected(&self, pipe: HANDLE) -> Result<(), String> {
+            let mut current_pid = 0u32;
+            let pipe_ok = unsafe { GetNamedPipeServerProcessId(pipe, &mut current_pid) };
+            let process_pid = unsafe { GetProcessId(self.process.0) };
+            let process_state = unsafe { WaitForSingleObject(self.process.0, 0) };
+            if pipe_ok == 0 || current_pid != self.pid || process_pid != self.pid
+                || process_state != WAIT_TIMEOUT
+            {
+                return Err("The authenticated Core Service process is no longer connected.".into());
+            }
+            Ok(())
+        }
+    }
+
+    fn normalize_thumbprint(value: &str) -> Result<String, String> {
+        let normalized = value.trim().replace(':', "").replace(' ', "").to_ascii_lowercase();
+        if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("A trusted installer-provisioned SHA-256 publisher thumbprint is required.".into());
+        }
+        Ok(normalized)
+    }
+
+    fn authenticate_server(pipe: HANDLE, expected_executable: &Path, expected_thumbprint: &str) -> Result<VerifiedServer, String> {
+        let expected_pin = normalize_thumbprint(expected_thumbprint)?;
+        let expected_path = expected_executable.canonicalize()
+            .map_err(|_| "The installed Core Service executable path is unavailable.".to_string())?;
+        let mut pid = 0u32;
+        if unsafe { GetNamedPipeServerProcessId(pipe, &mut pid) } == 0 || pid == 0 {
+            return Err("Could not identify the named-pipe Core Service process.".into());
+        }
+        let process = unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid)
+        };
+        if process.is_null() {
+            return Err("Could not open the Core Service process for identity verification.".into());
+        }
+        let process = OwnedHandle(process);
+        if unsafe { GetProcessId(process.0) } != pid {
+            return Err("The Core Service process identity changed during verification.".into());
+        }
+
+        let mut confirmed_pid = 0u32;
+        if unsafe { GetNamedPipeServerProcessId(pipe, &mut confirmed_pid) } == 0 || confirmed_pid != pid {
+            return Err("The Core Service disconnected during identity verification.".into());
+        }
+
+        let mut buffer = vec![0u16; 32768];
+        let mut length = buffer.len() as u32;
+        if unsafe { QueryFullProcessImageNameW(process.0, 0, buffer.as_mut_ptr(), &mut length) } == 0
+            || length == 0 || length as usize > buffer.len()
+        {
+            return Err("Could not read the Core Service executable path.".into());
+        }
+        let actual_path = PathBuf::from(String::from_utf16(&buffer[..length as usize])
+            .map_err(|_| "The Core Service executable path is invalid.".to_string())?)
+            .canonicalize()
+            .map_err(|_| "The Core Service executable path cannot be canonicalized.".to_string())?;
+        if !actual_path.to_string_lossy().eq_ignore_ascii_case(&expected_path.to_string_lossy()) {
+            return Err("The named-pipe server is not the installed WebDynamite Core Service.".into());
+        }
+
+        let verifier = verifysign::CodeSignVerifier::new(
+            verifysign::VerifyPolicy::new()
+                .revocation(verifysign::Revocation::Chain)
+                .allow_network(false),
+        ).map_err(|_| "Could not initialize Authenticode verification policy.".to_string())?;
+        let signature = verifier.verify_file(&actual_path)
+            .map_err(|_| "The Core Service executable has no valid trusted Authenticode signature.".to_string())?;
+        if signature.sha256_thumbprint().to_ascii_lowercase() != expected_pin {
+            return Err("The Core Service executable is signed by an unexpected publisher.".into());
+        }
+
+        if unsafe { WaitForSingleObject(process.0, 0) } != WAIT_TIMEOUT {
+            return Err("The Core Service exited during identity verification.".into());
+        }
+        Ok(VerifiedServer { process, pid })
+    }
+
+    struct PipeIo {
+        pipe: HANDLE,
+        deadline: Instant,
+    }
+
+    impl PipeIo {
+        fn new(pipe: HANDLE, timeout: Duration) -> Self {
+            Self { pipe, deadline: Instant::now() + timeout }
+        }
+
+        fn set_deadline(&mut self, timeout: Duration) {
+            self.deadline = Instant::now() + timeout;
+        }
+
+        fn transfer(&self, buffer: *mut u8, length: u32, writing: bool) -> io::Result<usize> {
+            let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+            if event.is_null() { return Err(io::Error::last_os_error()); }
+            let result = (|| {
+                let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+                overlapped.hEvent = event;
+                let started = unsafe {
+                    if writing {
+                        WriteFile(self.pipe, buffer.cast_const().cast(), length, ptr::null_mut(), &mut overlapped)
+                    } else {
+                        ReadFile(self.pipe, buffer.cast(), length, ptr::null_mut(), &mut overlapped)
+                    }
+                };
+                if started == 0 {
+                    let error = unsafe { GetLastError() };
+                    if error != ERROR_IO_PENDING {
+                        return Err(io::Error::from_raw_os_error(error as i32));
+                    }
+                    let remaining = self.deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        unsafe { CancelIoEx(self.pipe, &overlapped); }
+                        let mut transferred = 0u32;
+                        unsafe { GetOverlappedResult(self.pipe, &overlapped, &mut transferred, 1); }
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "Named-pipe I/O exceeded its deadline."));
+                    }
+                    let wait_ms = remaining.as_millis().max(1).min(u32::MAX as u128) as u32;
+                    let wait = unsafe { WaitForSingleObject(event, wait_ms) };
+                    if wait == WAIT_TIMEOUT {
+                        unsafe { CancelIoEx(self.pipe, &overlapped); }
+                        let mut transferred = 0u32;
+                        unsafe { GetOverlappedResult(self.pipe, &overlapped, &mut transferred, 1); }
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "Named-pipe I/O timed out."));
+                    }
+                    if wait != WAIT_OBJECT_0 {
+                        let wait_error = unsafe { GetLastError() };
+                        unsafe { CancelIoEx(self.pipe, &overlapped); }
+                        let mut transferred = 0u32;
+                        unsafe { GetOverlappedResult(self.pipe, &overlapped, &mut transferred, 1); }
+                        return Err(io::Error::from_raw_os_error(wait_error as i32));
+                    }
+                }
+                let mut transferred = 0u32;
+                if unsafe { GetOverlappedResult(self.pipe, &overlapped, &mut transferred, 0) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(transferred as usize)
+            })();
+            unsafe { CloseHandle(event); }
+            result
+        }
+    }
+
+    impl std::io::Read for PipeIo {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() { return Ok(0); }
+            self.transfer(buffer.as_mut_ptr(), buffer.len().min(u32::MAX as usize) as u32, false)
+        }
+    }
+
+    impl std::io::Write for PipeIo {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if buffer.is_empty() { return Ok(0); }
+            self.transfer(buffer.as_ptr() as *mut u8, buffer.len().min(u32::MAX as usize) as u32, true)
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    pub fn exchange(operation: &str, data: Value, expected_executable: &Path, expected_thumbprint: &str) -> Result<IpcResponse, String> {
+        if expected_executable.as_os_str().is_empty() {
+            return Err("A protected installed Core Service executable path is required.".into());
+        }
+        normalize_thumbprint(expected_thumbprint)?;
+
+        let wide_name: Vec<u16> = super::PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+        if unsafe { WaitNamedPipeW(wide_name.as_ptr(), super::CONNECT_TIMEOUT.as_millis() as u32) } == 0 {
+            return Err(format!("The WebDynamite Core Service pipe is unavailable: {}", io::Error::last_os_error()));
+        }
+        let pipe = unsafe {
+            CreateFileW(
+                wide_name.as_ptr(), 0xC0000000, 0, ptr::null(),
+                OPEN_EXISTING, FILE_FLAG_OVERLAPPED, ptr::null_mut(),
+            )
+        };
+        if pipe.is_null() || pipe as isize == -1 {
+            return Err(format!("Could not open the WebDynamite Core Service pipe: {}", io::Error::last_os_error()));
+        }
+        let pipe = OwnedHandle(pipe);
+
+        // Authenticate the server before any request bytes can be written.
+        let verified = authenticate_server(pipe.0, expected_executable, expected_thumbprint)?;
+        verified.verify_still_connected(pipe.0)?;
+
+        let request_id = uuid::Uuid::new_v4().simple().to_string();
+        let request = IpcRequest {
+            version: PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            operation: operation.to_string(),
+            data,
+        };
+        let mut io = PipeIo::new(pipe.0, super::WRITE_TIMEOUT);
+        write_request(&mut io, &request)?;
+        verified.verify_still_connected(pipe.0)?;
+        io.set_deadline(super::READ_TIMEOUT);
+        read_response_for_request(&mut io, &request_id)
+    }
+}
+
+#[cfg(windows)]
+pub use windows_impl::exchange;
+
+/// Non-Windows builds intentionally have no fallback transport.
+#[cfg(not(windows))]
+pub fn exchange(_operation: &str, _data: Value, _expected_executable: &Path, _expected_thumbprint: &str) -> Result<IpcResponse, String> {
+    Err("The authenticated WebDynamite named-pipe client is available only on Windows.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_transport_fails_closed_without_http_fallback() {
+        let result = super::exchange("secret.status", serde_json::json!({}), std::path::Path::new(""), "");
+        assert!(result.unwrap_err().contains("only on Windows"));
+    }
+}
