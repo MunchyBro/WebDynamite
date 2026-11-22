@@ -1,4 +1,5 @@
 pub mod ipc_protocol;
+pub mod named_pipe_client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use keyring::Entry;
