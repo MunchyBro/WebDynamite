@@ -131,3 +131,28 @@ where
 {
     Err("The WebDynamite named-pipe host is available only on Windows.".into())
 }
+
+/// Serves one authenticated desktop connection using the protected secret
+/// dispatcher. The installer must provision `secret_store_root` with its
+/// restrictive service-owned DACL before this entry point is used.
+///
+/// This is deliberately a one-connection primitive; callers still own the
+/// cancellable accept loop and service lifecycle.
+pub fn serve_one_authenticated_secret_connection(
+    secret_store_root: &std::path::Path,
+    service_sid: &str,
+    client_user_sid: &str,
+    expected_session_id: u32,
+    expected_executable: &std::path::Path,
+    expected_publisher_sha256: &str,
+) -> Result<(), String> {
+    let root = secret_store_root.to_path_buf();
+    serve_one_authenticated_connection(
+        service_sid,
+        client_user_sid,
+        expected_session_id,
+        expected_executable,
+        expected_publisher_sha256,
+        move |request| crate::secret_ipc::dispatch_secret_request(&root, &request),
+    )
+}
