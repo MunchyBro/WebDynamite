@@ -187,7 +187,7 @@ fn build_chain_paths(
         current = current.parent()
             .ok_or_else(|| "Trusted config path does not reach the configured root.".to_string())?;
     }
-    Ok(chain))
+    Ok(chain)
 }
 
 #[cfg(windows)]
