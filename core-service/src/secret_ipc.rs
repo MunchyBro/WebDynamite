@@ -81,7 +81,7 @@ pub fn dispatch_secret_request(root: &Path, request: &IpcRequest) -> IpcResponse
         "secret.status" => {
             match std::fs::symlink_metadata(root) {
                 Ok(metadata) if metadata.file_type().is_dir() => {
-                    Ok(serde_json::json!({"configured": true}))
+                    Ok(serde_json::json!({"root_exists": true}))
                 }
                 _ => Err("secret_store_unavailable"),
             }
@@ -117,12 +117,12 @@ mod tests {
     }
 
     #[test]
-    fn status_reports_only_whether_a_store_root_is_configured() {
+    fn status_reports_root_presence_without_claiming_acl_or_dpapi_readiness() {
         let root = std::env::temp_dir().join(format!("webdynamite-ipc-status-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let result = dispatch_secret_request(&root, &request("secret.status", json!({})));
         assert!(result.ok);
-        assert_eq!(result.data, Some(json!({"configured": true})));
+        assert_eq!(result.data, Some(json!({"root_exists": true})));
         std::fs::remove_dir(root).unwrap();
     }
 
