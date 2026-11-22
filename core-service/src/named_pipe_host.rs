@@ -224,3 +224,27 @@ pub fn serve_one_authenticated_secret_connection(
         move |request| crate::secret_ipc::dispatch_secret_request(&root, &request),
     )
 }
+
+
+/// Serves one authenticated secret operation over bounded overlapped I/O.
+/// The secret-store root must already have its restrictive installer-provisioned DACL.
+pub fn serve_one_authenticated_overlapped_secret_connection(
+    secret_store_root: &std::path::Path,
+    service_sid: &str,
+    client_user_sid: &str,
+    expected_session_id: u32,
+    expected_executable: &std::path::Path,
+    expected_publisher_sha256: &str,
+    timeout_ms: u32,
+) -> Result<(), String> {
+    let root = secret_store_root.to_path_buf();
+    serve_one_authenticated_overlapped_connection(
+        service_sid,
+        client_user_sid,
+        expected_session_id,
+        expected_executable,
+        expected_publisher_sha256,
+        timeout_ms,
+        move |request| crate::secret_ipc::dispatch_secret_request(&root, &request),
+    )
+}
