@@ -135,6 +135,16 @@ mod tests {
     }
 
     #[test]
+    fn status_fails_closed_when_the_store_root_is_a_file() {
+        let root = std::env::temp_dir().join(format!("webdynamite-ipc-file-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&root, b"not a directory").unwrap();
+        let result = dispatch_secret_request(&root, &request("secret.status", json!({})));
+        assert!(!result.ok);
+        assert_eq!(result.error_code.as_deref(), Some("secret_store_unavailable"));
+        std::fs::remove_file(root).unwrap();
+    }
+
+    #[test]
     fn unknown_operations_are_not_dispatched() {
         let result = dispatch_secret_request(Path::new("."), &request("filesystem.read", json!({})));
         assert!(!result.ok);
