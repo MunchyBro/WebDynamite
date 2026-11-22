@@ -68,7 +68,6 @@ pub fn open_trusted_config_chain(
     use std::{os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
         Foundation::{GetLastError, INVALID_HANDLE_VALUE},
-        System::SystemServices::READ_CONTROL,
         Storage::FileSystem::{
             CreateFileW, GetFileInformationByHandleEx, FILE_ATTRIBUTE_DIRECTORY,
             FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
@@ -83,7 +82,8 @@ pub fn open_trusted_config_chain(
     // Root -> leaf: retain each directory handle before opening its child.
     for (path, is_directory) in paths.iter().rev() {
         let wide = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<_>>();
-        let mut access = (READ_CONTROL | FILE_READ_ATTRIBUTES) as u32;
+        // READ_CONTROL is the standard 0x0002_0000 access right.
+        let mut access = 0x0002_0000u32 | FILE_READ_ATTRIBUTES as u32;
         if !is_directory {
             access |= 0x8000_0000; // GENERIC_READ
         }
