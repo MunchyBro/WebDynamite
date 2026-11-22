@@ -93,7 +93,16 @@ mod windows_impl {
             // Recheck the same process object and pipe peer immediately before
             // handing the decoded request to application authorization/dispatch.
             verified.verify_still_connected(handle)?;
-            let response = match authorize_request(&request.operation, &request.data) {\n                Ok(()) => handler(request.clone()),\n                Err(code) => IpcResponse {\n                    version: PROTOCOL_VERSION,\n                    request_id: request.request_id.clone(),\n                    ok: false,\n                    data: None,\n                    error_code: Some(code.to_string()),\n                },\n            };
+            let response = match authorize_request(&request.operation, &request.data) {
+                Ok(()) => handler(request.clone()),
+                Err(code) => IpcResponse {
+                    version: PROTOCOL_VERSION,
+                    request_id: request.request_id.clone(),
+                    ok: false,
+                    data: None,
+                    error_code: Some(code.to_string()),
+                },
+            };
             if response.request_id != request.request_id {
                 return Err("IPC handler returned a response for a different request.".into());
             }
