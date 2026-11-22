@@ -35,6 +35,9 @@ fn response(request: &IpcRequest, result: Result<serde_json::Value, &'static str
 /// or environment variable names in the protected store directory listing.
 fn storage_key(website_id: &str, name: &str) -> String {
     let mut digest = Sha256::new();
+    // Domain-separate this digest from every other SHA-256 use in the product
+    // and version the derivation so future storage formats can migrate safely.
+    digest.update(b"WebDynamite.SecretStore.Key.v1\0");
     digest.update(website_id.as_bytes());
     digest.update([0]);
     digest.update(name.as_bytes());
