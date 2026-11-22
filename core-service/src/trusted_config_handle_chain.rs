@@ -37,6 +37,12 @@ impl TrustedConfigHandleChain {
             .collect()
     }
 
+    /// Borrows the already-open config file. Read from this handle rather
+    /// than reopening its path; the chain owner must remain alive throughout.
+    pub fn config_file(&self) -> &std::fs::File {
+        &self.handles[0]
+    }
+
     /// Number of held objects: config file, all parents, and trusted root.
     pub fn len(&self) -> usize {
         self.handles.len()
