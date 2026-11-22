@@ -16,7 +16,8 @@ mod windows_impl {
 
     use crate::{
         client_identity::verify_connected_client,
-        ipc_protocol::{read_request, write_response, IpcRequest, IpcResponse},
+        ipc_authorization::authorize_request,
+        ipc_protocol::{read_request, write_response, IpcRequest, IpcResponse, PROTOCOL_VERSION},
         named_pipe::create_server_pipe,
     };
 
@@ -92,7 +93,7 @@ mod windows_impl {
             // Recheck the same process object and pipe peer immediately before
             // handing the decoded request to application authorization/dispatch.
             verified.verify_still_connected(handle)?;
-            let response = handler(request.clone());
+            let response = match authorize_request(&request.operation, &request.data) {\n                Ok(()) => handler(request.clone()),\n                Err(code) => IpcResponse {\n                    version: PROTOCOL_VERSION,\n                    request_id: request.request_id.clone(),\n                    ok: false,\n                    data: None,\n                    error_code: Some(code.to_string()),\n                },\n            };
             if response.request_id != request.request_id {
                 return Err("IPC handler returned a response for a different request.".into());
             }
