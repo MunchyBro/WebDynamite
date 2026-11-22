@@ -115,11 +115,11 @@ fn expected_path_chain(config_path: &Path, trusted_root: &Path) -> Result<Vec<Pa
 fn path_is_within(path: &Path, root: &Path) -> bool {
     let path = path.to_string_lossy();
     let root = root.to_string_lossy();
-    let path = path.trim_end_matches(['\\\\', '/']);
-    let root = root.trim_end_matches(['\\\\', '/']);
+    let path = path.trim_end_matches(['\\', '/']);
+    let root = root.trim_end_matches(['\\', '/']);
     path.len() > root.len()
         && path.get(..root.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(&root))
-        && path.as_bytes().get(root.len()).is_some_and(|byte| *byte == b'\\\\' || *byte == b'/')
+        && path.as_bytes().get(root.len()).is_some_and(|byte| *byte == b'\\' || *byte == b'/')
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
