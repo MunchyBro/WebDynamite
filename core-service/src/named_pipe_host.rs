@@ -18,7 +18,9 @@ mod windows_impl {
         client_identity::verify_connected_client,
         ipc_authorization::authorize_request,
         ipc_protocol::{read_request, write_response, IpcRequest, IpcResponse, PROTOCOL_VERSION},
-        named_pipe::create_server_pipe,
+        named_pipe::{create_server_pipe, create_overlapped_server_pipe},
+        named_pipe_accept::connect_with_timeout,
+        named_pipe_io::OverlappedPipeIo,
     };
 
     struct PipeIo(HANDLE);
@@ -112,10 +114,60 @@ mod windows_impl {
         unsafe { DisconnectNamedPipe(handle); }
         result
     }
+    /// Serves one authenticated request over a pipe created for overlapped I/O.
+    /// Both connection acceptance and every framed read/write have bounded waits.
+    pub fn serve_one_authenticated_overlapped_connection<F>(
+        service_sid: &str,
+        client_user_sid: &str,
+        expected_session_id: u32,
+        expected_executable: &Path,
+        expected_publisher_sha256: &str,
+        timeout_ms: u32,
+        handler: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(IpcRequest) -> IpcResponse,
+    {
+        let pipe = create_overlapped_server_pipe(service_sid, client_user_sid)?;
+        let handle = pipe.as_raw_handle();
+        connect_with_timeout(handle, timeout_ms)?;
+
+        let result = (|| {
+            let verified = verify_connected_client(
+                handle, client_user_sid, expected_session_id,
+                expected_executable, expected_publisher_sha256,
+            )?;
+
+            // Authentication completes before the first request byte is read.
+            let mut io = OverlappedPipeIo::new(handle, timeout_ms)?;
+            let request = read_request(&mut io)?;
+
+            // Revalidate the same retained process and pipe peer before dispatch.
+            verified.verify_still_connected(handle)?;
+            let response = match authorize_request(&request.operation, &request.data) {
+                Ok(()) => handler(request.clone()),
+                Err(code) => IpcResponse {
+                    version: PROTOCOL_VERSION,
+                    request_id: request.request_id.clone(),
+                    ok: false,
+                    data: None,
+                    error_code: Some(code.to_string()),
+                },
+            };
+            if response.request_id != request.request_id {
+                return Err("IPC handler returned a response for a different request.".into());
+            }
+            write_response(&mut io, &response)
+        })();
+
+        unsafe { DisconnectNamedPipe(handle); }
+        result
+    }
+
 }
 
 #[cfg(windows)]
-pub use windows_impl::serve_one_authenticated_connection;
+pub use windows_impl::{serve_one_authenticated_connection, serve_one_authenticated_overlapped_connection};
 
 #[cfg(not(windows))]
 pub fn serve_one_authenticated_connection<F>(
@@ -130,6 +182,22 @@ where
     F: FnOnce(crate::ipc_protocol::IpcRequest) -> crate::ipc_protocol::IpcResponse,
 {
     Err("The WebDynamite named-pipe host is available only on Windows.".into())
+}
+
+#[cfg(not(windows))]
+pub fn serve_one_authenticated_overlapped_connection<F>(
+    _service_sid: &str,
+    _client_user_sid: &str,
+    _expected_session_id: u32,
+    _expected_executable: &std::path::Path,
+    _expected_publisher_sha256: &str,
+    _timeout_ms: u32,
+    _handler: F,
+) -> Result<(), String>
+where
+    F: FnOnce(crate::ipc_protocol::IpcRequest) -> crate::ipc_protocol::IpcResponse,
+{
+    Err("The WebDynamite overlapped named-pipe host is available only on Windows.".into())
 }
 
 /// Serves one authenticated desktop connection using the protected secret
@@ -153,6 +221,30 @@ pub fn serve_one_authenticated_secret_connection(
         expected_session_id,
         expected_executable,
         expected_publisher_sha256,
+        move |request| crate::secret_ipc::dispatch_secret_request(&root, &request),
+    )
+}
+
+
+/// Serves one authenticated secret operation over bounded overlapped I/O.
+/// The secret-store root must already have its restrictive installer-provisioned DACL.
+pub fn serve_one_authenticated_overlapped_secret_connection(
+    secret_store_root: &std::path::Path,
+    service_sid: &str,
+    client_user_sid: &str,
+    expected_session_id: u32,
+    expected_executable: &std::path::Path,
+    expected_publisher_sha256: &str,
+    timeout_ms: u32,
+) -> Result<(), String> {
+    let root = secret_store_root.to_path_buf();
+    serve_one_authenticated_overlapped_connection(
+        service_sid,
+        client_user_sid,
+        expected_session_id,
+        expected_executable,
+        expected_publisher_sha256,
+        timeout_ms,
         move |request| crate::secret_ipc::dispatch_secret_request(&root, &request),
     )
 }
