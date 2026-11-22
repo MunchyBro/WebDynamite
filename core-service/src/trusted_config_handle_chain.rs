@@ -68,7 +68,7 @@ pub fn open_trusted_config_chain(
     use std::{os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
         Foundation::{GetLastError, INVALID_HANDLE_VALUE},
-        Security::READ_CONTROL,
+        System::SystemServices::READ_CONTROL,
         Storage::FileSystem::{
             CreateFileW, GetFileInformationByHandleEx, FILE_ATTRIBUTE_DIRECTORY,
             FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
