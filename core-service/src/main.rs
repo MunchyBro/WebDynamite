@@ -21,6 +21,7 @@ pub mod named_pipe_host;
 pub mod named_pipe_accept;
 pub mod named_pipe_io;
 pub mod named_pipe_loop;
+pub mod trusted_service_config;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
