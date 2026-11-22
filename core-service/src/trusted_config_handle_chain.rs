@@ -170,21 +170,18 @@ fn build_chain_paths(
         return Err("Trusted config must be a file below the fixed trusted root.".into());
     }
 
-    let mut directories = Vec::new();
+    let mut chain = vec![(config_path.to_path_buf(), false)];
     let mut current = config_path.parent()
         .ok_or_else(|| "Trusted config file has no parent directory.".to_string())?;
     loop {
-        directories.push(current.to_path_buf());
+        chain.push((current.to_path_buf(), true));
         if same_windows_path(current, trusted_root) {
             break;
         }
         current = current.parent()
             .ok_or_else(|| "Trusted config path does not reach the configured root.".to_string())?;
     }
-    directories.reverse();
-    let mut chain = directories.into_iter().map(|path| (path, true)).collect::<Vec<_>>();
-    chain.push((config_path.to_path_buf(), false));
-    Ok(chain)
+    Ok(chain))
 }
 
 #[cfg(windows)]
@@ -259,6 +256,20 @@ pub fn open_trusted_config_chain(
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(windows)]
+    #[test]
+    fn builds_leaf_to_root_chain_for_collector() {
+        let chain = super::build_chain_paths(
+            std::path::Path::new(r"C:\ProgramData\WebDynamite\config\service.json"),
+            std::path::Path::new(r"C:\ProgramData\WebDynamite"),
+        ).unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0], (std::path::PathBuf::from(r"C:\ProgramData\WebDynamite\config\service.json"), false));
+        assert_eq!(chain[1], (std::path::PathBuf::from(r"C:\ProgramData\WebDynamite\config"), true));
+        assert_eq!(chain[2], (std::path::PathBuf::from(r"C:\ProgramData\WebDynamite"), true));
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn non_windows_handle_opening_fails_closed() {
