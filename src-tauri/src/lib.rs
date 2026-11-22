@@ -1,3 +1,4 @@
+pub mod ipc_protocol;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use keyring::Entry;
