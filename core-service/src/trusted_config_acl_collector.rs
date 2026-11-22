@@ -163,10 +163,10 @@ fn collect_one(
             if header.AceType != 0 {
                 return Err("Trusted config DACL contains a deny, object-specific, callback, or unsupported ACE type.".into());
             }
-            let allowed = unsafe { &*(ace_ptr as *const ACCESS_ALLOWED_ACE) };
-            if header.AceSize < std::mem::size_of::<ACCESS_ALLOWED_ACE>() as u16 {
-                return Err("Trusted config DACL contains a truncated access-allowed ACE.".into());
+            if header.AceSize < 16 {
+                return Err("Trusted config DACL contains a truncated access-allowed ACE or SID.".into());
             }
+            let allowed = unsafe { &*(ace_ptr as *const ACCESS_ALLOWED_ACE) };
             // The installer contract grants full control only to the three
             // trusted principals. No generic/partial masks or extra rights.
             if allowed.Mask != 0x001F_01FF {
