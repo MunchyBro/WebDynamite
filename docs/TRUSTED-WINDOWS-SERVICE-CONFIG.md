@@ -32,6 +32,12 @@ The parser does not establish trust in the file. A future SCM entry point must:
 5. Revalidate the desktop publisher and executable identity on each IPC connection, using the configured thumbprint and exact installed path.
 6. Fail closed if the signer thumbprint is missing, placeholder, or does not match the installed signed desktop binary.
 
+## Protected file loading
+
+`trusted_service_config_loader::load_trusted_service_config` reads only the fixed path `C:\\ProgramData\\WebDynamite\\service\\service.json`. It opens the file and its containing directory with `FILE_FLAG_OPEN_REPARSE_POINT`, rejects reparse points, verifies a protected DACL on both handles, requires exactly one allow ACE each for SYSTEM, Administrators, and the configured service SID, rejects inherited or other ACE types, and checks that the owner is one of those trusted principals. The file is size-bounded before parsing, and the parsed service SID must match the service identity supplied by the caller. Non-Windows builds fail closed.
+
+The caller must obtain `service_sid` from trusted service identity (not from the file or environment). The installer must provision the fixed directory and file with protected DACLs before this loader can succeed.
+
 ## Activation remains disabled
 
 This module is not called by the current interactive Core Service startup.
