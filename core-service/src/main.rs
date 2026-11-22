@@ -14,6 +14,7 @@ pub mod secret_store_acl;
 pub mod secret_store;
 pub mod ipc_protocol;
 pub mod ipc_authorization;
+pub mod secret_ipc;
 pub mod named_pipe;
 pub mod client_identity;
 pub mod named_pipe_host;
