@@ -26,6 +26,7 @@ pub mod trusted_service_config_file;
 pub mod trusted_config_security;
 pub mod trusted_config_acl_collector;
 pub mod trusted_config_handle_chain;
+pub mod trusted_service_config_loader;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
