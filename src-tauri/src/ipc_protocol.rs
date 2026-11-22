@@ -102,6 +102,23 @@ pub fn read_response<R: Read>(reader: &mut R) -> Result<IpcResponse, String> {
     Ok(response)
 }
 
+/// Reads a response and binds it to the request that was sent on this connection.
+/// A valid response for another request is still rejected to prevent cross-request
+/// confusion if a future transport is reused or receives stale buffered bytes.
+pub fn read_response_for_request<R: Read>(
+    reader: &mut R,
+    expected_request_id: &str,
+) -> Result<IpcResponse, String> {
+    if !valid_identifier(expected_request_id) {
+        return Err("Invalid expected IPC request identifier.".into());
+    }
+    let response = read_response(reader)?;
+    if response.request_id != expected_request_id {
+        return Err("IPC response does not match the outstanding request.".into());
+    }
+    Ok(response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +184,33 @@ mod tests {
         assert!(read_response(&mut Cursor::new(frame(b"{}"))).is_err());
         let duplicate = br#"{"version":1,"request_id":"x","ok":true,"data":{},"data":{}}"#;
         assert!(read_response(&mut Cursor::new(frame(duplicate))).is_err());
+    }
+
+    #[test]
+    fn response_must_match_the_outstanding_request_id() {
+        let response = IpcResponse {
+            version: PROTOCOL_VERSION,
+            request_id: "different-request".into(),
+            ok: true,
+            data: None,
+            error_code: None,
+        };
+        let payload = serde_json::to_vec(&response).unwrap();
+        assert!(read_response_for_request(
+            &mut Cursor::new(frame(&payload)), "desktop-01"
+        ).is_err());
+
+        let matching = IpcResponse { request_id: "desktop-01".into(), ..response };
+        let payload = serde_json::to_vec(&matching).unwrap();
+        assert_eq!(
+            read_response_for_request(&mut Cursor::new(frame(&payload)), "desktop-01").unwrap(),
+            matching
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_expected_request_id() {
+        assert!(read_response_for_request(&mut Cursor::new(Vec::<u8>::new()), "../bad").is_err());
     }
 
     #[test]
