@@ -8,6 +8,7 @@ on:
       - "core-service/**"
       - "src/**"
       - "src-tauri/**"
+      - "scripts/windows/**"
       - "package.json"
       - "package-lock.json"
       - "tsconfig.json"
@@ -47,6 +48,9 @@ jobs:
         run: cargo test --manifest-path core-service/Cargo.toml
       - name: Build bundled Core Service
         run: cargo build --release --manifest-path core-service/Cargo.toml
+      - name: Validate publisher pin parser
+        shell: pwsh
+        run: ./scripts/windows/validate-signing-certificate.ps1 -SelfTest
       - name: Check Tauri desktop backend
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
