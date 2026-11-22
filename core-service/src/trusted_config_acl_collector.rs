@@ -40,7 +40,7 @@ fn collect_one(
         Foundation::{GetLastError, LocalFree, INVALID_HANDLE_VALUE},
         Security::{
             GetAce, GetAclInformation, GetSecurityDescriptorControl,
-            GetSecurityDescriptorDacl, IsValidSid, ACL_SIZE_INFORMATION,
+            GetSecurityDescriptorDacl, GetLengthSid, IsValidSid, ACL_SIZE_INFORMATION,
             ACCESS_ALLOWED_ACE, ACE_HEADER,
         },
         Security::Authorization::{ConvertSidToStringSidW, GetSecurityInfo},
@@ -75,7 +75,6 @@ fn collect_one(
     }
 
     let mut owner = ptr::null_mut();
-    let mut dacl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
     // SE_FILE_OBJECT = 1; request only owner and DACL, not the SACL.
     let status = unsafe {
@@ -85,7 +84,7 @@ fn collect_one(
             0x0000_0001 | 0x0000_0004,
             &mut owner,
             ptr::null_mut(),
-            &mut dacl,
+            ptr::null_mut(),
             ptr::null_mut(),
             &mut descriptor,
         )
@@ -120,6 +119,9 @@ fn collect_one(
         } == 0 {
             return Err(format!("Could not inspect trusted config DACL (Windows error {}).", unsafe { GetLastError() }));
         }
+        if dacl_defaulted != 0 {
+            return Err("Trusted config DACL must be explicitly installed, not defaulted.".into());
+        }
         if dacl_present == 0 || descriptor_dacl.is_null() {
             return Ok(TrustedObjectSecurity {
                 path: path.to_path_buf(),
@@ -148,6 +150,9 @@ fn collect_one(
             return Err(format!("Could not inspect trusted config ACE list (Windows error {}).", unsafe { GetLastError() }));
         }
 
+        if acl_info.AceCount != 3 {
+            return Err("Trusted config DACL must contain exactly three installer principals.".into());
+        }
         let mut allowed_ace_sids = Vec::with_capacity(acl_info.AceCount as usize);
         for index in 0..acl_info.AceCount {
             let mut ace_ptr = ptr::null_mut();
@@ -174,6 +179,10 @@ fn collect_one(
             let sid_ptr = unsafe { (&allowed.SidStart as *const u32).cast_mut().cast() };
             if unsafe { IsValidSid(sid_ptr) } == 0 {
                 return Err("Trusted config DACL contains an invalid ACE SID.".into());
+            }
+            let sid_length = unsafe { GetLengthSid(sid_ptr) } as usize;
+            if 8usize.saturating_add(sid_length) > header.AceSize as usize {
+                return Err("Trusted config DACL contains a truncated ACE SID.".into());
             }
             allowed_ace_sids.push(sid_to_string(sid_ptr)?);
         }
