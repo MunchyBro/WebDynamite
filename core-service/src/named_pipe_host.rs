@@ -200,6 +200,61 @@ where
     Err("The WebDynamite overlapped named-pipe host is available only on Windows.".into())
 }
 
+/// Repeatedly accepts authenticated desktop connections until cancellation.
+///
+/// Each iteration uses the existing bounded overlapped one-connection host.
+/// Cancellation is observed between iterations, so the timeout also bounds
+/// normal shutdown observation. Trusted installer configuration and SCM wiring
+/// remain separate activation gates.
+#[cfg(windows)]
+pub fn serve_authenticated_overlapped_loop<F>(
+    service_sid: &str,
+    client_user_sid: &str,
+    expected_session_id: u32,
+    expected_executable: &std::path::Path,
+    expected_publisher_sha256: &str,
+    timeout_ms: u32,
+    cancellation: &std::sync::atomic::AtomicBool,
+    handler: F,
+) -> Result<(), String>
+where
+    F: Fn(crate::ipc_protocol::IpcRequest) -> crate::ipc_protocol::IpcResponse,
+{
+    use std::time::Duration;
+    use crate::named_pipe_loop::{run_cancellable_accept_loop, AcceptLoopStep};
+    const ACCEPT_TIMEOUT: &str = "Timed out waiting for a WebDynamite desktop pipe connection.";
+
+    run_cancellable_accept_loop(cancellation, Duration::from_millis(timeout_ms.max(1) as u64), |bounded_timeout| {
+        match serve_one_authenticated_overlapped_connection(
+            service_sid, client_user_sid, expected_session_id,
+            expected_executable, expected_publisher_sha256, bounded_timeout,
+            |request| handler(request),
+        ) {
+            Ok(()) => Ok(AcceptLoopStep::ConnectionHandled),
+            Err(error) if error == ACCEPT_TIMEOUT => Ok(AcceptLoopStep::TimedOut),
+            Err(error) => Err(error),
+        }
+    })?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn serve_authenticated_overlapped_loop<F>(
+    _service_sid: &str,
+    _client_user_sid: &str,
+    _expected_session_id: u32,
+    _expected_executable: &std::path::Path,
+    _expected_publisher_sha256: &str,
+    _timeout_ms: u32,
+    _cancellation: &std::sync::atomic::AtomicBool,
+    _handler: F,
+) -> Result<(), String>
+where
+    F: Fn(crate::ipc_protocol::IpcRequest) -> crate::ipc_protocol::IpcResponse,
+{
+    Err("The authenticated named-pipe accept loop is available only on Windows.".into())
+}
+
 /// Serves one authenticated desktop connection using the protected secret
 /// dispatcher. The installer must provision `secret_store_root` with its
 /// restrictive service-owned DACL before this entry point is used.
