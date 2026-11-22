@@ -102,6 +102,7 @@ impl std::io::Write for OverlappedPipeIo {
 }
 
 #[cfg(not(windows))]
+#[derive(Debug)]
 pub struct OverlappedPipeIo;
 
 #[cfg(not(windows))]
