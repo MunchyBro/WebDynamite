@@ -11,8 +11,7 @@ pub fn read_bounded_config(path: &Path) -> Result<Vec<u8>, String> {
     use std::{os::windows::{ffi::OsStrExt, io::FromRawHandle}, fs::File};
     use windows_sys::Win32::{
         Foundation::INVALID_HANDLE_VALUE,
-        Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_READ, OPEN_EXISTING},
-        System::SystemInformation::GetFileInformationByHandleEx,
+        Storage::FileSystem::{CreateFileW, GetFileInformationByHandleEx, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_READ, OPEN_EXISTING,
     };
     use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FileAttributeTagInfo};
 
