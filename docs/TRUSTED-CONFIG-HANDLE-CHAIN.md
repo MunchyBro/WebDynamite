@@ -18,7 +18,7 @@ Phase 115 adds trusted_config_handle_chain, a Windows-only path-bound opener for
 1. Open the chain with open_trusted_config_chain.
 2. Keep the returned TrustedConfigHandleChain alive.
 3. Obtain security_objects() and pass those handle/path pairs to collect_and_validate_from_handles.
-4. Read the bounded config bytes from the already-open file handle (never reopen the path).
+4. Read the bounded config bytes from the borrowed config_file() handle (never reopen the path).
 5. Parse the bytes while the chain remains alive.
 6. Drop the chain only after read, parse, and ACL policy validation are complete.
 
