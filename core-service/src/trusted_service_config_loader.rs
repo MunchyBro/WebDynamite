@@ -63,6 +63,7 @@ pub fn load_trusted_service_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn bounded_reader_accepts_nonempty_content_at_limit() {
