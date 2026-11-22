@@ -4,7 +4,7 @@
 #[cfg(windows)]
 use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
 
-pub const PIPE_NAME: &str = r"\\.\pipe\WebDynamiteCore-v1";
+pub const PIPE_NAME: &str = r"\\.\pipe\WebDynamite.Core.v1";
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const PIPE_DEFAULT_TIMEOUT_MS: u32 = 5_000;
 
@@ -87,7 +87,12 @@ pub fn create_server_pipe(_service_sid: &str, _client_user_sid: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_service_sid, valid_user_sid};
+    use super::{valid_service_sid, valid_user_sid, PIPE_NAME};
+
+    #[test]
+    fn pipe_endpoint_matches_the_desktop_ipc_contract() {
+        assert_eq!(PIPE_NAME, r"\\.\pipe\WebDynamite.Core.v1");
+    }
 
     #[test]
     fn validates_service_and_interactive_user_sid_shapes() {
