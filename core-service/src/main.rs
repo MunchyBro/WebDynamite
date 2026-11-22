@@ -24,6 +24,7 @@ pub mod named_pipe_loop;
 pub mod trusted_service_config;
 pub mod trusted_service_config_file;
 pub mod trusted_config_security;
+pub mod trusted_config_acl_collector;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
