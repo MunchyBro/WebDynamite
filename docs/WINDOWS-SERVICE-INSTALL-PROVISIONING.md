@@ -48,3 +48,21 @@ and end-to-end Windows installer tests are complete.
 The service SID must resolve as \`NT SERVICE\\WebDynamiteCore\`. If the service
 identity is not provisioned on the target machine, the script fails closed
 rather than substituting a user or LocalSystem identity.
+
+## Installed service identity preflight (Phase 135)
+
+After the Windows service has been installed by a separately reviewed installer
+step, run the additional read-only identity check from an elevated process:
+
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\provision-service-layout.ps1 -Mode VerifyService`
+
+This verifies that the registered `WebDynamiteCore` service uses the exact
+virtual service account `NT SERVICE\WebDynamiteCore`, and that SCM reports its
+service SID type as `UNRESTRICTED`. It fails closed for missing services,
+LocalSystem, another logon account, or a disabled/restricted service SID.
+The command does not create, start, stop, reconfigure, or delete the service.
+
+This is an installer acceptance/preflight primitive only. The current NSIS
+bundle does not yet register or activate the SCM service, and the check must
+not be added as a release gate until a future installer actually provisions
+the service. The interactive Core Service runtime remains unchanged.
