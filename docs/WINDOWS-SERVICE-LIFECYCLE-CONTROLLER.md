@@ -119,3 +119,18 @@ the named-pipe runtime is not started in SCM mode, and interactive HTTP startup
 remains unchanged. Do not enable service mode until service-main orchestration,
 trusted identity/config validation, credential migration, signing, and
 installer lifecycle validation are complete.
+
+
+## Testable service-main lifecycle orchestration (Phase 128)
+
+The Windows SCM adapter now delegates lifecycle sequencing to a status-sink
+runner. The native entry point supplies the real `SetServiceStatus` publisher;
+unit tests inject a deterministic publisher instead. This keeps the service
+state transitions and teardown guarantees testable without connecting to the
+SCM or enabling service mode.
+
+The startup hook receives the shared lifecycle controller, allowing it to
+observe a STOP/SHUTDOWN received while startup is in progress. Tests cover
+normal start/stop, startup failure, stop during startup, RUNNING publication
+failure, STOP_PENDING publication failure, and runtime teardown errors. A
+failed RUNNING/STOP_PENDING report must not skip runtime teardown.
