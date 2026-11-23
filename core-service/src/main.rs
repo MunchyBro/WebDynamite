@@ -28,6 +28,10 @@ pub mod trusted_config_acl_collector;
 pub mod trusted_config_handle_chain;
 pub mod trusted_service_config_loader;
 pub mod service_lifecycle;
+#[cfg(windows)]
+pub mod windows_service_host;
+#[cfg(not(windows))]
+pub mod windows_service_host;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
