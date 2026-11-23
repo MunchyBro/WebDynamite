@@ -141,3 +141,8 @@ is wired and no SCM runtime is activated. Interactive HTTP startup remains
 unchanged. Trusted identity/config validation, named-pipe runtime integration,
 credential migration, signing, and installer lifecycle validation remain
 mandatory activation gates.
+
+A STOP/SHUTDOWN arriving during the final startup-to-running transition is
+also handled as a teardown path: if the lifecycle rejects the Running
+transition after runtime startup, service-main stops the newly started runtime
+and attempts a final STOPPED report rather than returning with live workers.
