@@ -61,8 +61,8 @@ pub fn dispatch_secret_request(root: &Path, request: &IpcRequest) -> IpcResponse
             match (website_id, name, value) {
                 (Some(website_id), Some(name), Some(value)) => {
                     let key = storage_key(website_id, name);
-                    secret_store::write_secret(root, &key, value.as_bytes())
-                        .map(|_| serde_json::json!({"stored": true}))
+                    secret_store::write_secret_verified(root, &key, value.as_bytes())
+                        .map(|_| serde_json::json!({"stored": true, "verified": true}))
                         .map_err(|_| "secret_store_unavailable")
                 }
                 _ => Err("invalid_payload"),
