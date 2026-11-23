@@ -55,7 +55,19 @@ where
         return stop_result;
     }
 
-    lifecycle.mark_running().map_err(|_| ERROR_INVALID_HANDLE)?;
+    if lifecycle.mark_running().is_err() {
+        // STOP can race the final startup check above. The runtime has already
+        // started, so a rejected Running transition must still tear it down.
+        lifecycle.request_stop();
+        let stop_result = stop_runtime();
+        lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
+        let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
+        if let Err(error) = stop_result {
+            stopped.win32_exit_code = error;
+        }
+        let _ = publish(handle, stopped);
+        return Err(ERROR_INVALID_HANDLE);
+    }
     if let Err(status_error) = publish(handle, ServiceStatusSnapshot::from_state(ServiceState::Running)) {
         lifecycle.request_stop();
         let stop_result = stop_runtime();
