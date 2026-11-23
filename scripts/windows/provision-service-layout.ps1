@@ -76,7 +76,13 @@ function Test-ProtectedDirectoryAcl([string]$Path, [string]$Sddl) {
     }
     return $true
 }
-if ($Mode -eq "VerifyService") {\n    Assert-Administrator\n    $identity = Test-InstalledServiceIdentity\n    Write-Output ("WebDynamiteCore identity verified: {0}; SID {1}; SID type {2}; state {3}." -f $identity.StartName,$identity.ServiceSid,$identity.SidType,$identity.State)\n    exit 0\n}\nif ($Mode -eq "SelfTest") {
+if ($Mode -eq "VerifyService") {
+    Assert-Administrator
+    $identity = Test-InstalledServiceIdentity
+    Write-Output ("WebDynamiteCore identity verified: {0}; SID {1}; SID type {2}; state {3}." -f $identity.StartName,$identity.ServiceSid,$identity.SidType,$identity.State)
+    exit 0
+}
+if ($Mode -eq "SelfTest") {
     if (-not (Test-ServiceSidShape "S-1-5-80-123-456-789-101112-131415")) { throw "Valid SID rejected." }
     if (Test-ServiceSidShape "S-1-5-32-544") { throw "Administrators SID incorrectly accepted." }
     $sddl = Get-ExpectedSddl "S-1-5-80-123-456-789-101112-131415"
