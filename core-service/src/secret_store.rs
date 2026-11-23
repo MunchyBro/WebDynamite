@@ -195,7 +195,7 @@ mod tests {
             &root,
             "S-1-5-80-123-456-789-101112-131415",
         ).unwrap();
-        super::write_secret(&root, "api-token", b"first secret").unwrap();
+        super::write_secret_verified(&root, "api-token", b"first secret").unwrap();
         assert_eq!(super::read_secret(&root, "api-token").unwrap(), b"first secret");
         super::write_secret(&root, "api-token", b"replacement secret").unwrap();
         assert_eq!(super::read_secret(&root, "api-token").unwrap(), b"replacement secret");
