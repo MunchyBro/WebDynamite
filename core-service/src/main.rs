@@ -32,6 +32,8 @@ pub mod service_status;
 pub mod service_control;
 #[cfg(windows)]
 pub mod service_status_win;
+#[cfg(windows)]
+pub mod service_dispatch_win;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
