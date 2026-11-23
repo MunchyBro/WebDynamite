@@ -451,6 +451,54 @@ async fn save_runtime_profile(token:String,website_id:String,program:String,args
 #[tauri::command]
 async fn delete_runtime_profile(token:String,website_id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/runtime-profiles/{website_id}"),None).await?;Ok(())}
 
+
+/// Resolve the publisher pin injected by the trusted release build. It is deliberately
+/// not accepted from the webview, user settings, environment variables, or CLI.
+fn trusted_core_publisher_pin() -> Result<&'static str, String> {
+    option_env!("WEBDYNAMITE_PUBLISHER_SHA256")
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "Authenticated IPC is disabled: this build has no trusted Core Service publisher pin.".into())
+}
+
+fn authenticated_secret_ipc(operation: &str, data: Value) -> Result<Value, String> {
+    let app = tauri::AppHandle::try_current()
+        .ok_or_else(|| "The desktop application context is unavailable.".to_string())?;
+    let executable = bundled_core_service_path(&app)?;
+    let pin = trusted_core_publisher_pin()?;
+    let response = named_pipe_client::exchange(operation, data, &executable, pin)?;
+    if !response.ok {
+        return Err(format!(
+            "Authenticated Core Service operation failed: {}",
+            response.error_code.as_deref().unwrap_or("unknown_error")
+        ));
+    }
+    response.data.ok_or_else(|| "Authenticated Core Service returned no operation data.".into())
+}
+
+#[tauri::command]
+fn ipc_secret_status() -> Result<Value, String> {
+    authenticated_secret_ipc("secret.status", serde_json::json!({}))
+}
+
+#[tauri::command]
+fn ipc_secret_put(website_id: String, name: String, value: String) -> Result<Value, String> {
+    if value.is_empty() || value.len() > 8192 || value.contains('\0') {
+        return Err("Secret value must contain between 1 and 8192 bytes and no NUL characters.".into());
+    }
+    authenticated_secret_ipc(
+        "secret.put",
+        serde_json::json!({"website_id": website_id, "name": name, "value": value}),
+    )
+}
+
+#[tauri::command]
+fn ipc_secret_delete(website_id: String, name: String) -> Result<Value, String> {
+    authenticated_secret_ipc(
+        "secret.delete",
+        serde_json::json!({"website_id": website_id, "name": name}),
+    )
+}
+
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
  let app = tauri::Builder::default()
@@ -458,7 +506,7 @@ pub fn run(){
   start_core_service(app.handle())?;
   Ok(())
  })
- .invoke_handler(tauri::generate_handler![core_service_token,save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_tls_details,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,sqlite_database_connection_url,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,provision_mysql_database,provision_mysql_user,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,provision_postgres_database,provision_postgres_role,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_website_environment,save_website_environment,delete_website_environment,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,delete_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states])
+ .invoke_handler(tauri::generate_handler![core_service_token,save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_tls_details,proxy_action,networking_status,monitoring_metrics,set_lan_access,list_databases,create_database,delete_database,test_database,sqlite_database_connection_url,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,provision_mysql_database,provision_mysql_user,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,provision_postgres_database,provision_postgres_role,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_website_environment,save_website_environment,delete_website_environment,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,delete_deployment_release,list_tunnels,tunnel_action,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states,ipc_secret_status,ipc_secret_put,ipc_secret_delete])
  .build(tauri::generate_context!())
  .expect("error while building WebDynamite");
  app.run(|_, _| {});
