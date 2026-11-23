@@ -93,3 +93,29 @@ and the existing interactive HTTP startup remains the only active runtime path.
 The next integration must implement service-main registration, status-handle
 ownership, non-blocking control handling, and bounded worker shutdown before any
 SCM mode switch is enabled.
+
+
+## Native SCM control-handler registration (Phase 125)
+
+The Windows-only `service_handler_win` module registers an extended control
+handler with `RegisterServiceCtrlHandlerExW`. It owns a stable callback context
+containing the shared lifecycle controller and the status handle returned by
+the SCM. Keep the returned `RegisteredServiceHandler` alive for the complete
+service-main lifetime.
+
+The callback translates STOP, SHUTDOWN, and INTERROGATE using the existing
+platform-neutral control contract. When a status snapshot is requested, it
+publishes that snapshot with the native status adapter. Unsupported controls
+return `ERROR_CALL_NOT_IMPLEMENTED`; null/invalid status handles and native
+publication errors are propagated. Panics are contained at the FFI boundary.
+
+The callback never joins workers, waits for I/O, or terminates child processes.
+STOP/SHUTDOWN only transition the shared lifecycle state; service-main must
+observe that state and perform bounded cleanup on its own worker thread.
+
+This phase supplies the registration and callback primitive, not a complete
+service-main implementation. The dispatcher still has no production callback,
+the named-pipe runtime is not started in SCM mode, and interactive HTTP startup
+remains unchanged. Do not enable service mode until service-main orchestration,
+trusted identity/config validation, credential migration, signing, and
+installer lifecycle validation are complete.
