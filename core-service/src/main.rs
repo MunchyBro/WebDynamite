@@ -28,6 +28,7 @@ pub mod trusted_config_acl_collector;
 pub mod trusted_config_handle_chain;
 pub mod trusted_service_config_loader;
 pub mod service_lifecycle;
+pub mod service_pipe_runtime;
 pub mod service_status;
 pub mod service_control;
 #[cfg(windows)]
