@@ -91,6 +91,20 @@ pub fn write_secret(root: &Path, name: &str, plaintext: &[u8]) -> Result<(), Str
     write_result
 }
 
+/// Writes a secret and verifies that the protected value can be read back before
+/// reporting success. Migration callers must keep the source credential until this
+/// function returns Ok; a failed verification never authorizes source deletion.
+pub fn write_secret_verified(root: &Path, name: &str, plaintext: &[u8]) -> Result<(), String> {
+    write_secret(root, name, plaintext)?;
+    let mut recovered = read_secret(root, name)?;
+    let matches = recovered.as_slice() == plaintext;
+    recovered.fill(0);
+    if !matches {
+        return Err("Protected secret verification failed; retain the source credential.".into());
+    }
+    Ok(())
+}
+
 /// Reads and decrypts a named secret. Plaintext exists only in the returned memory buffer.
 pub fn read_secret(root: &Path, name: &str) -> Result<Vec<u8>, String> {
     let path = secret_path(root, name)?;
