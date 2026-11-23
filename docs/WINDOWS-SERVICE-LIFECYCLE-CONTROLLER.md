@@ -34,3 +34,19 @@ production until trusted config loading is wired to a trusted service identity,
 publisher signing is provisioned, secret migration is complete, and installer
 install/upgrade/rollback/repair/uninstall tests pass. The current interactive
 Core Service startup remains unchanged.
+
+
+## SCM status projection (Phase 122 foundation)
+
+The `service_status` module maps the host-neutral lifecycle state to a
+C-layout-compatible seven-DWORD `SERVICE_STATUS` snapshot. StartPending and
+StopPending publish checkpoint 1 with a 30-second wait hint; Running alone
+accepts STOP and SHUTDOWN; Stopped publishes no accepted controls or pending
+fields. The projection is platform-independent and unit-tested.
+
+This is not yet an SCM dispatcher and does not call
+`StartServiceCtrlDispatcherW`, `RegisterServiceCtrlHandlerExW`, or
+`SetServiceStatus`. The interactive HTTP process and named-pipe activation
+remain unchanged. A subsequent integration must publish these snapshots from
+a real dispatcher and connect stop notifications to bounded worker cancellation
+before service mode can be enabled.
