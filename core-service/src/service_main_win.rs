@@ -9,8 +9,8 @@ use crate::{
     service_status::ServiceStatusSnapshot,
     service_status_win::publish_service_status,
 };
-use std::sync::Arc;
-use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+use std::{panic::{catch_unwind, AssertUnwindSafe}, sync::Arc};
+use windows_sys::Win32::Foundation::{ERROR_GEN_FAILURE, ERROR_INVALID_HANDLE};
 
 /// Execute one service instance on the SCM-provided service-main thread.
 ///
@@ -60,8 +60,15 @@ where
 {
     publish(ServiceStatusSnapshot::from_state(ServiceState::StartPending))?;
 
-    if let Err(start_error) = start_runtime(Arc::clone(&lifecycle)) {
+    // Runtime hooks are supplied by the host. Contain panics here so none
+    // can unwind through the native SCM service entrypoint.
+    let startup_result = catch_unwind(AssertUnwindSafe(|| start_runtime(Arc::clone(&lifecycle))))
+        .unwrap_or(Err(ERROR_GEN_FAILURE));
+    if let Err(start_error) = startup_result {
         lifecycle.request_stop();
+        // Startup can fail after acquiring some resources. Rollback must be
+        // safe for partially initialized state; preserve startup as primary.
+        let _ = catch_unwind(AssertUnwindSafe(stop_runtime));
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
         stopped.win32_exit_code = start_error;
@@ -70,7 +77,7 @@ where
     }
 
     if lifecycle.stop_requested() {
-        let stop_result = stop_runtime();
+        let stop_result = catch_unwind(AssertUnwindSafe(stop_runtime)).unwrap_or(Err(ERROR_GEN_FAILURE));
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
         if let Err(error) = stop_result {
@@ -84,7 +91,7 @@ where
         // STOP can race the final startup check. Runtime has started, so clean
         // it up even though the Running transition is no longer legal.
         lifecycle.request_stop();
-        let stop_result = stop_runtime();
+        let stop_result = catch_unwind(AssertUnwindSafe(stop_runtime)).unwrap_or(Err(ERROR_GEN_FAILURE));
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
         if let Err(error) = stop_result {
@@ -96,7 +103,8 @@ where
 
     if let Err(status_error) = publish(ServiceStatusSnapshot::from_state(ServiceState::Running)) {
         lifecycle.request_stop();
-        let stop_result = stop_runtime();
+        let stop_result = catch_unwind(AssertUnwindSafe(stop_runtime))
+            .unwrap_or(Err(ERROR_GEN_FAILURE));
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
         if let Err(error) = stop_result {
@@ -106,14 +114,15 @@ where
         return Err(status_error);
     }
 
-    wait_for_stop(Arc::clone(&lifecycle));
+    let wait_panicked = catch_unwind(AssertUnwindSafe(|| wait_for_stop(Arc::clone(&lifecycle)))).is_err();
     if !lifecycle.stop_requested() {
         lifecycle.request_stop();
     }
 
     // A status failure must never prevent worker/child-process teardown.
     let pending_error = publish(ServiceStatusSnapshot::from_state(ServiceState::StopPending)).err();
-    let stop_result = stop_runtime();
+    let stop_result = catch_unwind(AssertUnwindSafe(stop_runtime))
+        .unwrap_or(Err(ERROR_GEN_FAILURE));
     lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
     let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
     if let Err(error) = stop_result {
@@ -123,6 +132,9 @@ where
 
     if let Some(error) = pending_error.or(stopped_error) {
         return Err(error);
+    }
+    if wait_panicked {
+        return Err(ERROR_GEN_FAILURE);
     }
     stop_result
 }
@@ -234,6 +246,58 @@ mod tests {
         );
         assert_eq!(result, Err(5));
         assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert_eq!(lifecycle.state(), ServiceState::Stopped);
+        assert_eq!(states.lock().unwrap().last(), Some(&ServiceState::Stopped));
+    }
+
+    #[test]
+    fn startup_panic_rolls_back_and_returns_failure_without_unwinding() {
+        let lifecycle = Arc::new(ServiceLifecycle::new());
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let rollbacks = Arc::new(AtomicUsize::new(0));
+        let rollback_count = Arc::clone(&rollbacks);
+        let result = run_lifecycle(
+            Arc::clone(&lifecycle),
+            |_| -> Result<(), u32> { panic!("startup panic") },
+            |_| panic!("wait must not run"),
+            move || { rollback_count.fetch_add(1, Ordering::SeqCst); Ok(()) },
+            publisher(Arc::clone(&states), None),
+        );
+        assert_eq!(result, Err(ERROR_GEN_FAILURE));
+        assert_eq!(rollbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(lifecycle.state(), ServiceState::Stopped);
+        assert_eq!(states.lock().unwrap().last(), Some(&ServiceState::Stopped));
+    }
+
+    #[test]
+    fn wait_panic_still_stops_runtime_and_reports_stopped() {
+        let lifecycle = Arc::new(ServiceLifecycle::new());
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let stop_count = Arc::clone(&stops);
+        let result = run_lifecycle(
+            Arc::clone(&lifecycle), |_| Ok(()),
+            |_| panic!("wait panic"),
+            move || { stop_count.fetch_add(1, Ordering::SeqCst); Ok(()) },
+            publisher(Arc::clone(&states), None),
+        );
+        assert_eq!(result, Err(ERROR_GEN_FAILURE));
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert_eq!(lifecycle.state(), ServiceState::Stopped);
+        assert_eq!(states.lock().unwrap().last(), Some(&ServiceState::Stopped));
+    }
+
+    #[test]
+    fn stop_hook_panic_is_converted_to_service_failure() {
+        let lifecycle = Arc::new(ServiceLifecycle::new());
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let result = run_lifecycle(
+            Arc::clone(&lifecycle), |_| Ok(()),
+            |lifecycle| { lifecycle.request_stop(); },
+            || -> Result<(), u32> { panic!("stop panic") },
+            publisher(Arc::clone(&states), None),
+        );
+        assert_eq!(result, Err(ERROR_GEN_FAILURE));
         assert_eq!(lifecycle.state(), ServiceState::Stopped);
         assert_eq!(states.lock().unwrap().last(), Some(&ServiceState::Stopped));
     }
