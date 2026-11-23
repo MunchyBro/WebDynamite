@@ -61,9 +61,14 @@ where
     publish(ServiceStatusSnapshot::from_state(ServiceState::StartPending))?;
 
     if let Err(start_error) = start_runtime(Arc::clone(&lifecycle)) {
+        // Startup may have acquired some resources before reporting failure.
+        // Always invoke the rollback hook; it must tolerate partially
+        // initialized runtime state and remain bounded.
         lifecycle.request_stop();
+        let _rollback_result = stop_runtime();
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
+        // Preserve the startup failure as the primary service exit code.
         stopped.win32_exit_code = start_error;
         let _ = publish(stopped);
         return Err(start_error);
@@ -172,15 +177,18 @@ mod tests {
     }
 
     #[test]
-    fn startup_failure_does_not_call_stop_hook_but_reports_stopped() {
+    fn startup_failure_rolls_back_partial_runtime_and_reports_stopped() {
         let lifecycle = Arc::new(ServiceLifecycle::new());
         let states = Arc::new(Mutex::new(Vec::new()));
+        let rollbacks = Arc::new(AtomicUsize::new(0));
+        let rollback_count = Arc::clone(&rollbacks);
         let result = run_lifecycle(
             Arc::clone(&lifecycle), |_| Err(1066), |_| panic!("wait must not run"),
-            || panic!("runtime did not finish starting"),
+            move || { rollback_count.fetch_add(1, Ordering::SeqCst); Ok(()) },
             publisher(Arc::clone(&states), None),
         );
         assert_eq!(result, Err(1066));
+        assert_eq!(rollbacks.load(Ordering::SeqCst), 1);
         assert_eq!(lifecycle.state(), ServiceState::Stopped);
         assert_eq!(states.lock().unwrap().last(), Some(&ServiceState::Stopped));
     }
