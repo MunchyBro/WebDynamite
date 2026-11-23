@@ -108,6 +108,33 @@ pub fn start_authenticated_secret_pipe_worker(
     })
 }
 
+/// Acquires the service SID from the current native process token, loads
+/// the ACL-validated installer configuration against that SID, then starts
+/// the authenticated IPC worker. Intended only for a future SCM service host.
+#[cfg(windows)]
+pub fn start_current_service_pipe_worker(
+    config_path: &std::path::Path,
+    trusted_root: &std::path::Path,
+    lifecycle: Arc<ServiceLifecycle>,
+    timeout_ms: u32,
+) -> Result<AuthenticatedSecretPipeWorker, String> {
+    let config = crate::service_identity_win::load_current_service_config(
+        config_path,
+        trusted_root,
+    )?;
+    start_authenticated_secret_pipe_worker(config, lifecycle, timeout_ms)
+}
+
+#[cfg(not(windows))]
+pub fn start_current_service_pipe_worker(
+    _config_path: &std::path::Path,
+    _trusted_root: &std::path::Path,
+    _lifecycle: Arc<ServiceLifecycle>,
+    _timeout_ms: u32,
+) -> Result<AuthenticatedSecretPipeWorker, String> {
+    Err("The authenticated service pipe runtime is available only on Windows.".into())
+}
+
 #[cfg(not(windows))]
 pub fn start_authenticated_secret_pipe_worker(
     _config: TrustedServiceConfig,
