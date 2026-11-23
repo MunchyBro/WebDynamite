@@ -121,10 +121,11 @@ where
     Wait: FnOnce(std::sync::Arc<crate::service_lifecycle::ServiceLifecycle>) + Send + 'static,
     Stop: FnOnce() -> Result<(), u32> + Send + 'static,
 {
-    let owned_name = service_name.to_owned();
-    dispatch_service(&owned_name, move || {
+    let dispatcher_name = service_name.to_owned();
+    let callback_name = dispatcher_name.clone();
+    dispatch_service(&dispatcher_name, move || {
         crate::service_main_win::run_service_main(
-            &owned_name,
+            &callback_name,
             start_runtime,
             wait_for_stop,
             stop_runtime,
