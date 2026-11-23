@@ -10,11 +10,11 @@ mod windows_impl {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, LocalFree, HANDLE},
         Security::{
-            GetTokenInformation, OpenProcessToken, SID_AND_ATTRIBUTES, TOKEN_GROUPS,
-            TOKEN_QUERY, TOKEN_USER, TokenGroups, TokenUser, SE_GROUP_ENABLED,
+            GetTokenInformation, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TOKEN_USER,
+            TokenGroups, TokenUser,
         },
         Security::Authorization::ConvertSidToStringSidW,
-        System::Threading::GetCurrentProcess,
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
 
     struct OwnedHandle(HANDLE);
@@ -36,7 +36,7 @@ mod windows_impl {
         pub service_sid: String,
     }
 
-    fn token_information(token: HANDLE, class: u32) -> Result<Vec<u64>, String> {
+    fn token_information(token: HANDLE, class: i32) -> Result<Vec<u64>, String> {
         let mut required = 0u32;
         unsafe {
             GetTokenInformation(token, class, ptr::null_mut(), 0, &mut required);
@@ -123,7 +123,7 @@ mod windows_impl {
         let mut service_sids = Vec::new();
         for index in 0..count {
             let entry = unsafe { &*first.add(index) };
-            if entry.Attributes & SE_GROUP_ENABLED == 0 {
+            if entry.Attributes & 0x0000_0004 == 0 {
                 continue;
             }
             let sid = sid_to_string(entry.Sid)?;
