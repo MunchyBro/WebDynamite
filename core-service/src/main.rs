@@ -28,7 +28,8 @@ pub mod trusted_config_acl_collector;
 pub mod trusted_config_handle_chain;
 pub mod trusted_service_config_loader;
 pub mod service_lifecycle;
-pub mod service_status;\npub mod service_control;
+pub mod service_status;
+pub mod service_control;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
