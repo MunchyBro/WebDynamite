@@ -103,7 +103,8 @@ where
 
     if let Err(status_error) = publish(ServiceStatusSnapshot::from_state(ServiceState::Running)) {
         lifecycle.request_stop();
-        let stop_result = stop_runtime();
+        let stop_result = catch_unwind(AssertUnwindSafe(stop_runtime))
+            .unwrap_or(Err(ERROR_GEN_FAILURE));
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
         if let Err(error) = stop_result {
@@ -120,7 +121,8 @@ where
 
     // A status failure must never prevent worker/child-process teardown.
     let pending_error = publish(ServiceStatusSnapshot::from_state(ServiceState::StopPending)).err();
-    let stop_result = stop_runtime();
+    let stop_result = catch_unwind(AssertUnwindSafe(stop_runtime))
+        .unwrap_or(Err(ERROR_GEN_FAILURE));
     lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
     let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
     if let Err(error) = stop_result {
