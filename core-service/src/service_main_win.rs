@@ -184,15 +184,18 @@ mod tests {
     }
 
     #[test]
-    fn startup_failure_does_not_call_stop_hook_but_reports_stopped() {
+    fn startup_failure_runs_partial_initialization_rollback_and_reports_stopped() {
         let lifecycle = Arc::new(ServiceLifecycle::new());
         let states = Arc::new(Mutex::new(Vec::new()));
+        let rollbacks = Arc::new(AtomicUsize::new(0));
+        let rollback_count = Arc::clone(&rollbacks);
         let result = run_lifecycle(
             Arc::clone(&lifecycle), |_| Err(1066), |_| panic!("wait must not run"),
-            || panic!("runtime did not finish starting"),
+            move || { rollback_count.fetch_add(1, Ordering::SeqCst); Ok(()) },
             publisher(Arc::clone(&states), None),
         );
         assert_eq!(result, Err(1066));
+        assert_eq!(rollbacks.load(Ordering::SeqCst), 1);
         assert_eq!(lifecycle.state(), ServiceState::Stopped);
         assert_eq!(states.lock().unwrap().last(), Some(&ServiceState::Stopped));
     }
