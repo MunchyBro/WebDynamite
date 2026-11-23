@@ -33,6 +33,10 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Validate service provisioning contract
+        shell: pwsh
+        run: ./scripts/windows/provision-service-layout.ps1 -Mode SelfTest
+
       - name: Install frontend dependencies
         run: npm install
 
