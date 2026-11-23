@@ -460,10 +460,8 @@ fn trusted_core_publisher_pin() -> Result<&'static str, String> {
         .ok_or_else(|| "Authenticated IPC is disabled: this build has no trusted Core Service publisher pin.".into())
 }
 
-fn authenticated_secret_ipc(operation: &str, data: Value) -> Result<Value, String> {
-    let app = tauri::AppHandle::try_current()
-        .ok_or_else(|| "The desktop application context is unavailable.".to_string())?;
-    let executable = bundled_core_service_path(&app)?;
+fn authenticated_secret_ipc(app: &tauri::AppHandle, operation: &str, data: Value) -> Result<Value, String> {
+    let executable = bundled_core_service_path(app)?;
     let pin = trusted_core_publisher_pin()?;
     let response = named_pipe_client::exchange(operation, data, &executable, pin)?;
     if !response.ok {
@@ -476,24 +474,26 @@ fn authenticated_secret_ipc(operation: &str, data: Value) -> Result<Value, Strin
 }
 
 #[tauri::command]
-fn ipc_secret_status() -> Result<Value, String> {
-    authenticated_secret_ipc("secret.status", serde_json::json!({}))
+fn ipc_secret_status(app: tauri::AppHandle) -> Result<Value, String> {
+    authenticated_secret_ipc(&app, "secret.status", serde_json::json!({}))
 }
 
 #[tauri::command]
-fn ipc_secret_put(website_id: String, name: String, value: String) -> Result<Value, String> {
+fn ipc_secret_put(app: tauri::AppHandle, website_id: String, name: String, value: String) -> Result<Value, String> {
     if value.is_empty() || value.len() > 8192 || value.contains('\0') {
         return Err("Secret value must contain between 1 and 8192 bytes and no NUL characters.".into());
     }
     authenticated_secret_ipc(
+        &app,
         "secret.put",
         serde_json::json!({"website_id": website_id, "name": name, "value": value}),
     )
 }
 
 #[tauri::command]
-fn ipc_secret_delete(website_id: String, name: String) -> Result<Value, String> {
+fn ipc_secret_delete(app: tauri::AppHandle, website_id: String, name: String) -> Result<Value, String> {
     authenticated_secret_ipc(
+        &app,
         "secret.delete",
         serde_json::json!({"website_id": website_id, "name": name}),
     )
