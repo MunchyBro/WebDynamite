@@ -119,3 +119,31 @@ the named-pipe runtime is not started in SCM mode, and interactive HTTP startup
 remains unchanged. Do not enable service mode until service-main orchestration,
 trusted identity/config validation, credential migration, signing, and
 installer lifecycle validation are complete.
+
+
+## Service-main orchestration primitive (Phase 126)
+
+The Windows-only `service_main_win::run_service_main` composes the previously
+separate SCM pieces into one service-main-thread lifecycle:
+
+1. Create the shared lifecycle controller and register the extended SCM
+   control handler.
+2. Publish START_PENDING before invoking runtime startup.
+3. On successful startup, transition to RUNNING and publish the status.
+4. Wait for the supplied stop signal on the service-main thread.
+5. Publish STOP_PENDING, invoke bounded runtime teardown outside the control
+   callback, transition to STOPPED, and publish the final status.
+6. Propagate startup or teardown failures as the Win32 service exit code.
+
+The runtime is supplied through three closures: startup, wait-for-stop, and
+bounded stop. The wait closure receives the shared lifecycle controller and
+must block efficiently until `stop_requested()` becomes true. The stop closure
+must stop child processes and background workers without running in the SCM
+callback.
+
+This is an orchestration primitive, not production activation: no concrete
+runtime hooks are supplied, the dispatcher does not yet point to a service-main
+callback, and the existing interactive HTTP startup remains unchanged. Do not
+wire this into release startup until trusted service configuration, signer and
+service identity validation, named-pipe runtime startup, credential migration,
+and installer lifecycle gates are satisfied.
