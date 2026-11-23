@@ -50,3 +50,18 @@ This is not yet an SCM dispatcher and does not call
 remain unchanged. A subsequent integration must publish these snapshots from
 a real dispatcher and connect stop notifications to bounded worker cancellation
 before service mode can be enabled.
+
+
+## SCM control callback contract (Phase 122)
+
+The `service_control` module translates raw STOP (1), INTERROGATE (4), and
+SHUTDOWN (5) control codes into lifecycle transitions and optional status
+snapshots. Unknown controls are rejected. Duplicate STOP/SHUTDOWN requests are
+idempotent; only the first transition asks for a new pending status snapshot.
+The callback contract explicitly signals shutdown rather than joining workers,
+waiting on I/O, or killing child processes inside the SCM callback thread.
+
+The translator is platform-independent and concurrency-tested. It is not yet
+registered with `RegisterServiceCtrlHandlerExW`; the actual callback must
+remain non-blocking and the service worker must perform bounded cleanup before
+publishing SERVICE_STOPPED.
