@@ -119,3 +119,25 @@ the named-pipe runtime is not started in SCM mode, and interactive HTTP startup
 remains unchanged. Do not enable service mode until service-main orchestration,
 trusted identity/config validation, credential migration, signing, and
 installer lifecycle validation are complete.
+
+
+## Service-main orchestration and failure-safe teardown (Phase 127)
+
+The Windows-only `service_main_win` module composes the registered control
+handler, lifecycle transitions, native status publisher, and caller-supplied
+runtime hooks. Its handler owner remains alive for the full service-main
+execution, preserving the callback context and SCM status handle.
+
+A status-reporting failure after runtime startup must not skip teardown.
+Failures while publishing RUNNING or STOP_PENDING now request/retain shutdown,
+run the bounded stop hook on the service-main thread, mark the lifecycle
+Stopped, and make a best-effort final STOPPED report. The original status error
+is returned after cleanup. Startup failures also preserve the startup error
+while attempting to publish STOPPED. This keeps SCM reporting failures from
+orphaning runtime workers.
+
+The module is registered for Windows builds, but no static dispatcher callback
+is wired and no SCM runtime is activated. Interactive HTTP startup remains
+unchanged. Trusted identity/config validation, named-pipe runtime integration,
+credential migration, signing, and installer lifecycle validation remain
+mandatory activation gates.
