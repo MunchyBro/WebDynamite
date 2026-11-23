@@ -147,3 +147,10 @@ callback, and the existing interactive HTTP startup remains unchanged. Do not
 wire this into release startup until trusted service configuration, signer and
 service identity validation, named-pipe runtime startup, credential migration,
 and installer lifecycle gates are satisfied.
+
+
+The orchestrator treats teardown as mandatory once runtime startup has
+succeeded: a failed RUNNING/STOP_PENDING status publication is retained as an
+error, but does not bypass the stop hook. Final STOPPED publication is best
+effort when an earlier SCM status call has already failed. Runtime hooks must
+therefore be idempotent and bounded, and callers must log returned Win32 errors.
