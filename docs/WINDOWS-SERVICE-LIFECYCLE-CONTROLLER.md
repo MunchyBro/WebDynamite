@@ -77,3 +77,19 @@ primitive: it does not acquire/register a service status handle, start an SCM
 dispatcher, or enable service mode. A future service-main/handler integration
 must own the handle lifetime and publish every lifecycle transition from the
 registered service context.
+
+
+## Native SCM dispatcher entry (Phase 124)
+
+The Windows-only `service_dispatch_win` module provides a narrow wrapper around
+`StartServiceCtrlDispatcherW`. It validates the service name, builds the required
+UTF-16 service table plus its terminating sentinel, and keeps the name buffer alive
+for the full synchronous dispatcher call. The caller supplies a static service-main
+callback. Native failures are returned as Win32 error codes.
+
+This is a dispatcher entry primitive, not service activation: no service-main
+callback is registered by the application yet, no control handler is installed,
+and the existing interactive HTTP startup remains the only active runtime path.
+The next integration must implement service-main registration, status-handle
+ownership, non-blocking control handling, and bounded worker shutdown before any
+SCM mode switch is enabled.
