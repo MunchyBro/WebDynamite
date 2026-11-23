@@ -70,6 +70,12 @@ pub fn start_authenticated_secret_pipe_worker(
     timeout_ms: u32,
 ) -> Result<AuthenticatedSecretPipeWorker, String> {
     config.validate()?;
+    let service_sid = config.service_sid.clone();
+    let client_user_sid = config.interactive_user_sid.clone();
+    let session_id = config.interactive_session_id;
+    let desktop_executable = config.desktop_executable.clone();
+    let publisher_sha256 = config.publisher_sha256.clone();
+    let secret_store_root = config.secret_store_root.clone();
     let cancellation = Arc::new(AtomicBool::new(false));
     let worker_cancellation = Arc::clone(&cancellation);
 
@@ -77,15 +83,15 @@ pub fn start_authenticated_secret_pipe_worker(
         .name("webdynamite-authenticated-pipe".into())
         .spawn(move || {
             let result = crate::named_pipe_host::serve_authenticated_overlapped_loop(
-                &config.service_sid,
-                &config.interactive_user_sid,
-                config.interactive_session_id,
-                &config.desktop_executable,
-                &config.publisher_sha256,
+                &service_sid,
+                &client_user_sid,
+                session_id,
+                &desktop_executable,
+                &publisher_sha256,
                 timeout_ms.clamp(MIN_ACCEPT_TIMEOUT_MS, MAX_ACCEPT_TIMEOUT_MS),
                 &worker_cancellation,
                 move |request| {
-                    crate::secret_ipc::dispatch_secret_request(&config.secret_store_root, &request)
+                    crate::secret_ipc::dispatch_secret_request(&secret_store_root, &request)
                 },
             );
             if result.is_err() {
@@ -145,6 +151,6 @@ mod tests {
             Arc::new(ServiceLifecycle::new()),
             1_000,
         );
-        assert!(result.unwrap_err().contains("only on Windows"));
+        assert!(matches!(result, Err(ref message) if message.contains("only on Windows")));
     }
 }
