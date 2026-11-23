@@ -100,3 +100,34 @@ mod tests {
         assert_eq!(result, Err(ERROR_GEN_FAILURE));
     }
 }
+
+/// Compose the native dispatcher bridge with the existing SCM lifecycle runner.
+///
+/// This wires the service-main callback, control-handler registration, status
+/// publication, and startup/wait/teardown orchestration into one callable
+/// entrypoint. The supplied hooks still own the runtime implementation; this
+/// function deliberately does not construct production runtime state or enable
+/// service mode by itself.
+pub fn dispatch_service_lifecycle<Start, Wait, Stop>(
+    service_name: &str,
+    start_runtime: Start,
+    wait_for_stop: Wait,
+    stop_runtime: Stop,
+) -> Result<(), u32>
+where
+    Start: FnOnce(std::sync::Arc<crate::service_lifecycle::ServiceLifecycle>) -> Result<(), u32>
+        + Send
+        + 'static,
+    Wait: FnOnce(std::sync::Arc<crate::service_lifecycle::ServiceLifecycle>) + Send + 'static,
+    Stop: FnOnce() -> Result<(), u32> + Send + 'static,
+{
+    let owned_name = service_name.to_owned();
+    dispatch_service(&owned_name, move || {
+        crate::service_main_win::run_service_main(
+            &owned_name,
+            start_runtime,
+            wait_for_stop,
+            stop_runtime,
+        )
+    })
+}
