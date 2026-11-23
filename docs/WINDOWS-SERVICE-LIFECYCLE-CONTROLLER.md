@@ -65,3 +65,15 @@ The translator is platform-independent and concurrency-tested. It is not yet
 registered with `RegisterServiceCtrlHandlerExW`; the actual callback must
 remain non-blocking and the service worker must perform bounded cleanup before
 publishing SERVICE_STOPPED.
+
+
+## Native SCM status publisher (Phase 123)
+
+The Windows-only `service_status_win` adapter converts the tested seven-DWORD
+snapshot into the SDK `SERVICE_STATUS` structure and publishes it through
+`SetServiceStatus`. It rejects a null status handle and returns the native
+Win32 error when publication fails. The adapter is intentionally a narrow
+primitive: it does not acquire/register a service status handle, start an SCM
+dispatcher, or enable service mode. A future service-main/handler integration
+must own the handle lifetime and publish every lifecycle transition from the
+registered service context.
