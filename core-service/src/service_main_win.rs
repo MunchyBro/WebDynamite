@@ -20,8 +20,8 @@ use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
 /// shutdown. `stop_runtime` must perform bounded cleanup and must not be run
 /// from the SCM control-handler callback.
 ///
-/// The registered handler owner remains alive across all hooks, ensuring the
-/// SCM callback context and status handle stay valid.
+/// Once runtime startup succeeds, every subsequent status-publication failure
+/// still attempts runtime teardown before this function returns.
 pub fn run_service_main<Start, Wait, Stop>(
     service_name: &str,
     start_runtime: Start,
@@ -44,36 +44,40 @@ where
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
         stopped.win32_exit_code = start_error;
-        publish(handle, stopped)?;
+        let _ = publish(handle, stopped);
         return Err(start_error);
     }
 
     if lifecycle.stop_requested() {
-        let _ = stop_runtime();
+        let stop_result = stop_runtime();
         lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
         publish(handle, ServiceStatusSnapshot::from_state(ServiceState::Stopped))?;
-        return Ok(());
+        return stop_result;
     }
 
     lifecycle.mark_running().map_err(|_| ERROR_INVALID_HANDLE)?;
-    publish(handle, ServiceStatusSnapshot::from_state(ServiceState::Running))?;
+    if let Err(status_error) = publish(handle, ServiceStatusSnapshot::from_state(ServiceState::Running)) {
+        lifecycle.request_stop();
+        let stop_result = stop_runtime();
+        lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
+        let _ = publish(handle, ServiceStatusSnapshot::from_state(ServiceState::Stopped));
+        return Err(status_error).and(stop_result);
+    }
 
     wait_for_stop(Arc::clone(&lifecycle));
     if !lifecycle.stop_requested() {
         lifecycle.request_stop();
     }
 
-    // STOP/SHUTDOWN callback normally publishes STOP_PENDING. Publish again
-    // here to cover a host-initiated shutdown path and make teardown explicit.
-    publish(handle, ServiceStatusSnapshot::from_state(ServiceState::StopPending))?;
-
+    // Status publication must never prevent worker/child-process teardown.
+    let pending_error = publish(handle, ServiceStatusSnapshot::from_state(ServiceState::StopPending)).err();
     let stop_result = stop_runtime();
     lifecycle.mark_stopped().map_err(|_| ERROR_INVALID_HANDLE)?;
-    let mut stopped = ServiceStatusSnapshot::from_state(ServiceState::Stopped);
-    if let Err(error) = stop_result {
-        stopped.win32_exit_code = error;
+    let stopped_error = publish(handle, ServiceStatusSnapshot::from_state(ServiceState::Stopped)).err();
+
+    if let Some(error) = pending_error.or(stopped_error) {
+        return Err(error);
     }
-    publish(handle, stopped)?;
     stop_result
 }
 
