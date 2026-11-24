@@ -115,7 +115,10 @@ pub fn delete_all_for_website(state:&AppState,id:&str){
 }
 #[cfg(test)]
 mod tests{
- use super::valid_name;
+ use super::{validate_batch,valid_name,SaveEnvironmentVariable};
+ fn variable(name:&str,value:&str,is_secret:bool)->SaveEnvironmentVariable{
+  SaveEnvironmentVariable{name:name.into(),value:value.into(),is_secret}
+ }
  #[test]
  fn environment_names_are_safe_and_reserved_names_are_rejected(){
   assert!(valid_name("DATABASE_URL"));
@@ -126,5 +129,26 @@ mod tests{
   assert!(!valid_name("PORT"));
   assert!(!valid_name("HOST"));
   assert!(!valid_name("WEBDYNAMITE_API_TOKEN"));
+ }
+ #[test]
+ fn environment_batch_accepts_valid_plain_and_secret_values(){
+  let values=vec![variable("DB_HOST","localhost",false),variable("DB_PASSWORD","secret",true)];
+  assert!(validate_batch(&values).is_ok());
+ }
+ #[test]
+ fn environment_batch_rejects_empty_oversized_and_duplicate_batches(){
+  assert!(validate_batch(&[]).is_err());
+  let mut oversized=Vec::new();
+  for index in 0..65{oversized.push(variable(&format!("VALUE_{index}"),"x",false));}
+  assert!(validate_batch(&oversized).is_err());
+  assert!(validate_batch(&[variable("DB_HOST","localhost",false),variable("DB_HOST","other",false)]).is_err());
+ }
+ #[test]
+ fn environment_batch_rejects_invalid_values_before_persistence(){
+  assert!(validate_batch(&[variable("bad_name","x",false)]).is_err());
+  assert!(validate_batch(&[variable("PORT","8080",false)]).is_err());
+  assert!(validate_batch(&[variable("DB_PASSWORD","",true)]).is_err());
+  assert!(validate_batch(&[variable("DB_VALUE","bad\0value",false)]).is_err());
+  assert!(validate_batch(&[variable("DB_VALUE",&"x".repeat(8193),false)]).is_err());
  }
 }
