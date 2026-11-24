@@ -460,10 +460,24 @@ fn trusted_core_publisher_pin() -> Result<&'static str, String> {
         .ok_or_else(|| "Authenticated IPC is disabled: this build has no trusted Core Service publisher pin.".into())
 }
 
+/// Resolve the service SID injected by the trusted Windows release build.
+/// It is never accepted from the webview, environment variables, or user settings.
+fn trusted_core_service_sid() -> Result<&'static str, String> {
+    option_env!("WEBDYNAMITE_SERVICE_SID")
+        .filter(|value| {
+            let parts = value.trim().split('-').collect::<Vec<_>>();
+            parts.len() == 9 && parts[0] == "S" && parts[1] == "1"
+                && parts[2] == "5" && parts[3] == "80"
+                && parts[4..].iter().all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+        })
+        .ok_or_else(|| "Authenticated IPC is disabled: this build has no trusted Core Service service SID.".into())
+}
+
 fn authenticated_secret_ipc(app: &tauri::AppHandle, operation: &str, data: Value) -> Result<Value, String> {
     let executable = bundled_core_service_path(app)?;
     let pin = trusted_core_publisher_pin()?;
-    let response = named_pipe_client::exchange(operation, data, &executable, pin)?;
+    let service_sid = trusted_core_service_sid()?;
+    let response = named_pipe_client::exchange(operation, data, &executable, pin, service_sid)?;
     if !response.ok {
         return Err(format!(
             "Authenticated Core Service operation failed: {}",
