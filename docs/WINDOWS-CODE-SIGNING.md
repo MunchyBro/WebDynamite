@@ -38,6 +38,7 @@ publishes GitHub Releases. The PFX must never be exposed to pull-request builds.
 Obtain a Windows code-signing certificate from a certificate authority trusted
 by the Windows machines that will install WebDynamite. The certificate must:
 - be currently valid and include its private key in the PFX bundle;
+- explicitly permit Digital Signature in the Key Usage extension;
 - explicitly include the Code Signing EKU (1.3.6.1.5.5.7.3.3);
 - be suitable for Authenticode signing and timestamped releases;
 - be protected as a high-value signing credential.
@@ -74,9 +75,10 @@ closed when Windows cannot establish trust or verify revocation; it is not
 silently skipped when offline. The script does not write the certificate or
 private key to disk. Its -SelfTest mode checks strict pin parsing and positive,
 negative, and missing Key Usage cases without requiring a real certificate.
-The self-test also creates ephemeral certificates to verify that a
-certificate's matching DER SHA-256 publisher pin is accepted and a mismatched
-pin is rejected; a certificate with a private key is accepted and a public-only
+The self-test also verifies strict 64-character hexadecimal pin parsing and
+normalization of uppercase, colon-separated pins with surrounding whitespace.
+It creates ephemeral certificates to verify that a certificate's matching DER
+SHA-256 publisher pin is accepted and a mismatched pin is rejected; a certificate with a private key is accepted and a public-only
 certificate is rejected. It verifies that currently valid validity dates are
 accepted, expired and not-yet-valid certificates are rejected, the Code Signing EKU is accepted,
 a different EKU is rejected, and a missing EKU is rejected. It similarly
