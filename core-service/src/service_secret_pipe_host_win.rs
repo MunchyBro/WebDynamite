@@ -59,15 +59,4 @@ pub fn run_authenticated_secret_pipe_service(
         },
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn host_requires_explicit_protected_paths() {
-        // This host is intentionally a callable adapter, not a process-wide
-        // auto-start hook. The real SCM/token/config path is Windows-only.
-        assert!(!Path::new("").is_absolute());
-    }
-}
+\n
