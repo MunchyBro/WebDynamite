@@ -12,6 +12,13 @@ function Normalize-Sha256Thumbprint {
     return $normalized
 }
 
+function Test-CertificatePrivateKey {
+    param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
+    if (-not $Certificate.HasPrivateKey) {
+        throw "The signing certificate does not contain its private key."
+    }
+}
+
 function Test-CertificateValidity {
     param(
         [Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
@@ -76,7 +83,7 @@ function Test-SigningCertificate {
     try {
         $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
         $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, $PfxPassword, $flags)
-        if (-not $certificate.HasPrivateKey) { throw "The signing certificate does not contain its private key." }
+        Test-CertificatePrivateKey -Certificate $certificate
         Test-CertificateValidity -Certificate $certificate
         Test-CodeSigningEku -Certificate $certificate
         Test-CodeSigningKeyUsage -Certificate $certificate
@@ -161,6 +168,17 @@ if ($SelfTest) {
         } finally { $key.Dispose() }
     }
 
+    $privateKeyCertificate = New-ValidityTestCertificate -NotBefore ([DateTimeOffset]::UtcNow.AddDays(-1)) -NotAfter ([DateTimeOffset]::UtcNow.AddDays(1))
+    try {
+        Test-CertificatePrivateKey -Certificate $privateKeyCertificate
+        $publicOnlyCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($privateKeyCertificate.RawData)
+        try {
+            $rejected = $false
+            try { Test-CertificatePrivateKey -Certificate $publicOnlyCertificate } catch { $rejected = $true }
+            if (-not $rejected) { throw "A certificate without a private key was accepted." }
+        } finally { $publicOnlyCertificate.Dispose() }
+    } finally { $privateKeyCertificate.Dispose() }
+
     $testNow = [DateTime]::UtcNow
     $validityCertificate = New-ValidityTestCertificate -NotBefore ([DateTimeOffset]::UtcNow.AddDays(-1)) -NotAfter ([DateTimeOffset]::UtcNow.AddDays(1))
     try { Test-CertificateValidity -Certificate $validityCertificate -UtcNow $testNow }
@@ -219,7 +237,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw "Certificate without an EKU extension was accepted." }
     } finally { $ekuCertificate.Dispose() }
 
-    Write-Output "Publisher identity validation self-tests passed (pin, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
+    Write-Output "Publisher identity validation self-tests passed (pin, private-key presence, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
     exit 0
 }
 
