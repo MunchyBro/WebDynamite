@@ -12,6 +12,16 @@ function Normalize-Sha256Thumbprint {
     return $normalized
 }
 
+function Test-CodeSigningEku {
+    param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
+    $extension = $Certificate.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.37" } | Select-Object -First 1
+    if ($null -eq $extension) { throw "The certificate has no Extended Key Usage; Code Signing must be explicitly permitted." }
+    $eku = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($extension, $extension.Critical)
+    if (-not ($eku.EnhancedKeyUsages | Where-Object { $_.Value -eq "1.3.6.1.5.5.7.3.3" })) {
+        throw "The certificate EKU does not permit Code Signing."
+    }
+}
+
 function Test-CodeSigningKeyUsage {
     param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
     $extension = $Certificate.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.15" } | Select-Object -First 1
@@ -61,15 +71,7 @@ function Test-SigningCertificate {
             throw "The signing certificate is not currently valid."
         }
 
-        $ekuExtension = $certificate.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.37" } | Select-Object -First 1
-        if ($null -eq $ekuExtension) {
-            throw "The certificate has no Extended Key Usage; Code Signing must be explicitly permitted."
-        }
-        $eku = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($ekuExtension, $ekuExtension.Critical)
-        if (-not ($eku.EnhancedKeyUsages | Where-Object { $_.Value -eq "1.3.6.1.5.5.7.3.3" })) {
-            throw "The certificate EKU does not permit Code Signing."
-        }
-
+        Test-CodeSigningEku -Certificate $certificate
         Test-CodeSigningKeyUsage -Certificate $certificate
         Test-TrustedCodeSigningChain -Certificate $certificate
 
@@ -138,7 +140,46 @@ if ($SelfTest) {
         try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
         if (-not $rejected) { throw "Certificate without a Key Usage extension was accepted." }
     } finally { $usageCertificate.Dispose() }
-    Write-Output "Publisher identity validation self-tests passed (pin, Digital Signature, and missing-Key-Usage cases)."
+    function New-EkuTestCertificate {
+        param([switch]$IncludeEku, [string]$EkuOid = "1.3.6.1.5.5.7.3.3")
+        $key = [System.Security.Cryptography.RSA]::Create(2048)
+        try {
+            $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                "CN=WebDynamite EKU Preflight Self-Test",
+                $key,
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+            )
+            if ($IncludeEku) {
+                $oids = [System.Security.Cryptography.OidCollection]::new()
+                [void]$oids.Add([System.Security.Cryptography.Oid]::new($EkuOid))
+                $request.CertificateExtensions.Add(
+                    [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($oids, $true)
+                )
+            }
+            return $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddDays(1))
+        } finally { $key.Dispose() }
+    }
+
+    $ekuCertificate = New-EkuTestCertificate -IncludeEku
+    try { Test-CodeSigningEku -Certificate $ekuCertificate }
+    finally { $ekuCertificate.Dispose() }
+
+    $ekuCertificate = New-EkuTestCertificate -IncludeEku -EkuOid "1.3.6.1.5.5.7.3.2"
+    try {
+        $rejected = $false
+        try { Test-CodeSigningEku -Certificate $ekuCertificate } catch { $rejected = $true }
+        if (-not $rejected) { throw "A non-Code-Signing EKU certificate was accepted." }
+    } finally { $ekuCertificate.Dispose() }
+
+    $ekuCertificate = New-EkuTestCertificate
+    try {
+        $rejected = $false
+        try { Test-CodeSigningEku -Certificate $ekuCertificate } catch { $rejected = $true }
+        if (-not $rejected) { throw "Certificate without an EKU extension was accepted." }
+    } finally { $ekuCertificate.Dispose() }
+
+    Write-Output "Publisher identity validation self-tests passed (pin, Code Signing EKU, Digital Signature, and missing-extension cases)."
     exit 0
 }
 
