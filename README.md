@@ -146,15 +146,24 @@ Pull requests run the repository's Windows CI workflows, including Rust tests, f
 
 ## Release process
 
-The repository includes a Windows installer workflow at `.github/workflows/windows-installer.yml`.
+The repository's Windows installer workflow is currently an **engineering build and validation workflow**, not a release publisher.
 
-1. Update the application version consistently in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
-2. Ensure the changes are merged into `main` and the required CI checks pass.
-3. Create and push a version tag matching the application version, for example `v0.1.0`.
-4. The tag-triggered GitHub Actions workflow builds the Windows NSIS installer and publishes a GitHub Release with the installer asset.
-5. Verify the release page contains the expected version and downloadable `.exe`.
+- Pull requests that touch the installer inputs build an unsigned NSIS installer and upload it as a temporary GitHub Actions artifact.
+- A manually dispatched `Windows Installer` workflow also builds an unsigned installer artifact for engineering validation.
+- A push of a `v*` tag is intentionally rejected at the start of the workflow. It does not build or publish a GitHub Release.
+- The workflow has read-only repository permissions and contains no GitHub Release publishing step.
 
-The current installer is **unsigned**. Windows SmartScreen may show an unknown-publisher warning. Code signing, automatic updates, and a fully tested in-place upgrade/migration path are not yet configured. Do not describe an installer as signed or an update as automatic until those capabilities are implemented and verified.
+**Do not create a version tag expecting a downloadable release.** The tagged-release path remains blocked until a production signing and release pipeline is implemented and verified.
+
+Before enabling public releases, the project still needs all of the following:
+
+1. A real, CA-issued code-signing PFX and protected password supplied through an approved secret store.
+2. A protected publisher certificate SHA-256 pin, with certificate-chain, revocation, EKU, Key Usage, validity, and private-key checks.
+3. A signing workflow that signs the Core Service, desktop executable, and final NSIS installer, then verifies every signature against the protected publisher pin.
+4. Trusted timestamping and a release process that publishes only after all signature checks and required CI jobs pass.
+5. Clean-machine install, upgrade, rollback, uninstall, and recovery validation for the resulting signed installer.
+
+Until those prerequisites are complete, use pull-request or manually dispatched installer artifacts only for controlled engineering tests. They are unsigned, temporary artifacts—not supported public releases or production distribution candidates. Do not distribute them as trusted installers.
 
 ## Security and deployment cautions
 
