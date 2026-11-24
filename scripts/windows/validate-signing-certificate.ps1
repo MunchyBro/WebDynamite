@@ -12,6 +12,26 @@ function Normalize-Sha256Thumbprint {
     return $normalized
 }
 
+function Assert-PfxBundleSize {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
+    if ($Bytes.Length -eq 0 -or $Bytes.Length -gt 10485760) {
+        throw "The signing certificate bundle must be between 1 byte and 10 MiB."
+    }
+}
+
+function ConvertFrom-Base64PfxBundle {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+    try { $bytes = [Convert]::FromBase64String($Value) }
+    catch { throw "The signing certificate secret is not valid base64." }
+    try {
+        Assert-PfxBundleSize -Bytes $bytes
+        return ,$bytes
+    } catch {
+        [Array]::Clear($bytes, 0, $bytes.Length)
+        throw
+    }
+}
+
 function Test-CertificatePrivateKey {
     param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
     if (-not $Certificate.HasPrivateKey) {
@@ -91,11 +111,7 @@ function Test-SigningCertificate {
         [Parameter(Mandatory)][string]$ExpectedSha256
     )
     $expected = Normalize-Sha256Thumbprint -Value $ExpectedSha256
-    try { $pfxBytes = [Convert]::FromBase64String($PfxBase64) }
-    catch { throw "The signing certificate secret is not valid base64." }
-    if ($pfxBytes.Length -eq 0 -or $pfxBytes.Length -gt 10485760) {
-        throw "The signing certificate bundle must be between 1 byte and 10 MiB."
-    }
+    $pfxBytes = ConvertFrom-Base64PfxBundle -Value $PfxBase64
 
     $certificate = $null
     try {
@@ -125,6 +141,21 @@ if ($SelfTest) {
         try { Normalize-Sha256Thumbprint -Value $invalid | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Invalid thumbprint self-test failed to reject input." }
     }
+    $rejected = $false
+    try { ConvertFrom-Base64PfxBundle -Value "not-base64!" | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw "Malformed base64 PFX input was accepted." }
+
+    $rejected = $false
+    try { ConvertFrom-Base64PfxBundle -Value "" | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw "An empty PFX bundle was accepted." }
+
+    $oversizedPfxBytes = [byte[]]::new(10485761)
+    try {
+        $rejected = $false
+        try { Assert-PfxBundleSize -Bytes $oversizedPfxBytes } catch { $rejected = $true }
+        if (-not $rejected) { throw "A PFX bundle larger than 10 MiB was accepted." }
+    } finally { [Array]::Clear($oversizedPfxBytes, 0, $oversizedPfxBytes.Length) }
+
     function New-KeyUsageTestCertificate {
         param(
             [switch]$IncludeKeyUsage,
@@ -269,7 +300,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw "Certificate without an EKU extension was accepted." }
     } finally { $ekuCertificate.Dispose() }
 
-    Write-Output "Publisher identity validation self-tests passed (pin normalization, matching and mismatch, private-key presence, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
+    Write-Output "Publisher identity validation self-tests passed (PFX base64 and size validation, pin normalization, matching and mismatch, private-key presence, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
     exit 0
 }
 
