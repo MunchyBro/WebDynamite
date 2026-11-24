@@ -20,7 +20,7 @@ function Assert-PfxBundleSize {
 }
 
 function ConvertFrom-Base64PfxBundle {
-    param([Parameter(Mandatory)][string]$Value)
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
     try { $bytes = [Convert]::FromBase64String($Value) }
     catch { throw "The signing certificate secret is not valid base64." }
     try {
