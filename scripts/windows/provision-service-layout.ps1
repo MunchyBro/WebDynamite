@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet("Prepare", "Verify", "SelfTest")][string]$Mode = "Verify")
+param([ValidateSet("Prepare", "Verify", "VerifyService", "SelfTest")][string]$Mode = "Verify")
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ServiceName = "WebDynamiteCore"
@@ -12,6 +12,25 @@ function Get-WebDynamiteServiceSid {
     if (-not (Test-ServiceSidShape $sid)) { throw "Windows did not resolve the expected virtual service SID." }
     return $sid
 }
+
+function Test-InstalledServiceIdentity {
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'"
+    if (-not $service) { throw "The WebDynamiteCore Windows service is not installed." }
+    $expectedAccount = "NT SERVICE\$ServiceName"
+    if (-not [string]::Equals([string]$service.StartName, $expectedAccount, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "WebDynamiteCore must run as $expectedAccount; refusing LocalSystem or another account."
+    }
+    $sidOutput = & sc.exe qsidtype $ServiceName 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not query the WebDynamiteCore service SID type: $sidOutput" }
+    $sidText = ($sidOutput | Out-String)
+    if ($sidText -notmatch '(?im)SERVICE_SID_TYPE:\s*UNRESTRICTED') {
+        throw "WebDynamiteCore must have an unrestricted service SID enabled. sc.exe output: $sidText"
+    }
+    $resolvedSid = Get-WebDynamiteServiceSid
+    if (-not (Test-ServiceSidShape $resolvedSid)) { throw "The installed service account did not resolve to a service SID." }
+    return [pscustomobject]@{ Name=$ServiceName; StartName=$service.StartName; ServiceSid=$resolvedSid; SidType="UNRESTRICTED"; State=$service.State }
+}
+
 function Get-ExpectedSddl([string]$ServiceSid) {
     if (-not (Test-ServiceSidShape $ServiceSid)) { throw "A valid WebDynamite service SID is required." }
     return "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;$ServiceSid)"
@@ -56,6 +75,12 @@ function Test-ProtectedDirectoryAcl([string]$Path, [string]$Sddl) {
         if ($matches.Count -ne 1) { return $false }
     }
     return $true
+}
+if ($Mode -eq "VerifyService") {
+    Assert-Administrator
+    $identity = Test-InstalledServiceIdentity
+    Write-Output ("WebDynamiteCore identity verified: {0}; SID {1}; SID type {2}; state {3}." -f $identity.StartName,$identity.ServiceSid,$identity.SidType,$identity.State)
+    exit 0
 }
 if ($Mode -eq "SelfTest") {
     if (-not (Test-ServiceSidShape "S-1-5-80-123-456-789-101112-131415")) { throw "Valid SID rejected." }
