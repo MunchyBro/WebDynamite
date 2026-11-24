@@ -77,6 +77,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id", get(get_website).delete(delete_website))
         .route("/api/v1/runtime-profiles", get(list_runtime_profiles).put(save_runtime_profile))
         .route("/api/v1/runtime-profiles/:website_id", axum::routing::delete(delete_runtime_profile))
+        .route("/api/v1/websites/:id/runtime-preflight", get(runtime_preflight))
         .route("/api/v1/websites/:id/start", axum::routing::post(start_website))
         .route("/api/v1/websites/:id/stop", axum::routing::post(stop_website))
         .route("/api/v1/websites/:id/restart", axum::routing::post(restart_website))
@@ -1408,6 +1409,58 @@ fn project_details(state:&AppState,id:&str)->Result<(String,String),ApiError>{
     let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
     db.query_row("SELECT project_path,runtime FROM websites WHERE id=?1",params![id],|r|Ok((r.get(0)?,r.get(1)?)))
       .map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into())}else{database_error(e)})
+}
+fn executable_available(program:&str)->bool{
+    let candidate=FsPath::new(program);
+    if candidate.components().count()>1 || candidate.is_absolute(){return candidate.is_file();}
+    let Some(paths)=std::env::var_os("PATH") else{return false;};
+    #[cfg(windows)]
+    let extensions=std::env::var_os("PATHEXT").unwrap_or_else(||".COM;.EXE;.BAT;.CMD".into()).to_string_lossy().split(';').map(str::to_string).collect::<Vec<_>>();
+    #[cfg(not(windows))]
+    let extensions=vec![String::new()];
+    std::env::split_paths(&paths).any(|directory|{
+        if candidate.extension().is_some(){return directory.join(program).is_file();}
+        extensions.iter().any(|extension|{
+            let name=if extension.is_empty(){program.to_string()}else{format!("{program}{extension}")};
+            directory.join(name).is_file()
+        })
+    })
+}
+async fn runtime_preflight(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
+    let (project,runtime)=project_details(&state,&id)?;
+    let root=FsPath::new(&project);
+    let project_exists=root.is_dir();
+    let mut checks=vec![json!({"name":"project_directory","ok":project_exists,"message":if project_exists{"Project directory is available."}else{"Project directory is missing or unavailable."}})];
+    let profile:Option<String>={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row("SELECT program FROM runtime_profiles WHERE website_id=?1",[&id],|row|row.get(0)).optional().map_err(database_error)?
+    };
+    if runtime=="static"{
+        let index=project_exists&&root.join("index.html").is_file();
+        checks.push(json!({"name":"index_html","ok":index,"message":if index{"index.html is present."}else{"Static sites need an index.html file in the project root."}}));
+    }else if let Some(program)=profile{
+        let available=executable_available(&program);
+        checks.push(json!({"name":"custom_launch_executable","ok":available,"message":if available{"Custom launch executable is available."}else{"Custom launch executable was not found. Check its path or PATH."}}));
+    }else{
+        let (program,description)=match runtime.as_str(){
+            "node"=>("npm","Node.js projects use npm run start by default."),
+            "php"=>("php","PHP projects use the configured PHP executable."),
+            "python"=>("python","Python projects use the configured Python executable."),
+            _=>("", "This runtime adapter is not implemented."),
+        };
+        if program.is_empty(){checks.push(json!({"name":"runtime_adapter","ok":false,"message":description}));}
+        else{
+            let executable=if runtime=="php"{crate::settings::setting_string(&state,"php_executable","php")}else if runtime=="python"{crate::settings::setting_string(&state,"python_executable","python")}else{program.to_string()};
+            let available=executable_available(&executable);
+            checks.push(json!({"name":"runtime_executable","ok":available,"executable":executable,"message":if available{format!("{description} Executable is available.")}else{format!("{description} Executable {executable} was not found.")}}));
+            if runtime=="node"{
+                let manifest=project_exists&&root.join("package.json").is_file();
+                checks.push(json!({"name":"package_json","ok":manifest,"message":if manifest{"package.json is present."}else{"Node.js project has no package.json in its root."}}));
+            }
+        }
+    }
+    let ready=checks.iter().all(|check|check["ok"].as_bool()==Some(true));
+    Ok(Json(json!({"website_id":id,"runtime":runtime,"project_path":project,"ready":ready,"checks":checks,"note":"Preflight checks local prerequisites only; it does not install dependencies or guarantee that the application will become healthy."})))
 }
 fn allocate_port(state:&AppState,id:&str)->Result<u16,ApiError>{    for _ in 0..32 {
         let listener=TcpListener::bind(("127.0.0.1",0)).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"port_allocation_failed",e.to_string()))?;
