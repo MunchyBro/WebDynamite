@@ -1572,7 +1572,7 @@ fn http_status_is_healthy(status: u16) -> bool {
 }
 
 fn valid_health_path(value:&str)->bool {
-    value.starts_with('/') && value.len()<=256 && !value.chars().any(|c| matches!(c, '?' | '#' | ' ' | '\\' | '\r' | '\n' | '\t') || c.is_control())
+    value.starts_with('/') && !value.starts_with("//") && value.len()<=256 && !value.chars().any(|c| matches!(c, '?' | '#' | ' ' | '\\' | '\r' | '\n' | '\t') || c.is_control())
 }
 
 fn http_readiness_probe(port: u16, path:&str) -> bool {
