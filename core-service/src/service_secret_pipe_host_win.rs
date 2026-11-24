@@ -59,4 +59,4 @@ pub fn run_authenticated_secret_pipe_service(
         },
     )
 }
-\n
+
