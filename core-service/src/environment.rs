@@ -18,7 +18,9 @@ fn valid_name(v:&str)->bool{let b=v.as_bytes();!b.is_empty()&&b.len()<=128&&(b[0
 #[derive(Deserialize)] struct SaveEnvironmentVariable{name:String,value:String,is_secret:bool}
 #[derive(Deserialize)] struct SaveEnvironmentBatch{variables:Vec<SaveEnvironmentVariable>}
 fn validate_variable(input:&SaveEnvironmentVariable)->Result<(),EnvironmentError>{
- validate_variable(&input)?;
+ if !valid_name(&input.name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Use uppercase A-Z, digits and underscores; PORT, HOST and service credentials are reserved.".into()));}
+ if input.value.len()>8192||input.value.contains('\0'){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_value","Values must be at most 8192 bytes and cannot contain NUL.".into()));}
+ if input.is_secret&&input.value.is_empty(){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"empty_secret","Secret values cannot be empty.".into()));}
  Ok(())
 }
 fn validate_batch(variables:&[SaveEnvironmentVariable])->Result<(),EnvironmentError>{
@@ -47,9 +49,7 @@ async fn list(State(s):State<AppState>,Path(id):Path<String>)->Result<Json<Vec<E
  Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(db_error)?))
 }
 async fn save(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<SaveEnvironmentVariable>)->Result<Json<EnvironmentVariable>,EnvironmentError>{
- if !valid_name(&input.name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Use uppercase A-Z, digits and underscores; PORT, HOST and service credentials are reserved.".into()));}
- if input.value.len()>8192||input.value.contains('\0'){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_value","Values must be at most 8192 bytes and cannot contain NUL.".into()));}
- if input.is_secret&&input.value.is_empty(){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"empty_secret","Secret values cannot be empty.".into()));}
+ validate_variable(&input)?;
  {let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|r|r.get(0)).map_err(db_error)?;if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}}
  let entry=credential_entry(&id,&input.name)?;
  if input.is_secret{entry.set_password(&input.value).map_err(|e|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"credential_save_failed",format!("Could not protect secret in Windows Credential Manager: {e}")))?;}
