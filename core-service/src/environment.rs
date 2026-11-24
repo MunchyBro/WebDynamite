@@ -130,7 +130,13 @@ async fn remove_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input)
   snapshots.push((name.clone(),previous));
  }
  for name in &input.names{
-  let entry=credential_entry(&id,name)?;
+  let entry=match credential_entry(&id,name){
+   Ok(entry)=>entry,
+   Err(error)=>{
+    let restored=restore_credentials(&id,&snapshots);
+    return Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Credential rollback was incomplete; review this website's environment secrets.",error.2)}));
+   }
+  };
   if let Err(error)=entry.delete_credential(){
    if !matches!(error,keyring::Error::NoEntry){
     let restored=restore_credentials(&id,&snapshots);
