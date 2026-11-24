@@ -151,12 +151,12 @@ async fn create_website(token:String,name:String,project_path:String,runtime:Str
  authorized_request(&token,reqwest::Method::POST,"/api/v1/websites",Some(body)).await?.json().await.map_err(|e|api_error("Could not read created website",e))
 }
 #[tauri::command]
-#[tauri::command]
 async fn runtime_preflight(token:String,id:String)->Result<Value,String>{
  let path=format!("/api/v1/websites/{id}/runtime-preflight");
  authorized_request(&token,reqwest::Method::GET,&path,None).await?.json().await.map_err(|e|api_error("Could not check website runtime prerequisites",e))
 }
 
+#[tauri::command]
 async fn website_action(token:String,id:String,action:String)->Result<Value,String>{
  if !["start","stop","restart"].contains(&action.as_str()){return Err("Unsupported website action.".into());}
  let path=format!("/api/v1/websites/{id}/{action}");
