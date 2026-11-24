@@ -74,9 +74,12 @@ closed when Windows cannot establish trust or verify revocation; it is not
 silently skipped when offline. The script does not write the certificate or
 private key to disk. Its -SelfTest mode checks strict pin parsing and positive,
 negative, and missing Key Usage cases without requiring a real certificate.
-The self-test does not replace an integration check with a real CA-issued PFX;
-that full certificate-chain check runs only when the protected signing inputs
-are supplied to the non-self-test invocation.
+The self-test also creates ephemeral certificates to verify that the Code
+Signing EKU is accepted, a different EKU is rejected, and a missing EKU is
+rejected. It similarly checks positive, negative, and missing Key Usage cases.
+These deterministic tests do not replace an integration check with a real
+CA-issued PFX; the full certificate-chain and online-revocation check runs only
+when protected signing inputs are supplied to the non-self-test invocation.
 
 ## CI secret names for the later signing-pipeline phase
 
