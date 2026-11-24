@@ -96,7 +96,10 @@ if ($SelfTest) {
         if (-not $rejected) { throw "Invalid thumbprint self-test failed to reject input." }
     }
     function New-KeyUsageTestCertificate {
-        param([Nullable[System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]]$KeyUsage)
+        param(
+            [switch]$IncludeKeyUsage,
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]$KeyUsage = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::None
+        )
         $key = [System.Security.Cryptography.RSA]::Create(2048)
         try {
             $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
@@ -105,9 +108,9 @@ if ($SelfTest) {
                 [System.Security.Cryptography.HashAlgorithmName]::SHA256,
                 [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
             )
-            if ($null -ne $KeyUsage) {
+            if ($IncludeKeyUsage) {
                 $request.CertificateExtensions.Add(
-                    [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($KeyUsage.Value, $true)
+                    [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($KeyUsage, $true)
                 )
             }
             return $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddDays(1))
@@ -117,12 +120,12 @@ if ($SelfTest) {
     }
 
     $digitalSignature = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature
-    $usageCertificate = New-KeyUsageTestCertificate -KeyUsage $digitalSignature
+    $usageCertificate = New-KeyUsageTestCertificate -IncludeKeyUsage -KeyUsage $digitalSignature
     try { Test-CodeSigningKeyUsage -Certificate $usageCertificate }
     finally { $usageCertificate.Dispose() }
 
     $encipherment = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment
-    $usageCertificate = New-KeyUsageTestCertificate -KeyUsage $encipherment
+    $usageCertificate = New-KeyUsageTestCertificate -IncludeKeyUsage -KeyUsage $encipherment
     try {
         $rejected = $false
         try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
