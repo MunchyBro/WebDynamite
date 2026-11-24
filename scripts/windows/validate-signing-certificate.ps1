@@ -132,7 +132,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw "Key-encipherment-only certificate was accepted." }
     } finally { $usageCertificate.Dispose() }
 
-    $usageCertificate = New-KeyUsageTestCertificate -KeyUsage $null
+    $usageCertificate = New-KeyUsageTestCertificate
     try {
         $rejected = $false
         try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
