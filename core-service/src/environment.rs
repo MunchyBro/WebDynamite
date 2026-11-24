@@ -2,6 +2,7 @@ use axum::{extract::{Path, State}, routing::get, Json, Router, http::StatusCode}
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use crate::AppState;
 #[derive(Debug)]
 struct EnvironmentError(StatusCode, &'static str, String);
@@ -15,7 +16,28 @@ fn credential_entry(id:&str,name:&str)->Result<keyring::Entry,EnvironmentError>{
 fn valid_name(v:&str)->bool{let b=v.as_bytes();!b.is_empty()&&b.len()<=128&&(b[0].is_ascii_uppercase()||b[0]==b'_')&&b.iter().all(|x|x.is_ascii_uppercase()||x.is_ascii_digit()||*x==b'_')&&!matches!(v,"PORT"|"HOST"|"WEBDYNAMITE_API_TOKEN")}
 #[derive(Serialize)] struct EnvironmentVariable{name:String,value:Option<String>,is_secret:bool}
 #[derive(Deserialize)] struct SaveEnvironmentVariable{name:String,value:String,is_secret:bool}
-pub fn router()->Router<AppState>{Router::new().route("/api/v1/websites/:id/environment",get(list).put(save)).route("/api/v1/websites/:id/environment/:name",axum::routing::delete(remove))}
+#[derive(Deserialize)] struct SaveEnvironmentBatch{variables:Vec<SaveEnvironmentVariable>}
+fn validate_variable(input:&SaveEnvironmentVariable)->Result<(),EnvironmentError>{
+ validate_variable(&input)?;
+ Ok(())
+}
+fn validate_batch(variables:&[SaveEnvironmentVariable])->Result<(),EnvironmentError>{
+ if variables.is_empty()||variables.len()>64{return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_batch","A batch must contain between 1 and 64 variables.".into()));}
+ let mut names=HashSet::with_capacity(variables.len());
+ for variable in variables{validate_variable(variable)?;if !names.insert(variable.name.as_str()){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"duplicate_environment_name","A batch cannot contain the same variable name more than once.".into()));}}
+ Ok(())
+}
+fn restore_credentials(id:&str,snapshots:&[(String,Option<String>)])->bool{
+ let mut restored=true;
+ for(name,previous)in snapshots.iter().rev(){
+  match credential_entry(id,name){
+   Ok(entry)=>if let Some(value)=previous{if entry.set_password(value).is_err(){restored=false;}}else{let _=entry.delete_credential();},
+   Err(_)=>restored=false,
+  }
+ }
+ restored
+}
+pub fn router()->Router<AppState>{Router::new().route("/api/v1/websites/:id/environment",get(list).put(save)).route("/api/v1/websites/:id/environment/batch",axum::routing::put(save_batch)).route("/api/v1/websites/:id/environment/:name",axum::routing::delete(remove))}
 async fn list(State(s):State<AppState>,Path(id):Path<String>)->Result<Json<Vec<EnvironmentVariable>>,EnvironmentError>{
  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|r|r.get(0)).map_err(db_error)?;
@@ -36,6 +58,42 @@ async fn save(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<Sa
  if !input.is_secret{let _=entry.delete_credential();}
  Ok(Json(EnvironmentVariable{name:input.name,value:if input.is_secret{None}else{Some(input.value)},is_secret:input.is_secret}))
 }
+async fn save_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<SaveEnvironmentBatch>)->Result<Json<Vec<EnvironmentVariable>>,EnvironmentError>{
+ validate_batch(&input.variables)?;
+ {let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|r|r.get(0)).map_err(db_error)?;if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}}
+ // Stage protected values first and remember the previous credential contents so a
+ // failed batch can compensate without leaving the old registry and secrets mismatched.
+ let mut snapshots:Vec<(String,Option<String>)>=Vec::new();
+ for variable in input.variables.iter().filter(|v|v.is_secret){
+  let entry=match credential_entry(&id,&variable.name){Ok(entry)=>entry,Err(error)=>{
+   let restored=restore_credentials(&id,&snapshots);
+   return Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Credential rollback was incomplete; review this website's environment secrets.",error.2)}));
+  }};
+  let previous=entry.get_password().ok();
+  snapshots.push((variable.name.clone(),previous));
+  if let Err(error)=entry.set_password(&variable.value){
+   let restored=restore_credentials(&id,&snapshots);
+   let message=format!("Could not protect secret in Windows Credential Manager: {error}");
+   return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"credential_save_failed",if restored{message}else{format!("{message} Credential rollback was incomplete; review this website's environment secrets.")}));
+  }
+ }
+ let database_result:Result<(),EnvironmentError>=(||{
+  let mut db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let tx=db.transaction().map_err(db_error)?;
+  for variable in &input.variables{
+   tx.execute("INSERT INTO website_environment(website_id,name,value,is_secret,updated_at) VALUES(?1,?2,?3,?4,CURRENT_TIMESTAMP) ON CONFLICT(website_id,name) DO UPDATE SET value=excluded.value,is_secret=excluded.is_secret,updated_at=CURRENT_TIMESTAMP",params![id,variable.name,if variable.is_secret{String::new()}else{variable.value.clone()},if variable.is_secret{1}else{0}]).map_err(db_error)?;
+  }
+  tx.commit().map_err(db_error)
+ })();
+ if let Err(error)=database_result{
+  let restored=restore_credentials(&id,&snapshots);
+  return Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Credential rollback was incomplete; review this website's environment secrets.",error.2)}));
+ }
+ // Non-secret replacements no longer need a credential entry after the DB commit.
+ for variable in input.variables.iter().filter(|v|!v.is_secret){if let Ok(entry)=credential_entry(&id,&variable.name){let _=entry.delete_credential();}}
+ Ok(Json(input.variables.into_iter().map(|variable|EnvironmentVariable{name:variable.name,value:if variable.is_secret{None}else{Some(variable.value)},is_secret:variable.is_secret}).collect()))
+}
+
 async fn remove(State(s):State<AppState>,Path((id,name)):Path<(String,String)>)->Result<StatusCode,EnvironmentError>{
  if !valid_name(&name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Environment variable name is invalid.".into()));}
  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
