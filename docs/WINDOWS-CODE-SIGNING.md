@@ -11,6 +11,28 @@ This phase adds certificate preflight validation. It does **not** sign binaries,
 make an unsigned installer trusted, or enable Windows Service mode. The release
 workflow remains unsigned until the signing pipeline is implemented and tested.
 
+## Current release safety gate
+
+**Tagged Windows releases are deliberately blocked.** The Windows Installer
+workflow fails immediately for a `v*` tag because it cannot yet prove that the
+desktop executable, Core Service, and final NSIS installer are signed by the
+trusted production publisher. Pull-request and manual builds remain available
+for engineering validation, but their installer artifacts are not production
+release candidates.
+
+Do not bypass this gate or distribute an unsigned artifact. Re-enable release
+publication only in a reviewed change that:
+1. Retrieves the production PFX and password from protected GitHub Actions
+   secrets in a protected release environment.
+2. Signs the desktop executable and Core Service before packaging.
+3. Signs the final NSIS installer and applies a trusted timestamp.
+4. Verifies every signature with Windows Authenticode and checks the exact
+   publisher certificate DER SHA-256 pin.
+5. Publishes only after all verification steps succeed.
+
+The workflow has read-only repository permissions because it no longer
+publishes GitHub Releases. The PFX must never be exposed to pull-request builds.
+
 ## Required publisher identity
 
 Obtain a Windows code-signing certificate from a certificate authority trusted
