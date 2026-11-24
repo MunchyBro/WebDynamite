@@ -105,6 +105,10 @@ if ($SelfTest) {
         $rejected = $false
         try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
         if (-not $rejected) { throw "Key-encipherment-only certificate was accepted." }
+        $usageCertificate.Extensions.Clear()
+        $rejected = $false
+        try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
+        if (-not $rejected) { throw "Certificate without a Key Usage extension was accepted." }
     } finally { $usageCertificate.Dispose() }
 \n    Write-Output "Publisher identity validation self-tests passed (pin and Digital Signature key usage).
     exit 0
