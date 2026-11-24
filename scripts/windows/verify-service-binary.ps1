@@ -31,9 +31,12 @@ function Get-ServiceExecutablePath {
             throw "The registered service image path does not identify an executable."
         }
         $candidate = $Matches.path
+        if ($candidate.Contains(' ')) {
+            throw "The registered service executable path contains spaces and must be quoted."
+        }
     }
 
-    if (-not [IO.Path]::IsPathRooted($candidate) -or [IO.Path]::GetExtension($candidate) -ne ".exe") {
+    if (-not [IO.Path]::IsPathRooted($candidate) -or -not [string]::Equals([IO.Path]::GetExtension($candidate), ".exe", [StringComparison]::OrdinalIgnoreCase)) {
         throw "The registered service executable path must be an absolute .exe path."
     }
     return [IO.Path]::GetFullPath($candidate)
@@ -111,7 +114,7 @@ if ($SelfTest) {
     if ($quoted -ne "C:\Program Files\WebDynamite\webdynamite-core.exe") { throw "Quoted service image path parsing failed." }
     $plain = Get-ServiceExecutablePath -ImagePath 'C:\WebDynamite\webdynamite-core.exe --service'
     if ($plain -ne 'C:\WebDynamite\webdynamite-core.exe') { throw "Unquoted service image path parsing failed." }
-    foreach ($invalidPath in @("webdynamite-core.exe", '"C:\bad path\missing quote.exe', "C:\folder\service.cmd")) {
+    foreach ($invalidPath in @("webdynamite-core.exe", '"C:\bad path\missing quote.exe', "C:\folder\service.cmd", "C:\Program Files\WebDynamite\webdynamite-core.exe --service")) {
         $rejected = $false
         try { Get-ServiceExecutablePath -ImagePath $invalidPath | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Invalid service image path was accepted: $invalidPath" }
