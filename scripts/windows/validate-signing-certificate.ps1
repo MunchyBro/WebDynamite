@@ -95,7 +95,18 @@ if ($SelfTest) {
         try { Normalize-Sha256Thumbprint -Value $invalid | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Invalid thumbprint self-test failed to reject input." }
     }
-    Write-Output "Publisher identity validation self-tests passed."
+    $usageCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new()
+    try {
+        $digitalSignature = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature
+        $usageCertificate.Extensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($digitalSignature, $true))
+        Test-CodeSigningKeyUsage -Certificate $usageCertificate
+        $usageCertificate.Extensions.Clear()
+        $usageCertificate.Extensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new([System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment, $true))
+        $rejected = $false
+        try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
+        if (-not $rejected) { throw "Key-encipherment-only certificate was accepted." }
+    } finally { $usageCertificate.Dispose() }
+\n    Write-Output "Publisher identity validation self-tests passed (pin and Digital Signature key usage).
     exit 0
 }
 
