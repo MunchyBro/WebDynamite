@@ -1572,7 +1572,7 @@ fn http_status_is_healthy(status: u16) -> bool {
 }
 
 fn valid_health_path(value:&str)->bool {
-    value.starts_with('/') && value.len()<=256 && !value.contains(['?','#',' ','\\','\r','\n','\t']) && !value.chars().any(char::is_control)
+    value.starts_with('/') && value.len()<=256 && !value.chars().any(|c| matches!(c, '?' | '#' | ' ' | '\\' | '\r' | '\n' | '\t') || c.is_control())
 }
 
 fn http_readiness_probe(port: u16, path:&str) -> bool {
@@ -1991,4 +1991,30 @@ pub(crate) async fn restart_after_crash(state: AppState, id: String) -> bool {
     let still_crashed=state.db.lock().ok().and_then(|db|db.query_row("SELECT status FROM websites WHERE id=?1",[&id],|row|row.get::<_,String>(0)).ok()).is_some_and(|status|status=="error");
     if !still_crashed{return false;}
     start_website_inner(state,id).await.is_ok()
+}
+
+#[cfg(test)]
+mod configurable_health_path_tests {
+    use super::valid_health_path;
+
+    #[test]
+    fn accepts_root_and_nested_health_paths() {
+        assert!(valid_health_path("/"));
+        assert!(valid_health_path("/health"));
+        assert!(valid_health_path("/api/ready"));
+        assert!(valid_health_path("/status/live"));
+    }
+
+    #[test]
+    fn rejects_invalid_or_ambiguous_health_paths() {
+        assert!(!valid_health_path(""));
+        assert!(!valid_health_path("health"));
+        assert!(!valid_health_path("//example.com/health"));
+        assert!(!valid_health_path("/health?full=1"));
+        assert!(!valid_health_path("/health#ready"));
+        assert!(!valid_health_path("/health check"));
+        assert!(!valid_health_path("/health\\\\bad"));
+        assert!(!valid_health_path("/health\\r\\nInjected: yes"));
+        assert!(!valid_health_path(&format!("/{}", "a".repeat(256))));
+    }
 }
