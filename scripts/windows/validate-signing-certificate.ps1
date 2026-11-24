@@ -110,7 +110,7 @@ if ($SelfTest) {
         try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
         if (-not $rejected) { throw "Certificate without a Key Usage extension was accepted." }
     } finally { $usageCertificate.Dispose() }
-\n    Write-Output "Publisher identity validation self-tests passed (pin and Digital Signature key usage).
+    Write-Output "Publisher identity validation self-tests passed (pin, Digital Signature, and missing-Key-Usage cases)."
     exit 0
 }
 
