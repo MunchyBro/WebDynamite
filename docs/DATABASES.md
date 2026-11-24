@@ -159,3 +159,10 @@ Use **Connect website** beside a managed SQLite database, choose a registered we
 The generated value uses the SQLAlchemy-style `sqlite:///absolute/path` URL form (on Windows, for example, `sqlite:///C:/ProgramData/WebDynamite/...sqlite3`). This is not a universal SQLite URL convention: some frameworks and ORMs, including tools that expect a project-relative `file:./...` URL, require a different format. For those applications, use the Environment Variables editor to set the exact variable and value expected by the framework instead.
 
 The website process must run under a Windows account that can read and write the managed database file and its SQLite WAL/SHM sidecar files. WebDynamite does not copy the database into the project directory. Deleting the managed database removes its backing file and will break any website still using it; disconnect or update the website variable before deleting the database.
+
+
+## Disconnect a website database mapping
+
+Open **Websites**, choose the environment-variable key for the website, and select **Disconnect database**. The action removes the generated `DATABASE_URL` and conventional `DB_*` variables (`DB_CONNECTION`, `DB_DRIVER`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD`) as one batch. It removes only those named environment variables and their corresponding protected credentials; it does not delete the database, database profile, website files, or unrelated custom environment variables.
+
+The Core Service validates the full name list, snapshots the prior Credential Manager values, removes the selected credentials, and deletes the registry rows in one SQLite transaction. If the registry transaction fails, it attempts to restore the previous credentials and reports when that compensating rollback is incomplete. Windows Credential Manager and SQLite do not share a transaction, so this is a compensating operation rather than a cross-store atomic transaction. Restart the website after disconnecting for the changed environment to take effect. If you configured a custom database variable name, remove it separately in the environment editor.
