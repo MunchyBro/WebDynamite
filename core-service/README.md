@@ -26,7 +26,9 @@ The Windows desktop app generates a random API token on first launch and stores 
 
 ## Desktop lifecycle and packaging
 
-The Tauri desktop app starts the bundled webdynamite-core.exe automatically, waits up to 12 seconds for its loopback listener, and stops the child process when the desktop app exits. The API token is generated once and protected by Windows Credential Manager; the renderer retrieves it through a Tauri command and connects automatically. If port 47821 is already occupied, startup fails clearly instead of silently connecting to an unrelated process.
+The Tauri desktop app starts the bundled `webdynamite-core.exe` when no authenticated instance is already listening, waits up to 12 seconds for its loopback listener, and then detaches from the child process. Closing the desktop window does **not** stop the Core Service; a later desktop launch reuses the existing process only after authenticating with the stored API token. If port 47821 is occupied by a process that cannot authenticate as this installation, startup fails rather than silently connecting to it.
+
+This is still an interactive-session process, **not** a Windows Service Control Manager (SCM) service. It does not provide machine-startup execution before sign-in or SCM crash/reboot recovery. The SCM dispatcher, lifecycle controller, trusted configuration loader, and named-pipe authentication code in this repository are security/integration primitives; they are not connected to the production Core Service startup path. Do not register or activate SCM mode until protected machine credential migration, service runtime composition, signed-binary provisioning, transactional installer lifecycle, and Windows install/upgrade/recovery tests are complete.
 
 The Windows bundle includes the Core Service as an application resource. Build it before launching the desktop app in development:
 
@@ -35,7 +37,7 @@ cargo build --release --manifest-path core-service/Cargo.toml
 npm run tauri dev
 ```
 
-The CI workflow builds this executable before checking the Tauri backend. The installer workflow and signed production release process are separate follow-up work.
+The CI workflow builds this executable before checking the Tauri backend. The installer workflow currently produces unsigned engineering artifacts only. Tagged releases are deliberately blocked until the production signing and release gates documented in [Windows code signing](../docs/WINDOWS-CODE-SIGNING.md) are complete.
 
 ## Monitoring
 
