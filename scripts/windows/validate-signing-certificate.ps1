@@ -95,18 +95,50 @@ if ($SelfTest) {
         try { Normalize-Sha256Thumbprint -Value $invalid | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw "Invalid thumbprint self-test failed to reject input." }
     }
-    $usageCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new()
+    function New-KeyUsageTestCertificate {
+        param(
+            [switch]$IncludeKeyUsage,
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]$KeyUsage = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::None
+        )
+        $key = [System.Security.Cryptography.RSA]::Create(2048)
+        try {
+            $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                "CN=WebDynamite Signing Preflight Self-Test",
+                $key,
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+            )
+            if ($IncludeKeyUsage) {
+                $request.CertificateExtensions.Add(
+                    [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($KeyUsage, $true)
+                )
+            }
+            return $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddDays(1))
+        } finally {
+            $key.Dispose()
+        }
+    }
+
+    $digitalSignature = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature
+    $usageCertificate = New-KeyUsageTestCertificate -IncludeKeyUsage -KeyUsage $digitalSignature
+    try { Test-CodeSigningKeyUsage -Certificate $usageCertificate }
+    finally { $usageCertificate.Dispose() }
+
+    $encipherment = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment
+    $usageCertificate = New-KeyUsageTestCertificate -IncludeKeyUsage -KeyUsage $encipherment
     try {
-        $digitalSignature = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature
-        $usageCertificate.Extensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($digitalSignature, $true))
-        Test-CodeSigningKeyUsage -Certificate $usageCertificate
-        $usageCertificate.Extensions.Clear()
-        $usageCertificate.Extensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new([System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment, $true))
         $rejected = $false
         try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
         if (-not $rejected) { throw "Key-encipherment-only certificate was accepted." }
     } finally { $usageCertificate.Dispose() }
-\n    Write-Output "Publisher identity validation self-tests passed (pin and Digital Signature key usage).
+
+    $usageCertificate = New-KeyUsageTestCertificate
+    try {
+        $rejected = $false
+        try { Test-CodeSigningKeyUsage -Certificate $usageCertificate } catch { $rejected = $true }
+        if (-not $rejected) { throw "Certificate without a Key Usage extension was accepted." }
+    } finally { $usageCertificate.Dispose() }
+    Write-Output "Publisher identity validation self-tests passed (pin, Digital Signature, and missing-Key-Usage cases)."
     exit 0
 }
 

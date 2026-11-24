@@ -67,9 +67,16 @@ Run the repository script from PowerShell:
     ./scripts/windows/validate-signing-certificate.ps1
 
 The script loads the PFX using an ephemeral key-storage context, checks the
-private key, validity interval, Code Signing EKU, and expected SHA-256 pin. It
-does not write the certificate or private key to disk. Its -SelfTest mode
-checks strict pin parsing without requiring a real certificate.
+private key, validity interval, explicit Code Signing EKU, explicit Digital
+Signature Key Usage, a trusted Windows Code Signing chain with online
+revocation checking, and the expected SHA-256 pin. Chain construction fails
+closed when Windows cannot establish trust or verify revocation; it is not
+silently skipped when offline. The script does not write the certificate or
+private key to disk. Its -SelfTest mode checks strict pin parsing and positive,
+negative, and missing Key Usage cases without requiring a real certificate.
+The self-test does not replace an integration check with a real CA-issued PFX;
+that full certificate-chain check runs only when the protected signing inputs
+are supplied to the non-self-test invocation.
 
 ## CI secret names for the later signing-pipeline phase
 
