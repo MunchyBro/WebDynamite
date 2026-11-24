@@ -198,6 +198,13 @@ if ($SelfTest) {
         $expectedPin = Get-CertificateSha256Pin -Certificate $pinTestCertificate
         $actualPin = Test-CertificatePublisherPin -Certificate $pinTestCertificate -ExpectedSha256 $expectedPin
         if ($actualPin -ne $expectedPin) { throw "Matching publisher pin was not returned." }
+        $formattedPin = ($expectedPin.ToUpperInvariant().ToCharArray() | ForEach-Object -Begin { $index = 0 } -Process {
+            if ($index -gt 0 -and ($index % 2) -eq 0) { ":" }
+            $index++
+            [string]$_
+        }) -join ""
+        $formattedResult = Test-CertificatePublisherPin -Certificate $pinTestCertificate -ExpectedSha256 (" " + $formattedPin + "`t")
+        if ($formattedResult -ne $expectedPin) { throw "Uppercase, colon-separated publisher pin was not normalized." }
         $wrongPin = if ($expectedPin[0] -eq "0") { "1" + $expectedPin.Substring(1) } else { "0" + $expectedPin.Substring(1) }
         $rejected = $false
         try { Test-CertificatePublisherPin -Certificate $pinTestCertificate -ExpectedSha256 $wrongPin | Out-Null } catch { $rejected = $true }
@@ -262,7 +269,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw "Certificate without an EKU extension was accepted." }
     } finally { $ekuCertificate.Dispose() }
 
-    Write-Output "Publisher identity validation self-tests passed (pin matching and mismatch, private-key presence, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
+    Write-Output "Publisher identity validation self-tests passed (pin normalization, matching and mismatch, private-key presence, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
     exit 0
 }
 
