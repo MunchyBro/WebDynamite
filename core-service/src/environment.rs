@@ -31,7 +31,7 @@ fn restore_credentials(id:&str,snapshots:&[(String,Option<String>)])->bool{
  let mut restored=true;
  for(name,previous)in snapshots.iter().rev(){
   match credential_entry(id,name){
-   Ok(entry)=>if let Some(value)=previous{if entry.set_password(value).is_err(){restored=false;}}else{let _=entry.delete_credential();},
+   Ok(entry)=>if let Some(value)=previous{if entry.set_password(value).is_err(){restored=false;}}else{if let Err(error)=entry.delete_credential(){if !matches!(error,keyring::Error::NoEntry){restored=false;}}},
    Err(_)=>restored=false,
   }
  }
@@ -69,7 +69,15 @@ async fn save_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):J
    let restored=restore_credentials(&id,&snapshots);
    return Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Credential rollback was incomplete; review this website's environment secrets.",error.2)}));
   }};
-  let previous=entry.get_password().ok();
+  let previous=match entry.get_password(){
+   Ok(value)=>Some(value),
+   Err(keyring::Error::NoEntry)=>None,
+   Err(error)=>{
+    let restored=restore_credentials(&id,&snapshots);
+    let message=format!("Could not inspect the previous protected value in Windows Credential Manager: {error}");
+    return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"credential_read_failed",if restored{message}else{format!("{message} Credential rollback was incomplete; review this website's environment secrets.")}));
+   }
+  };
   snapshots.push((variable.name.clone(),previous));
   if let Err(error)=entry.set_password(&variable.value){
    let restored=restore_credentials(&id,&snapshots);
