@@ -13,7 +13,7 @@ function Normalize-Sha256Thumbprint {
 }
 
 function Assert-PfxBundleSize {
-    param([Parameter(Mandatory)][byte[]]$Bytes)
+    param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
     if ($Bytes.Length -eq 0 -or $Bytes.Length -gt 10485760) {
         throw "The signing certificate bundle must be between 1 byte and 10 MiB."
     }
