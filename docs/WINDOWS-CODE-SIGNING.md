@@ -75,8 +75,12 @@ closed when Windows cannot establish trust or verify revocation; it is not
 silently skipped when offline. The script does not write the certificate or
 private key to disk. Its -SelfTest mode checks strict pin parsing and positive,
 negative, and missing Key Usage cases without requiring a real certificate.
-The self-test also verifies strict 64-character hexadecimal pin parsing and
-normalization of uppercase, colon-separated pins with surrounding whitespace.
+The self-test also verifies PFX input handling: malformed base64 and empty
+bundles are rejected, and decoded bundles larger than 10 MiB are rejected.
+Decoded bundle bytes are cleared when size validation fails and after the
+certificate validation attempt. It also verifies strict 64-character hexadecimal
+pin parsing and normalization of uppercase, colon-separated pins with surrounding
+whitespace.
 It creates ephemeral certificates to verify that a certificate's matching DER
 SHA-256 publisher pin is accepted and a mismatched pin is rejected; a certificate with a private key is accepted and a public-only
 certificate is rejected. It verifies that currently valid validity dates are
