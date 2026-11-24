@@ -1536,25 +1536,27 @@ fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
     Ok(())
 }
 #[derive(Debug,Deserialize)]
-struct SaveRuntimeProfile { website_id:String, program:String, args:Vec<String> }
+struct SaveRuntimeProfile { website_id:String, program:String, args:Vec<String>, #[serde(default)] health_path:Option<String> }
 async fn list_runtime_profiles(State(state):State<AppState>)->Result<Json<Vec<serde_json::Value>>,ApiError>{
  let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
- let mut q=db.prepare("SELECT p.id,p.website_id,w.name,p.program,p.args_json,p.updated_at FROM runtime_profiles p JOIN websites w ON w.id=p.website_id ORDER BY w.name").map_err(database_error)?;
- let rows=q.query_map([],|r|{let raw:String=r.get(4)?;let args:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok(json!({"id":r.get::<_,String>(0)?,"website_id":r.get::<_,String>(1)?,"website_name":r.get::<_,String>(2)?,"program":r.get::<_,String>(3)?,"args":args,"updated_at":r.get::<_,String>(5)?}))}).map_err(database_error)?;
+ let mut q=db.prepare("SELECT p.id,p.website_id,w.name,p.program,p.args_json,p.updated_at,p.health_path FROM runtime_profiles p JOIN websites w ON w.id=p.website_id ORDER BY w.name").map_err(database_error)?;
+ let rows=q.query_map([],|r|{let raw:String=r.get(4)?;let args:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok(json!({"id":r.get::<_,String>(0)?,"website_id":r.get::<_,String>(1)?,"website_name":r.get::<_,String>(2)?,"program":r.get::<_,String>(3)?,"args":args,"updated_at":r.get::<_,String>(5)?,"health_path":r.get::<_,String>(6)?}))}).map_err(database_error)?;
  Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?))
 }
 async fn save_runtime_profile(State(state):State<AppState>,Json(input):Json<SaveRuntimeProfile>)->Result<Json<serde_json::Value>,ApiError>{
  let program=input.program.trim();
  if program.is_empty()||program.len()>512||program.contains('\0'){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_program","Executable must contain 1–512 valid characters.".into()));}
  if input.args.len()>64||input.args.iter().any(|a|a.len()>1024||a.contains('\0'))||input.args.iter().map(String::len).sum::<usize>()>8192{return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_arguments","Use at most 64 arguments, each up to 1,024 characters and 8 KiB total.".into()));}
+ let health_path=input.health_path.as_deref().unwrap_or("/").trim();
+ if !valid_health_path(health_path){return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_health_path","Health check path must start with /, be at most 256 characters, and contain no query, fragment, whitespace, or control characters.".into()));}
  let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let (runtime,status):(String,String)=db.query_row("SELECT runtime,status FROM websites WHERE id=?1",[&input.website_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|if matches!(e,rusqlite::Error::QueryReturnedNoRows){ApiError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into())}else{database_error(e)})?;
  if runtime=="static"{return Err(ApiError(StatusCode::BAD_REQUEST,"static_profile_unsupported","Static websites do not use a launch command.".into()));}
  if status!="stopped"{return Err(ApiError(StatusCode::CONFLICT,"website_must_be_stopped","Stop the website before changing its launch profile.".into()));}
  let id=Uuid::new_v4().to_string();let args_json=serde_json::to_string(&input.args).map_err(|e|ApiError(StatusCode::BAD_REQUEST,"invalid_arguments",e.to_string()))?;
- db.execute("INSERT INTO runtime_profiles(id,website_id,program,args_json) VALUES(?1,?2,?3,?4) ON CONFLICT(website_id) DO UPDATE SET program=excluded.program,args_json=excluded.args_json,updated_at=CURRENT_TIMESTAMP",params![id,input.website_id,program,args_json]).map_err(database_error)?;
+ db.execute("INSERT INTO runtime_profiles(id,website_id,program,args_json,health_path) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(website_id) DO UPDATE SET program=excluded.program,args_json=excluded.args_json,health_path=excluded.health_path,updated_at=CURRENT_TIMESTAMP",params![id,input.website_id,program,args_json,health_path]).map_err(database_error)?;
  let (profile_id,updated_at):(String,String)=db.query_row("SELECT id,updated_at FROM runtime_profiles WHERE website_id=?1",[&input.website_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(database_error)?;
- Ok(Json(json!({"id":profile_id,"website_id":input.website_id,"program":program,"args":input.args,"updated_at":updated_at,"saved":true})))
+ Ok(Json(json!({"id":profile_id,"website_id":input.website_id,"program":program,"args":input.args,"health_path":health_path,"updated_at":updated_at,"saved":true})))
 }
 async fn delete_runtime_profile(State(state):State<AppState>,Path(website_id):Path<String>)->Result<StatusCode,ApiError>{
  let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -1569,7 +1571,11 @@ fn http_status_is_healthy(status: u16) -> bool {
     (200..500).contains(&status)
 }
 
-fn http_readiness_probe(port: u16) -> bool {
+fn valid_health_path(value:&str)->bool {
+    value.starts_with('/') && !value.starts_with("//") && value.len()<=256 && !value.chars().any(|c| matches!(c, '?' | '#' | ' ' | '\\' | '\r' | '\n' | '\t') || c.is_control())
+}
+
+fn http_readiness_probe(port: u16, path:&str) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
         return false;
@@ -1577,7 +1583,8 @@ fn http_readiness_probe(port: u16) -> bool {
     let timeout = Some(Duration::from_millis(500));
     let _ = stream.set_read_timeout(timeout);
     let _ = stream.set_write_timeout(timeout);
-    if stream.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+    let request=format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
     let mut response = [0u8; 512];
@@ -1658,11 +1665,12 @@ async fn start_website_inner(state:AppState,id:String)->Result<Json<serde_json::
     let log_file=Arc::new(Mutex::new(File::create(&log_path).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"log_file_error",e.to_string()))?));
     let log_bytes=Arc::new(AtomicU64::new(0));
     let log_truncated=Arc::new(AtomicBool::new(false));
-    let custom_profile:Option<(String,Vec<String>)>={
+    let custom_profile:Option<(String,Vec<String>,String)>={
         let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-        db.query_row("SELECT program,args_json FROM runtime_profiles WHERE website_id=?1",[&id],|r|{let raw:String=r.get(1)?;let args:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok((r.get(0)?,args))}).optional().map_err(database_error)?
+        db.query_row("SELECT program,args_json,health_path FROM runtime_profiles WHERE website_id=?1",[&id],|r|{let raw:String=r.get(1)?;let args:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok((r.get(0)?,args,r.get(2)?))}).optional().map_err(database_error)?
     };
-    let mut command=if let Some((program,args))=custom_profile {
+    let health_path=custom_profile.as_ref().map(|profile|profile.2.as_str()).unwrap_or("/").to_string();
+    let mut command=if let Some((program,args,_health_path))=custom_profile {
         let mut c=Command::new(program);
         let expanded=args.into_iter().map(|arg|arg.replace("{project}",&project).replace("{port}",&port.to_string())).collect::<Vec<_>>();
         c.args(expanded);
@@ -1738,7 +1746,7 @@ async fn start_website_inner(state:AppState,id:String)->Result<Json<serde_json::
             }
             Ok(None) => {}
         }
-        if http_readiness_probe(port) {
+        if http_readiness_probe(port,&health_path) {
             ready=true;
             break;
         }
@@ -1983,4 +1991,30 @@ pub(crate) async fn restart_after_crash(state: AppState, id: String) -> bool {
     let still_crashed=state.db.lock().ok().and_then(|db|db.query_row("SELECT status FROM websites WHERE id=?1",[&id],|row|row.get::<_,String>(0)).ok()).is_some_and(|status|status=="error");
     if !still_crashed{return false;}
     start_website_inner(state,id).await.is_ok()
+}
+
+#[cfg(test)]
+mod configurable_health_path_tests {
+    use super::valid_health_path;
+
+    #[test]
+    fn accepts_root_and_nested_health_paths() {
+        assert!(valid_health_path("/"));
+        assert!(valid_health_path("/health"));
+        assert!(valid_health_path("/api/ready"));
+        assert!(valid_health_path("/status/live"));
+    }
+
+    #[test]
+    fn rejects_invalid_or_ambiguous_health_paths() {
+        assert!(!valid_health_path(""));
+        assert!(!valid_health_path("health"));
+        assert!(!valid_health_path("//example.com/health"));
+        assert!(!valid_health_path("/health?full=1"));
+        assert!(!valid_health_path("/health#ready"));
+        assert!(!valid_health_path("/health check"));
+        assert!(!valid_health_path("/health\\\\bad"));
+        assert!(!valid_health_path("/health\\r\\nInjected: yes"));
+        assert!(!valid_health_path(&format!("/{}", "a".repeat(256))));
+    }
 }

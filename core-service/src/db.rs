@@ -191,6 +191,11 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_tls_history_host_checked ON tls_certificate_history(hostname, checked_at DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (15);")?;
+    // Version 17 adds an optional HTTP readiness path to custom runtime profiles.
+    if !has_column(connection, "runtime_profiles", "health_path")? {
+        connection.execute_batch("ALTER TABLE runtime_profiles ADD COLUMN health_path TEXT NOT NULL DEFAULT '/';")?;
+    }
+    connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (17)", [])?;
     Ok(())
 }
 
@@ -204,11 +209,12 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
         assert!(has_column(&connection, "websites", "lan_port").unwrap());
+        assert!(has_column(&connection, "runtime_profiles", "health_path").unwrap());
         let domains: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='domains'", [], |row| row.get(0)).unwrap();
         assert_eq!(domains, 1);
         let profiles: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='build_profiles'", [], |row| row.get(0)).unwrap();

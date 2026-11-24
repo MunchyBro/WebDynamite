@@ -94,3 +94,8 @@ PHP and Python can be registered for forward compatibility but their start adapt
 ```powershell
 cargo test --manifest-path core-service/Cargo.toml
 ```
+
+
+## Runtime startup readiness checks
+
+Custom runtime profiles can configure a dedicated HTTP readiness path, such as `/health` or `/api/ready`. During startup, the Core Service sends a loopback HTTP GET request to that path and waits for a response before marking the website as running. The default remains `/` for existing profiles and clients. Paths must be absolute URL paths (beginning with `/`); query strings, fragments, whitespace, control characters, and backslashes are rejected. The check treats HTTP 2xx–4xx responses as evidence that the application is responding; HTTP 5xx responses and connection failures do not pass readiness.
