@@ -43,6 +43,8 @@ pub mod service_main_win;
 pub mod service_entry_win;
 #[cfg(windows)]
 pub mod service_identity_win;
+#[cfg(windows)]
+pub mod service_secret_pipe_host_win;
 
 use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, process::Child, sync::{Arc, Mutex}, time::Duration};
 use rusqlite::Connection;
