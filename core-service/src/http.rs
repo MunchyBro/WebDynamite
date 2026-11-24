@@ -1435,15 +1435,50 @@ pub(crate) async fn runtime_operation_guard(state:&AppState,id:&str)->Result<tok
     Ok(runtime_operation_lock(&state.runtime_operation_locks,id)?.lock_owned().await)
 }
 fn stop_process(state:&AppState,id:&str)->Result<(),ApiError>{
-    let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
-    if let Some(mut child)=map.remove(id){
-        if let Ok(mut times)=state.process_started_at.lock(){times.remove(id);}
-        let pid=child.id();
+    let mut child={
+        let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
+        map.remove(id)
+    };
+    if let Some(mut process)=child.take(){
+        let pid=process.id();
         #[cfg(windows)]
-        { let _=Command::new("taskkill").args(["/PID",&pid.to_string(),"/T","/F"]).output(); }
+        let termination_error={
+            match Command::new("taskkill").args(["/PID",&pid.to_string(),"/T","/F"]).output() {
+                Ok(output) if output.status.success() => None,
+                Ok(output) => match process.try_wait() {
+                    Ok(Some(_)) => None,
+                    Ok(None) => Some(format!("taskkill could not stop process tree {pid}: {}",String::from_utf8_lossy(&output.stderr).trim())),
+                    Err(error) => Some(format!("taskkill failed for process tree {pid}, and process state could not be checked: {error}")),
+                },
+                Err(error) => match process.try_wait() {
+                    Ok(Some(_)) => None,
+                    Ok(None) => Some(format!("Could not run taskkill for process tree {pid}: {error}")),
+                    Err(check_error) => Some(format!("Could not run taskkill for process tree {pid}: {error}; process state check failed: {check_error}")),
+                },
+            }
+        };
         #[cfg(not(windows))]
-        { let _=child.kill(); }
-        let _=child.wait();
+        let termination_error={
+            match process.kill() {
+                Ok(()) => None,
+                Err(error) => match process.try_wait() {
+                    Ok(Some(_)) => None,
+                    Ok(None) => Some(format!("Could not stop process {pid}: {error}")),
+                    Err(check_error) => Some(format!("Could not stop process {pid}: {error}; process state check failed: {check_error}")),
+                },
+            }
+        };
+        if let Some(message)=termination_error {
+            let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
+            map.insert(id.to_string(),process);
+            return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR,"runtime_stop_failed",message));
+        }
+        if let Err(error)=process.wait() {
+            let mut map=state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?;
+            map.insert(id.to_string(),process);
+            return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR,"runtime_wait_failed",format!("Process {pid} was signalled to stop but could not be reaped: {error}")));
+        }
+        if let Ok(mut times)=state.process_started_at.lock(){times.remove(id);}
     }
     Ok(())
 }
