@@ -59,7 +59,7 @@ mod windows_impl {
         }
     }
 
-    fn validate_service_sid(value: &str) -> Result<String, String> {
+    pub(super) fn validate_service_sid(value: &str) -> Result<String, String> {
     let sid = value.trim();
     let parts = sid.split('-').collect::<Vec<_>>();
     if parts.len() != 9 || parts[0] != "S" || parts[1] != "1" || parts[2] != "5" || parts[3] != "80"
