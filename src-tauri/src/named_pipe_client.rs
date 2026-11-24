@@ -18,12 +18,14 @@ mod windows_impl {
     use super::*;
     use std::{io, path::PathBuf, ptr};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, GetLastError, LocalFree, HANDLE, ERROR_IO_PENDING, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Security::{CheckTokenMembership, TOKEN_QUERY},
+        Security::Authorization::ConvertStringSidToSidW,
         Storage::FileSystem::{CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, OPEN_EXISTING},
         System::{
             IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
             Pipes::{GetNamedPipeServerProcessId, WaitNamedPipeW},
-            Threading::{CreateEventW, GetProcessId, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE},
+            Threading::{CreateEventW, GetProcessId, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE},
         },
     };
 
@@ -57,7 +59,18 @@ mod windows_impl {
         }
     }
 
-    fn normalize_thumbprint(value: &str) -> Result<String, String> {
+    fn validate_service_sid(value: &str) -> Result<String, String> {
+    let sid = value.trim();
+    let parts = sid.split('-').collect::<Vec<_>>();
+    if parts.len() != 9 || parts[0] != "S" || parts[1] != "1" || parts[2] != "5" || parts[3] != "80"
+        || parts[4..].iter().any(|part| part.is_empty() || part.parse::<u32>().is_err())
+    {
+        return Err("A trusted installer-provisioned Windows service SID is required.".into());
+    }
+    Ok(sid.to_string())
+}
+
+fn normalize_thumbprint(value: &str) -> Result<String, String> {
         let normalized = value.trim().replace(':', "").replace(' ', "").to_ascii_lowercase();
         if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("A trusted installer-provisioned SHA-256 publisher thumbprint is required.".into());
@@ -65,8 +78,10 @@ mod windows_impl {
         Ok(normalized)
     }
 
-    fn authenticate_server(pipe: HANDLE, expected_executable: &Path, expected_thumbprint: &str) -> Result<VerifiedServer, String> {
+    fn authenticate_server(pipe: HANDLE, expected_executable: &Path, expected_thumbprint: &str, expected_service_sid: &str) -> Result<VerifiedServer, String> {
         let expected_pin = normalize_thumbprint(expected_thumbprint)?;
+        let expected_service_sid = validate_service_sid(expected_service_sid)?;
+
         let expected_path = expected_executable.canonicalize()
             .map_err(|_| "The installed Core Service executable path is unavailable.".to_string())?;
         let mut pid = 0u32;
@@ -102,6 +117,25 @@ mod windows_impl {
             .map_err(|_| "The Core Service executable path cannot be canonicalized.".to_string())?;
         if !actual_path.to_string_lossy().eq_ignore_ascii_case(&expected_path.to_string_lossy()) {
             return Err("The named-pipe server is not the installed WebDynamite Core Service.".into());
+        }
+
+        // Require the configured service SID to be enabled in the server token.
+        // A matching executable path and publisher alone do not prove SCM service identity.
+        let mut token = ptr::null_mut();
+        if unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token) } == 0 || token.is_null() {
+            return Err("Could not open the Core Service process token for service identity verification.".into());
+        }
+        let token = OwnedHandle(token);
+        let wide_sid = expected_service_sid.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+        let mut expected_sid = ptr::null_mut();
+        if unsafe { ConvertStringSidToSidW(wide_sid.as_ptr(), &mut expected_sid) } == 0 || expected_sid.is_null() {
+            return Err("The installer-provisioned Core Service SID is invalid.".into());
+        }
+        let mut is_service_member = 0;
+        let membership_ok = unsafe { CheckTokenMembership(token.0, expected_sid, &mut is_service_member) };
+        unsafe { LocalFree(expected_sid); }
+        if membership_ok == 0 || is_service_member == 0 {
+            return Err("The named-pipe server is not running with the expected WebDynamite service SID.".into());
         }
 
         let verifier = verifysign::CodeSignVerifier::new(
@@ -202,11 +236,12 @@ mod windows_impl {
         fn flush(&mut self) -> io::Result<()> { Ok(()) }
     }
 
-    pub fn exchange(operation: &str, data: Value, expected_executable: &Path, expected_thumbprint: &str) -> Result<IpcResponse, String> {
+    pub fn exchange(operation: &str, data: Value, expected_executable: &Path, expected_thumbprint: &str, expected_service_sid: &str) -> Result<IpcResponse, String> {
         if expected_executable.as_os_str().is_empty() {
             return Err("A protected installed Core Service executable path is required.".into());
         }
         normalize_thumbprint(expected_thumbprint)?;
+        validate_service_sid(expected_service_sid)?;
 
         let wide_name: Vec<u16> = super::PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
         if unsafe { WaitNamedPipeW(wide_name.as_ptr(), super::CONNECT_TIMEOUT.as_millis() as u32) } == 0 {
@@ -224,7 +259,7 @@ mod windows_impl {
         let pipe = OwnedHandle(pipe);
 
         // Authenticate the server before any request bytes can be written.
-        let verified = authenticate_server(pipe.0, expected_executable, expected_thumbprint)?;
+        let verified = authenticate_server(pipe.0, expected_executable, expected_thumbprint, expected_service_sid)?;
         verified.verify_still_connected(pipe.0)?;
 
         let request_id = uuid::Uuid::new_v4().simple().to_string();
@@ -247,12 +282,22 @@ pub use windows_impl::exchange;
 
 /// Non-Windows builds intentionally have no fallback transport.
 #[cfg(not(windows))]
-pub fn exchange(_operation: &str, _data: Value, _expected_executable: &Path, _expected_thumbprint: &str) -> Result<IpcResponse, String> {
+pub fn exchange(_operation: &str, _data: Value, _expected_executable: &Path, _expected_thumbprint: &str, _expected_service_sid: &str) -> Result<IpcResponse, String> {
     Err("The authenticated WebDynamite named-pipe client is available only on Windows.".into())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn service_sid_validation_accepts_only_service_sid_authorities() {
+        assert!(super::windows_impl::validate_service_sid("S-1-5-80-1-2-3-4-5").is_ok());
+        assert!(super::windows_impl::validate_service_sid(" S-1-5-80-1-2-3-4-5 ").is_ok());
+        assert!(super::windows_impl::validate_service_sid("S-1-5-21-1-2-3-1001").is_err());
+        assert!(super::windows_impl::validate_service_sid("S-1-5-80-1-2").is_err());
+        assert!(super::windows_impl::validate_service_sid("S-1-5-80-x-2-3-4-5").is_err());
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn non_windows_transport_fails_closed_without_http_fallback() {
