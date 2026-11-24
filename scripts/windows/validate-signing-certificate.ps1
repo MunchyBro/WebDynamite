@@ -12,6 +12,32 @@ function Normalize-Sha256Thumbprint {
     return $normalized
 }
 
+function Test-CodeSigningKeyUsage {
+    param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
+    $extension = $Certificate.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.15" } | Select-Object -First 1
+    if ($null -eq $extension) { throw "The certificate has no Key Usage extension; Digital Signature must be explicitly permitted." }
+    $usage = [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($extension, $extension.Critical)
+    $required = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature
+    if (($usage.KeyUsages -band $required) -ne $required) { throw "The certificate Key Usage does not permit Digital Signature." }
+}
+
+function Test-TrustedCodeSigningChain {
+    param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
+    $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+    try {
+        $chain.ChainPolicy.ApplicationPolicy.Add([System.Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.3"))
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::Online
+        $chain.ChainPolicy.RevocationFlag = [System.Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
+        $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
+        $chain.ChainPolicy.UrlRetrievalTimeout = [TimeSpan]::FromSeconds(15)
+        if (-not $chain.Build($Certificate)) {
+            $problems = @($chain.ChainStatus | ForEach-Object { "$($_.Status): $($_.StatusInformation.Trim())" }) -join "; "
+            if ([string]::IsNullOrWhiteSpace($problems)) { $problems = "Windows could not build a trusted Code Signing certificate chain." }
+            throw "The signing certificate chain is not trusted or its revocation status could not be verified: $problems"
+        }
+    } finally { $chain.Dispose() }
+}
+
 function Test-SigningCertificate {
     param(
         [Parameter(Mandatory)][string]$PfxBase64,
@@ -44,13 +70,16 @@ function Test-SigningCertificate {
             throw "The certificate EKU does not permit Code Signing."
         }
 
+        Test-CodeSigningKeyUsage -Certificate $certificate
+        Test-TrustedCodeSigningChain -Certificate $certificate
+
         $sha = [System.Security.Cryptography.SHA256]::Create()
         try { $actual = [Convert]::ToHexString($sha.ComputeHash($certificate.RawData)).ToLowerInvariant() }
         finally { $sha.Dispose() }
         if ($actual -ne $expected) { throw "The certificate SHA-256 publisher pin does not match the configured expected pin." }
         return $actual
     } catch {
-        if ($_.Exception.Message -match "signing certificate|Code Signing|publisher pin|private key|currently valid|Extended Key Usage") { throw }
+        if ($_.Exception.Message -match "signing certificate|Code Signing|publisher pin|private key|currently valid|Extended Key Usage|Key Usage|certificate chain") { throw }
         throw "Could not load or validate the signing certificate. Check the PFX and password secrets."
     } finally {
         if ($null -ne $certificate) { $certificate.Dispose() }
@@ -77,5 +106,5 @@ if ([string]::IsNullOrWhiteSpace($pfx) -or [string]::IsNullOrWhiteSpace($passwor
     throw "Set WEBDYNAMITE_SIGNING_PFX_BASE64, WEBDYNAMITE_SIGNING_PFX_PASSWORD, and WEBDYNAMITE_PUBLISHER_SHA256."
 }
 $validatedPin = Test-SigningCertificate -PfxBase64 $pfx -PfxPassword $password -ExpectedSha256 $pin
-Write-Output "Signing certificate structure, validity, Code Signing EKU, private key, and SHA-256 pin validated."
+Write-Output "Signing certificate structure, validity, Code Signing EKU, Digital Signature key usage, trusted chain/revocation, private key, and SHA-256 pin validated."
 Write-Output "Publisher SHA-256: $validatedPin"
