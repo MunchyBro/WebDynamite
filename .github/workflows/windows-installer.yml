@@ -37,6 +37,10 @@ jobs:
         shell: pwsh
         run: ./scripts/windows/provision-service-layout.ps1 -Mode SelfTest
 
+      - name: Validate service binary signature preflight contract
+        shell: pwsh
+        run: ./scripts/windows/verify-service-binary.ps1 -SelfTest
+
       - name: Install frontend dependencies
         run: npm install
 
