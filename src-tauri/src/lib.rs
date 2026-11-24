@@ -453,7 +453,7 @@ async fn delete_website_environment(token:String,id:String,name:String)->Result<
 #[tauri::command]
 async fn list_runtime_profiles(token:String)->Result<Vec<Value>,String>{authorized_request(&token,reqwest::Method::GET,"/api/v1/runtime-profiles",None).await?.json().await.map_err(|e|api_error("Could not read runtime profiles",e))}
 #[tauri::command]
-async fn save_runtime_profile(token:String,website_id:String,program:String,args:Vec<String>)->Result<Value,String>{authorized_request(&token,reqwest::Method::PUT,"/api/v1/runtime-profiles",Some(serde_json::json!({"website_id":website_id,"program":program,"args":args}))).await?.json().await.map_err(|e|api_error("Could not save runtime profile",e))}
+async fn save_runtime_profile(token:String,website_id:String,program:String,args:Vec<String>,health_path:String)->Result<Value,String>{authorized_request(&token,reqwest::Method::PUT,"/api/v1/runtime-profiles",Some(serde_json::json!({"website_id":website_id,"program":program,"args":args,"health_path":health_path}))).await?.json().await.map_err(|e|api_error("Could not save runtime profile",e))}
 #[tauri::command]
 async fn delete_runtime_profile(token:String,website_id:String)->Result<(),String>{authorized_request(&token,reqwest::Method::DELETE,&format!("/api/v1/runtime-profiles/{website_id}"),None).await?;Ok(())}
 
