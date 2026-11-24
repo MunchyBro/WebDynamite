@@ -75,9 +75,10 @@ silently skipped when offline. The script does not write the certificate or
 private key to disk. Its -SelfTest mode checks strict pin parsing and positive,
 negative, and missing Key Usage cases without requiring a real certificate.
 The self-test also creates ephemeral certificates to verify that a
-certificate with a private key is accepted and a public-only certificate is
-rejected. It verifies that currently valid validity dates are accepted, expired
-and not-yet-valid certificates are rejected, the Code Signing EKU is accepted,
+certificate's matching DER SHA-256 publisher pin is accepted and a mismatched
+pin is rejected; a certificate with a private key is accepted and a public-only
+certificate is rejected. It verifies that currently valid validity dates are
+accepted, expired and not-yet-valid certificates are rejected, the Code Signing EKU is accepted,
 a different EKU is rejected, and a missing EKU is rejected. It similarly
 checks positive, negative, and missing Key Usage cases.
 These deterministic tests do not replace an integration check with a real

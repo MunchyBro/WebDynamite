@@ -49,6 +49,24 @@ function Test-CodeSigningKeyUsage {
     if (($usage.KeyUsages -band $required) -ne $required) { throw "The certificate Key Usage does not permit Digital Signature." }
 }
 
+function Get-CertificateSha256Pin {
+    param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return [Convert]::ToHexString($sha.ComputeHash($Certificate.RawData)).ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Test-CertificatePublisherPin {
+    param(
+        [Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [Parameter(Mandatory)][string]$ExpectedSha256
+    )
+    $expected = Normalize-Sha256Thumbprint -Value $ExpectedSha256
+    $actual = Get-CertificateSha256Pin -Certificate $Certificate
+    if ($actual -ne $expected) { throw "The certificate SHA-256 publisher pin does not match the configured expected pin." }
+    return $actual
+}
+
 function Test-TrustedCodeSigningChain {
     param([Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
     $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
@@ -89,11 +107,7 @@ function Test-SigningCertificate {
         Test-CodeSigningKeyUsage -Certificate $certificate
         Test-TrustedCodeSigningChain -Certificate $certificate
 
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        try { $actual = [Convert]::ToHexString($sha.ComputeHash($certificate.RawData)).ToLowerInvariant() }
-        finally { $sha.Dispose() }
-        if ($actual -ne $expected) { throw "The certificate SHA-256 publisher pin does not match the configured expected pin." }
-        return $actual
+        return Test-CertificatePublisherPin -Certificate $certificate -ExpectedSha256 $expected
     } catch {
         if ($_.Exception.Message -match "signing certificate|Code Signing|publisher pin|private key|currently valid|Extended Key Usage|Key Usage|certificate chain") { throw }
         throw "Could not load or validate the signing certificate. Check the PFX and password secrets."
@@ -179,6 +193,17 @@ if ($SelfTest) {
         } finally { $publicOnlyCertificate.Dispose() }
     } finally { $privateKeyCertificate.Dispose() }
 
+    $pinTestCertificate = New-ValidityTestCertificate -NotBefore ([DateTimeOffset]::UtcNow.AddDays(-1)) -NotAfter ([DateTimeOffset]::UtcNow.AddDays(1))
+    try {
+        $expectedPin = Get-CertificateSha256Pin -Certificate $pinTestCertificate
+        $actualPin = Test-CertificatePublisherPin -Certificate $pinTestCertificate -ExpectedSha256 $expectedPin
+        if ($actualPin -ne $expectedPin) { throw "Matching publisher pin was not returned." }
+        $wrongPin = if ($expectedPin[0] -eq "0") { "1" + $expectedPin.Substring(1) } else { "0" + $expectedPin.Substring(1) }
+        $rejected = $false
+        try { Test-CertificatePublisherPin -Certificate $pinTestCertificate -ExpectedSha256 $wrongPin | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "A mismatched publisher pin was accepted." }
+    } finally { $pinTestCertificate.Dispose() }
+
     $testNow = [DateTime]::UtcNow
     $validityCertificate = New-ValidityTestCertificate -NotBefore ([DateTimeOffset]::UtcNow.AddDays(-1)) -NotAfter ([DateTimeOffset]::UtcNow.AddDays(1))
     try { Test-CertificateValidity -Certificate $validityCertificate -UtcNow $testNow }
@@ -237,7 +262,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw "Certificate without an EKU extension was accepted." }
     } finally { $ekuCertificate.Dispose() }
 
-    Write-Output "Publisher identity validation self-tests passed (pin, private-key presence, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
+    Write-Output "Publisher identity validation self-tests passed (pin matching and mismatch, private-key presence, validity dates, Code Signing EKU, Digital Signature, and missing-extension cases)."
     exit 0
 }
 
