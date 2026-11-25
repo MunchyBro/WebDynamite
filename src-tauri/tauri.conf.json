@@ -30,7 +30,9 @@
       "nsis"
     ],
     "category": "DeveloperTool",
-    "icon": [],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "resources": {
       "../target/release/webdynamite-core.exe": "webdynamite-core.exe"
     }

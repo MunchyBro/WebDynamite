@@ -51,6 +51,10 @@ jobs:
         shell: pwsh
         run: ./scripts/windows/verify-service-binary.ps1 -SelfTest
 
+      - name: Validate native branding assets
+        shell: pwsh
+        run: ./scripts/windows/validate-brand-assets.ps1
+
       - name: Install frontend dependencies
         run: npm install
 
