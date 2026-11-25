@@ -1,6 +1,6 @@
 use axum::{extract::State, routing::get, Json, Router};
 use serde_json::{json, Map, Value};
-use std::{collections::BTreeMap, fs, io::Read, path::{Path, PathBuf}, process::{Command, Stdio}, thread, time::{Duration, Instant, SystemTime}};
+use std::{collections::BTreeMap, fs, io::Read, path::{Path, PathBuf}, process::{Command, Stdio}, sync::mpsc, thread, time::{Duration, Instant, SystemTime}};
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -133,12 +133,14 @@ fn first_output_line(output: &str) -> Option<String> {
     Some(line.chars().take(512).collect())
 }
 
-fn read_command_stream<R: Read + Send + 'static>(mut stream: R) -> thread::JoinHandle<String> {
+fn read_command_stream<R: Read + Send + 'static>(mut stream: R) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
         let _ = stream.by_ref().take(COMMAND_OUTPUT_LIMIT).read_to_end(&mut bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+        let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    receiver
 }
 
 fn command_check(program:&str,args:&[&str])->Value {
@@ -167,12 +169,12 @@ fn command_check(program:&str,args:&[&str])->Value {
             }
         }
     };
-    let stdout = stdout.and_then(|reader| reader.join().ok()).unwrap_or_default();
-    let stderr = stderr.and_then(|reader| reader.join().ok()).unwrap_or_default();
+    let stdout = stdout.and_then(|reader| reader.recv_timeout(Duration::from_millis(250)).ok()).unwrap_or_default();
+    let stderr = stderr.and_then(|reader| reader.recv_timeout(Duration::from_millis(250)).ok()).unwrap_or_default();
     let version = first_output_line(if stdout.trim().is_empty() { &stderr } else { &stdout });
     let error = if timed_out { Some("The command exceeded the 5-second diagnostic timeout.".to_string()) }
         else if status.as_ref().is_some_and(|result| !result.success()) {
-            Some(first_output_line(&stderr).unwrap_or_else(||format!("Command exited with {}.",status.unwrap().code().map(|code|code.to_string()).unwrap_or_else(||"an unknown status".into()))))
+            Some(first_output_line(&stderr).unwrap_or_else(||format!("Command exited with {}.",status.as_ref().and_then(|result|result.code()).map(|code|code.to_string()).unwrap_or_else(||"an unknown status".into()))))
         } else if status.is_none() { Some("The command could not be monitored to completion.".into()) }
         else { None };
     json!({"available":status.as_ref().is_some_and(|result|result.success())&&!timed_out,"program":program,"version":version,"timed_out":timed_out,"duration_ms":started.elapsed().as_millis(),"error":error})
