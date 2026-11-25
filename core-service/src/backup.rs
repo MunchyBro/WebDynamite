@@ -337,7 +337,8 @@ fn storage_summary_sync(state:&AppState)->Result<BackupStorageSummary,BackupErro
   }
  }
  let disks=Disks::new_with_refreshed_list();
- let selected=disks.iter().filter(|disk|state.backups_dir.starts_with(disk.mount_point()))
+ let backup_dir=state.backups_dir.canonicalize().unwrap_or_else(|_|state.backups_dir.clone());
+ let selected=disks.iter().filter(|disk|backup_dir.starts_with(disk.mount_point()))
   .max_by_key(|disk|disk.mount_point().as_os_str().len());
  let (volume_total_bytes,volume_available_bytes,volume_mount_point)=selected.map(|disk|(
   disk.total_space(),disk.available_space(),disk.mount_point().to_string_lossy().to_string()
