@@ -4,6 +4,7 @@ use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::{fs,path::{Path as FsPath,PathBuf},time::SystemTime};
 use uuid::Uuid;
+use sysinfo::Disks;
 use crate::AppState;
 
 #[derive(Debug)]
@@ -320,6 +321,48 @@ fn schedule_sync(state:&AppState)->Result<BackupSchedule,BackupError>{
  let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
  db.query_row("SELECT enabled,interval_hours,retention_count,next_run_at,last_run_at,last_status,last_error FROM backup_schedule WHERE id=1",[],|r|Ok(BackupSchedule{enabled:r.get::<_,i64>(0)?!=0,interval_hours:r.get(1)?,retention_count:r.get(2)?,next_run_at:r.get(3)?,last_run_at:r.get(4)?,last_status:r.get(5)?,last_error:r.get(6)?})).map_err(db_error)
 }
+
+#[derive(Serialize)]
+struct BackupStorageSummary{backup_count:u64,verified_count:u64,unverified_count:u64,total_backup_bytes:u64,volume_total_bytes:u64,volume_available_bytes:u64,volume_mount_point:String}
+fn storage_summary_sync(state:&AppState)->Result<BackupStorageSummary,BackupError>{
+ let rows={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
+  let mut q=db.prepare("SELECT backup_path FROM backups").map_err(db_error)?;
+  let mapped=q.query_map([],|r|r.get::<_,String>(0)).map_err(db_error)?;
+  mapped.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
+ let mut verified=0u64;let mut total_bytes=0u64;
+ for path in &rows{
+  let candidate=PathBuf::from(path);
+  if verify_sync(&candidate).is_ok(){verified+=1;}
+  if let Ok(size)=directory_size(&candidate){total_bytes=total_bytes.saturating_add(size);}
+ }
+ let disks=Disks::new_with_refreshed_list();
+ let selected=disks.iter().filter(|disk|state.backups_dir.starts_with(disk.mount_point()))
+  .max_by_key(|disk|disk.mount_point().as_os_str().len());
+ let (volume_total_bytes,volume_available_bytes,volume_mount_point)=selected.map(|disk|(
+  disk.total_space(),disk.available_space(),disk.mount_point().to_string_lossy().to_string()
+ )).unwrap_or((0,0,String::new()));
+ Ok(BackupStorageSummary{backup_count:rows.len() as u64,verified_count:verified,unverified_count:rows.len() as u64-verified,total_backup_bytes:total_bytes,volume_total_bytes,volume_available_bytes,volume_mount_point})
+}
+fn directory_size(root:&FsPath)->Result<u64,BackupError>{
+ let metadata=fs::symlink_metadata(root).map_err(|e|io_error("backup_metadata_failed",e))?;
+ if metadata.file_type().is_symlink(){return Err(backup_error(StatusCode::FORBIDDEN,"backup_symlink_forbidden","Backup storage contains a symbolic link."));}
+ if metadata.is_file(){return Ok(metadata.len());}
+ if !metadata.is_dir(){return Ok(0);}
+ let mut total=0u64;
+ for entry in fs::read_dir(root).map_err(|e|io_error("backup_read_failed",e))?{
+  let entry=entry.map_err(|e|io_error("backup_read_failed",e))?;
+  let path=entry.path();let kind=entry.file_type().map_err(|e|io_error("backup_metadata_failed",e))?;
+  if kind.is_symlink(){continue;}
+  if kind.is_dir(){total=total.saturating_add(directory_size(&path)?);}
+  else if kind.is_file(){total=total.saturating_add(entry.metadata().map_err(|e|io_error("backup_metadata_failed",e))?.len());}
+ }
+ Ok(total)
+}
+async fn get_storage_summary(State(state):State<AppState>)->Result<Json<BackupStorageSummary>,BackupError>{
+ let result=tokio::task::spawn_blocking(move||storage_summary_sync(&state)).await.map_err(|e|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"backup_task_failed",e.to_string()))??;
+ Ok(Json(result))
+}
+
 async fn get_schedule(State(state):State<AppState>)->Result<Json<BackupSchedule>,BackupError>{Ok(Json(schedule_sync(&state)?))}
 async fn save_schedule(State(state):State<AppState>,Json(input):Json<SaveBackupSchedule>)->Result<Json<BackupSchedule>,BackupError>{
  if !(1..=720).contains(&input.interval_hours)||!(1..=100).contains(&input.retention_count){return Err(backup_error(StatusCode::BAD_REQUEST,"invalid_backup_schedule","Interval must be 1–720 hours and retention must be 1–100 backups."));}
@@ -369,6 +412,7 @@ pub fn start_scheduler(state:AppState){
 
 pub fn router()->Router<AppState>{
  Router::new().route("/api/v1/backups",get(list_backups).post(create_backup))
+   .route("/api/v1/backups/storage",get(get_storage_summary))
   .route("/api/v1/backups/schedule",get(get_schedule).put(save_schedule))
   .route("/api/v1/backups/:id/verify",axum::routing::post(verify_backup))
   .route("/api/v1/backups/:id/preview",get(preview_restore))
