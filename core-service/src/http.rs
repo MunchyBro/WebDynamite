@@ -91,6 +91,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/websites/:id/files/extract", axum::routing::post(extract_website_archive))
         .route("/api/v1/websites/:id/files/rename", axum::routing::post(rename_website_file))
         .route("/api/v1/websites/:id/files/directory", axum::routing::post(create_website_directory))
+        .route("/api/v1/websites/:id/files/delete-preview", get(preview_website_folder_delete))
         .route("/api/v1/domains", get(list_domains).post(create_domain))
         .route("/api/v1/domains/diagnose", axum::routing::post(diagnose_domain))
         .route("/api/v1/public-domains", get(list_public_domains).post(create_public_domain))
@@ -146,6 +147,8 @@ struct WriteWebsiteFile { path: String, content: String }
 struct RenameWebsiteFile { source_path: String, new_path: String }
 #[derive(Debug, Deserialize)]
 struct CreateWebsiteDirectory { path: String }
+#[derive(Debug, Deserialize)]
+struct FileDeleteQuery { path: Option<String>, recursive: Option<bool> }
 
 fn website_root(state:&AppState,id:&str)->Result<PathBuf,ApiError>{
     let project:String={
@@ -486,13 +489,37 @@ async fn rename_website_file(State(state):State<AppState>,Path(id):Path<String>,
     std::fs::rename(&source,&destination).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_rename_failed",e.to_string()))?;
     Ok(Json(json!({"website_id":id,"source_path":input.source_path,"path":input.new_path,"renamed":true})))
 }
-async fn delete_website_file(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<StatusCode,ApiError>{
-    let root=website_root(&state,&id)?;
-    let relative=query.path.as_deref().unwrap_or("");
-    let target=contained_existing(&root,relative)?;
+const MAX_FOLDER_DELETE_ENTRIES: u64 = 10_000;
+const MAX_FOLDER_DELETE_BYTES: u64 = 1024 * 1024 * 1024;
+fn inspect_folder_for_delete(root: &FsPath) -> Result<(u64, u64), ApiError> {
+    let mut pending = vec![root.to_path_buf()]; let mut entries = 0u64; let mut bytes = 0u64;
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"folder_scan_failed",format!("Could not inspect folder before deletion: {e}")))? {
+            let entry=entry.map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"folder_scan_failed",e.to_string()))?;
+            let metadata=std::fs::symlink_metadata(entry.path()).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"folder_scan_failed",e.to_string()))?;
+            let kind=metadata.file_type();
+            if kind.is_symlink() || (!kind.is_dir() && !kind.is_file()) { return Err(ApiError(StatusCode::FORBIDDEN,"unsafe_folder_contents","Folder deletion is blocked because it contains a symbolic link or special file.".into())); }
+            entries=entries.saturating_add(1);
+            if entries>MAX_FOLDER_DELETE_ENTRIES { return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"folder_delete_entry_limit","Folder deletion is limited to 10,000 entries. Split the folder into smaller parts.".into())); }
+            if kind.is_dir(){pending.push(entry.path());}else{bytes=bytes.saturating_add(metadata.len());if bytes>MAX_FOLDER_DELETE_BYTES{return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE,"folder_delete_size_limit","Folder deletion is limited to 1 GiB of file data per operation.".into()));}}
+        }
+    }
+    Ok((entries,bytes))
+}
+async fn preview_website_folder_delete(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FilePathQuery>)->Result<Json<serde_json::Value>,ApiError>{
+    let root=website_root(&state,&id)?;let relative=query.path.as_deref().unwrap_or("");let target=contained_existing(&root,relative)?;
     if target==root{return Err(ApiError(StatusCode::FORBIDDEN,"cannot_delete_website_root","The website root cannot be deleted.".into()));}
-    if target.is_dir(){std::fs::remove_dir(&target).map_err(|e|ApiError(StatusCode::CONFLICT,"directory_not_empty",format!("Only empty directories can be deleted: {e}")))?;}
-    else{std::fs::remove_file(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_delete_failed",e.to_string()))?;}
+    if !target.is_dir(){return Err(ApiError(StatusCode::BAD_REQUEST,"not_a_directory","Folder deletion preview requires a directory.".into()));}
+    let (entry_count,total_bytes)=inspect_folder_for_delete(&target)?;
+    Ok(Json(json!({"website_id":id,"path":relative,"entry_count":entry_count,"total_bytes":total_bytes,"max_entries":MAX_FOLDER_DELETE_ENTRIES,"max_bytes":MAX_FOLDER_DELETE_BYTES})))
+}
+async fn delete_website_file(State(state):State<AppState>,Path(id):Path<String>,Query(query):Query<FileDeleteQuery>)->Result<StatusCode,ApiError>{
+    let root=website_root(&state,&id)?;let relative=query.path.as_deref().unwrap_or("");let target=contained_existing(&root,relative)?;
+    if target==root{return Err(ApiError(StatusCode::FORBIDDEN,"cannot_delete_website_root","The website root cannot be deleted.".into()));}
+    if target.is_dir(){
+        if query.recursive.unwrap_or(false){inspect_folder_for_delete(&target)?;std::fs::remove_dir_all(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"folder_delete_failed",format!("Could not delete folder: {e}")))?;}
+        else{std::fs::remove_dir(&target).map_err(|e|ApiError(StatusCode::CONFLICT,"directory_not_empty",format!("Only empty directories can be deleted without recursive confirmation: {e}")))?;}
+    }else{std::fs::remove_file(&target).map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"file_delete_failed",e.to_string()))?;}
     Ok(StatusCode::NO_CONTENT)
 }
 
