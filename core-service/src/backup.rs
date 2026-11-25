@@ -1,8 +1,8 @@
-use axum::{extract::{Path,State},routing::get,Json,Router,http::StatusCode,response::IntoResponse};
+use axum::{extract::{Path,Query,State},routing::get,Json,Router,http::StatusCode,response::IntoResponse};
 use rusqlite::{params,Connection,types::ValueRef};
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
-use std::{fs,path::{Path as FsPath,PathBuf},time::SystemTime};
+use std::{collections::HashMap,fs,path::{Path as FsPath,PathBuf},time::SystemTime};
 use uuid::Uuid;
 use sysinfo::Disks;
 use crate::AppState;
@@ -392,6 +392,37 @@ fn prune_sync(state:&AppState,retention:i64)->Result<u64,BackupError>{
  }
  Ok(removed)
 }
+#[derive(Serialize)]
+struct RetentionCandidate{id:String,size_bytes:u64}
+#[derive(Serialize)]
+struct RetentionPreview{retention_count:i64,verified_count:u64,kept:Vec<RetentionCandidate>,would_remove:Vec<RetentionCandidate>,protected_unverified:u64,would_free_bytes:u64}
+fn retention_preview_sync(state:&AppState,retention:i64)->Result<RetentionPreview,BackupError>{
+ if !(1..=100).contains(&retention){return Err(backup_error(StatusCode::BAD_REQUEST,"invalid_retention_count","Retention must be between 1 and 100."));}
+ let rows={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
+  let mut q=db.prepare("SELECT id FROM backups ORDER BY created_at DESC").map_err(db_error)?;
+  let mapped=q.query_map([],|r|r.get::<_,String>(0)).map_err(db_error)?;
+  mapped.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
+ let mut verified=Vec::new();let mut protected_unverified=0u64;
+ for id in rows{
+  match backup_path(state,&id){
+   Ok(path)=>match verify_sync(&path){
+    Ok(_)=>{let size=directory_size(&path).unwrap_or(0);verified.push(RetentionCandidate{id,size_bytes:size});}
+    Err(_)=>protected_unverified+=1,
+   },
+   Err(_)=>protected_unverified+=1,
+  }
+ }
+ let split=retention as usize;
+ let would_remove=if verified.len()>split{verified.split_off(split)}else{Vec::new()};
+ let kept=verified;
+ let would_free_bytes=would_remove.iter().fold(0u64,|sum,item|sum.saturating_add(item.size_bytes));
+ Ok(RetentionPreview{retention_count:retention,verified_count:(kept.len()+would_remove.len()) as u64,kept,would_remove,protected_unverified,would_free_bytes})
+}
+async fn preview_retention(State(state):State<AppState>,Query(params):Query<HashMap<String,String>>)->Result<Json<RetentionPreview>,BackupError>{
+ let retention=params.get("count").and_then(|v|v.parse::<i64>().ok()).unwrap_or(7);
+ let result=tokio::task::spawn_blocking(move||retention_preview_sync(&state,retention)).await.map_err(|e|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"backup_task_failed",e.to_string()))??;
+ Ok(Json(result))
+}
 pub fn start_scheduler(state:AppState){
  tokio::spawn(async move{
   let mut tick=tokio::time::interval(std::time::Duration::from_secs(15));
@@ -416,6 +447,7 @@ pub fn router()->Router<AppState>{
  Router::new().route("/api/v1/backups",get(list_backups).post(create_backup))
    .route("/api/v1/backups/storage",get(get_storage_summary))
   .route("/api/v1/backups/schedule",get(get_schedule).put(save_schedule))
+   .route("/api/v1/backups/retention-preview",get(preview_retention))
   .route("/api/v1/backups/:id/verify",axum::routing::post(verify_backup))
   .route("/api/v1/backups/:id/preview",get(preview_restore))
   .route("/api/v1/backups/:id/restore",axum::routing::post(restore_backup))

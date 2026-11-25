@@ -20,3 +20,9 @@ The Backups screen includes a storage summary showing the number of registered b
 The summary verifies each registered backup before counting it as verified. A backup whose files are missing, changed, unsupported, or outside the managed backup directory is reported as needing attention. Storage size is measured from the actual managed backup folders; symbolic links are not followed. The volume capacity values are supplied by the operating system and may be unavailable on unusual or removable filesystems.
 
 A low-space warning is shown when less than 1 GiB is available. This is an advisory threshold, not a reservation or a guarantee that a backup will fit; backup creation still enforces its 10 GiB / 100,000-file limit and reports filesystem write failures.
+
+## Previewing retention cleanup
+
+In the Backups screen, choose the retention count and select **Preview retention cleanup** to see how many currently verified backups would be kept or removed and the approximate storage space that would be recovered. The preview is read-only: it does not delete or modify any backup.
+
+Only backups that pass integrity verification are eligible for automatic retention cleanup. Unverified, missing, or otherwise unavailable backups are reported separately and are protected from retention deletion. The preview reflects the inventory at the time it runs; the scheduled cleanup occurs only after a successful automatic backup and may differ if backup files change before then.
