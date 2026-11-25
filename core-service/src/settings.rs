@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn diagnostic_output_is_trimmed_and_bounded() {
         assert_eq!(first_output_line("  v22.1.0  \nextra"), Some("v22.1.0".into()));
-        assert_eq!(first_output_line("  \\n"), None);
+        assert_eq!(first_output_line("  \n"), None);
         assert_eq!(first_output_line(&"x".repeat(600)).unwrap().len(), 512);
     }
 
