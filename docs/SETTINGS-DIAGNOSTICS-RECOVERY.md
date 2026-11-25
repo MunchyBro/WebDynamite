@@ -10,7 +10,7 @@ Editable preferences:
 - Python executable: executable name or absolute path used when starting Python static-file sites.
 - Log retention: 1–365 days; older files in the managed log directory are removed when this preference is saved.
 - Monitoring refresh interval: 2–60 seconds in the desktop dashboard.
-- Default local domain suffix: `.localhost` or `.test`, used as the domain form hint.
+- Default local domain suffix: \`.localhost\` or \`.test\`, used as the domain form hint.
 
 The settings API accepts only these keys and validates types and ranges. It does not accept arbitrary configuration keys or commands.
 
@@ -20,11 +20,15 @@ The Monitoring page keeps up to 60 host metric samples in desktop-app memory for
 
 The page also highlights current CPU, memory or disk usage at or above 85%. These are local advisory indicators, not background notifications or automated remediation. Network counters remain cumulative operating-system counters rather than transfer-rate samples.
 
+Website availability checks are separate from host-resource sampling. On the Monitoring page, **Check now** probes one website and **Check all** probes websites in small concurrent batches. Static sites are checked through their local hosted URL; running Node.js, PHP and Python sites are checked on their loopback runtime port using the configured runtime readiness path (or \`/\`). HTTP 2xx and 3xx responses are healthy; connection failures and HTTP 4xx/5xx responses are unhealthy. Each probe uses bounded socket timeouts and records response latency, status, URL and any error.
+
+The Core Service stores the latest 100 checks per website in SQLite. The Monitoring page loads the most recent results after reconnecting, so website health history survives desktop restarts. Checks are user-triggered; this feature does not yet run a background schedule or send notifications. Website deletion also deletes its associated health history.
+
 ## Diagnostics
 
 The authenticated diagnostics report checks:
 - Core Service availability, uptime and loopback management bind.
-- SQLite `PRAGMA integrity_check` and website / managed-database counts.
+- SQLite \`PRAGMA integrity_check\` and website / managed-database counts.
 - Node.js, npm, configured PHP and Python executables, Git and Caddy availability/version. Runtime version probes run concurrently, each with a five-second timeout, a 16 KiB output cap and a 512-character displayed version line. A hung or broken executable is reported as a diagnostic failure instead of holding the diagnostics request indefinitely.
 - Existence and write access of managed logs, releases, backups and configuration directories.
 - Number of currently supervised child processes.
@@ -34,15 +38,15 @@ Diagnostics do not transmit reports to a remote service. Executable version chec
 
 ## Recovery
 
-At Core Service startup, interrupted `starting` and `stopping` transitions are reset to `stopped`. Persisted `running` records are deliberately left unchanged: a service restart alone cannot prove whether an untracked runtime child survived, so startup does not guess or terminate arbitrary processes.
+At Core Service startup, interrupted \`starting\` and \`stopping\` transitions are reset to \`stopped\`. Persisted \`running\` records are deliberately left unchanged: a service restart alone cannot prove whether an untracked runtime child survived, so startup does not guess or terminate arbitrary processes.
 
-The manual reconciliation action inspects persisted website states against the Core Service's in-memory process registry. It resets stale `starting`, `stopping` or non-static `running` states to `stopped` when there is no tracked child process. A static website in `running` state is left unchanged because static hosting is served by the Core Service itself.
+The manual reconciliation action inspects persisted website states against the Core Service's in-memory process registry. It resets stale \`starting\`, \`stopping\` or non-static \`running\` states to \`stopped\` when there is no tracked child process. A static website in \`running\` state is left unchanged because static hosting is served by the Core Service itself.
 
 The action does not kill arbitrary processes, alter firewall rules, modify DNS, rewrite Caddy configuration, or delete website data. Caddy can be independently validated, started, stopped and reloaded from the existing proxy controls.
 
 ## Fixed safety defaults and limitations
 
-- The management API remains bound to `127.0.0.1:47821`; it cannot be changed through the settings UI.
+- The management API remains bound to \`127.0.0.1:47821\`; it cannot be changed through the settings UI.
 - Public exposure remains explicit and opt-in.
 - Core Service startup mode, Windows service installation/autostart, Caddy executable configuration, custom backup storage location and automatic update channels are not editable in this phase.
 - Runtime executable paths apply to PHP and Python. Node.js websites continue to launch through the platform's npm command resolution.

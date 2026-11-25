@@ -196,6 +196,19 @@ pub fn initialize(connection: &Connection) -> Result<()> {
         connection.execute_batch("ALTER TABLE runtime_profiles ADD COLUMN health_path TEXT NOT NULL DEFAULT '/';")?;
     }
     connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (17)", [])?;
+    // Version 18 stores bounded, persistent website HTTP health-check history.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS website_health_checks (
+        id TEXT PRIMARY KEY NOT NULL,
+        website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN ('healthy','unhealthy')),
+        url TEXT NOT NULL,
+        http_status INTEGER,
+        latency_ms INTEGER NOT NULL,
+        error TEXT,
+        checked_at_unix_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_website_health_history ON website_health_checks(website_id, checked_at_unix_ms DESC);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (18);")?;
     Ok(())
 }
 
@@ -209,7 +222,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
@@ -228,6 +241,8 @@ mod tests {
         let backups: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='backups'", [], |row| row.get(0)).unwrap();
         assert_eq!(backups, 1);
         let settings: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'", [], |row| row.get(0)).unwrap();
+        let health_history: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='website_health_checks'", [], |row| row.get(0)).unwrap();
+        assert_eq!(health_history, 1);
         assert_eq!(settings, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
