@@ -17,6 +17,7 @@ fn valid_name(v:&str)->bool{let b=v.as_bytes();!b.is_empty()&&b.len()<=128&&(b[0
 #[derive(Serialize)] struct EnvironmentVariable{name:String,value:Option<String>,is_secret:bool}
 #[derive(Deserialize)] struct SaveEnvironmentVariable{name:String,value:String,is_secret:bool}
 #[derive(Deserialize)] struct SaveEnvironmentBatch{variables:Vec<SaveEnvironmentVariable>}
+#[derive(Deserialize)] struct DeleteEnvironmentBatch{names:Vec<String>}
 fn validate_variable(input:&SaveEnvironmentVariable)->Result<(),EnvironmentError>{
  if !valid_name(&input.name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Use uppercase A-Z, digits and underscores; PORT, HOST and service credentials are reserved.".into()));}
  if input.value.len()>8192||input.value.contains('\0'){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_value","Values must be at most 8192 bytes and cannot contain NUL.".into()));}
@@ -29,6 +30,12 @@ fn validate_batch(variables:&[SaveEnvironmentVariable])->Result<(),EnvironmentEr
  for variable in variables{validate_variable(variable)?;if !names.insert(variable.name.as_str()){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"duplicate_environment_name","A batch cannot contain the same variable name more than once.".into()));}}
  Ok(())
 }
+fn validate_delete_batch(names:&[String])->Result<(),EnvironmentError>{
+ if names.is_empty()||names.len()>64{return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_batch","A delete batch must contain between 1 and 64 variable names.".into()));}
+ let mut unique=HashSet::with_capacity(names.len());
+ for name in names{if !valid_name(name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Environment variable name is invalid.".into()));}if !unique.insert(name.as_str()){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"duplicate_environment_name","A delete batch cannot contain the same variable name more than once.".into()));}}
+ Ok(())
+}
 fn restore_credentials(id:&str,snapshots:&[(String,Option<String>)])->bool{
  let mut restored=true;
  for(name,previous)in snapshots.iter().rev(){
@@ -39,7 +46,7 @@ fn restore_credentials(id:&str,snapshots:&[(String,Option<String>)])->bool{
  }
  restored
 }
-pub fn router()->Router<AppState>{Router::new().route("/api/v1/websites/:id/environment",get(list).put(save)).route("/api/v1/websites/:id/environment/batch",axum::routing::put(save_batch)).route("/api/v1/websites/:id/environment/:name",axum::routing::delete(remove))}
+pub fn router()->Router<AppState>{Router::new().route("/api/v1/websites/:id/environment",get(list).put(save)).route("/api/v1/websites/:id/environment/batch",axum::routing::put(save_batch).delete(remove_batch)).route("/api/v1/websites/:id/environment/:name",axum::routing::delete(remove))}
 async fn list(State(s):State<AppState>,Path(id):Path<String>)->Result<Json<Vec<EnvironmentVariable>>,EnvironmentError>{
  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|r|r.get(0)).map_err(db_error)?;
@@ -102,6 +109,59 @@ async fn save_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):J
  Ok(Json(input.variables.into_iter().map(|variable|EnvironmentVariable{name:variable.name,value:if variable.is_secret{None}else{Some(variable.value)},is_secret:variable.is_secret}).collect()))
 }
 
+
+async fn remove_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<DeleteEnvironmentBatch>)->Result<Json<serde_json::Value>,EnvironmentError>{
+ validate_delete_batch(&input.names)?;
+ {
+  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|r|r.get(0)).map_err(db_error)?;
+  if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}
+ }
+ // Capture all prior credential values before mutation so a failed registry commit
+ // can restore the protected store to its previous state.
+ let mut snapshots:Vec<(String,Option<String>)>=Vec::with_capacity(input.names.len());
+ for name in &input.names{
+  let entry=credential_entry(&id,name)?;
+  let previous=match entry.get_password(){
+   Ok(value)=>Some(value),
+   Err(keyring::Error::NoEntry)=>None,
+   Err(error)=>return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"credential_read_failed",format!("Could not inspect the existing protected value for {name}: {error}"))),
+  };
+  snapshots.push((name.clone(),previous));
+ }
+ for name in &input.names{
+  let entry=match credential_entry(&id,name){
+   Ok(entry)=>entry,
+   Err(error)=>{
+    let restored=restore_credentials(&id,&snapshots);
+    return Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Credential rollback was incomplete; review this website's environment secrets.",error.2)}));
+   }
+  };
+  if let Err(error)=entry.delete_credential(){
+   if !matches!(error,keyring::Error::NoEntry){
+    let restored=restore_credentials(&id,&snapshots);
+    let message=format!("Could not remove protected environment value {name}: {error}");
+    return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"credential_delete_failed",if restored{message}else{format!("{message} Credential rollback was incomplete; review this website's environment secrets.")}));
+   }
+  }
+ }
+ let database_result:Result<usize,EnvironmentError>=(||{
+  let mut db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let tx=db.transaction().map_err(db_error)?;
+  let mut removed=0usize;
+  for name in &input.names{removed+=tx.execute("DELETE FROM website_environment WHERE website_id=?1 AND name=?2",params![id,name]).map_err(db_error)?;}
+  tx.commit().map_err(db_error)?;
+  Ok(removed)
+ })();
+ match database_result{
+  Ok(removed)=>Ok(Json(json!({"removed":removed,"requested":input.names.len()}))),
+  Err(error)=>{
+   let restored=restore_credentials(&id,&snapshots);
+   Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Credential rollback was incomplete; review this website's environment secrets.",error.2)}))
+  }
+ }
+}
+
 async fn remove(State(s):State<AppState>,Path((id,name)):Path<(String,String)>)->Result<StatusCode,EnvironmentError>{
  if !valid_name(&name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Environment variable name is invalid.".into()));}
  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -123,7 +183,7 @@ pub fn delete_all_for_website(state:&AppState,id:&str){
 }
 #[cfg(test)]
 mod tests{
- use super::{validate_batch,valid_name,SaveEnvironmentVariable};
+ use super::{validate_batch,validate_delete_batch,valid_name,SaveEnvironmentVariable};
  fn variable(name:&str,value:&str,is_secret:bool)->SaveEnvironmentVariable{
   SaveEnvironmentVariable{name:name.into(),value:value.into(),is_secret}
  }
@@ -150,6 +210,19 @@ mod tests{
   for index in 0..65{oversized.push(variable(&format!("VALUE_{index}"),"x",false));}
   assert!(validate_batch(&oversized).is_err());
   assert!(validate_batch(&[variable("DB_HOST","localhost",false),variable("DB_HOST","other",false)]).is_err());
+ }
+ #[test]
+ fn environment_delete_batch_accepts_unique_valid_names(){
+  assert!(validate_delete_batch(&vec!["DATABASE_URL".into(),"DB_PASSWORD".into()]).is_ok());
+ }
+ #[test]
+ fn environment_delete_batch_rejects_empty_oversized_duplicate_and_invalid_names(){
+  assert!(validate_delete_batch(&[]).is_err());
+  let oversized=(0..65).map(|index|format!("VALUE_{index}")).collect::<Vec<_>>();
+  assert!(validate_delete_batch(&oversized).is_err());
+  assert!(validate_delete_batch(&vec!["DB_HOST".into(),"DB_HOST".into()]).is_err());
+  assert!(validate_delete_batch(&vec!["bad-name".into()]).is_err());
+  assert!(validate_delete_batch(&vec!["WEBDYNAMITE_API_TOKEN".into()]).is_err());
  }
  #[test]
  fn environment_batch_rejects_invalid_values_before_persistence(){
