@@ -14,6 +14,12 @@ Editable preferences:
 
 The settings API accepts only these keys and validates types and ranges. It does not accept arbitrary configuration keys or commands.
 
+## Monitoring history and alerts
+
+The Monitoring page keeps up to 60 host metric samples in desktop-app memory for the current session. Samples are collected on the configured monitoring interval while Overview or Monitoring is visible. CPU, memory and aggregate disk usage trends are shown as percentages; the history can be exported as CSV for later analysis. The history is intentionally session-only and is cleared when the desktop app restarts.
+
+The page also highlights current CPU, memory or disk usage at or above 85%. These are local advisory indicators, not background notifications or automated remediation. Network counters remain cumulative operating-system counters rather than transfer-rate samples.
+
 ## Diagnostics
 
 The authenticated diagnostics report checks:
