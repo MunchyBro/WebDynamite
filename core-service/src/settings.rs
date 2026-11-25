@@ -17,6 +17,8 @@ fn defaults() -> BTreeMap<String, Value> {
         ("python_executable".into(), json!("python")),
         ("log_retention_days".into(), json!(30)),
         ("monitoring_interval_seconds".into(), json!(5)),
+        ("website_health_monitoring_enabled".into(), json!(false)),
+        ("website_health_interval_seconds".into(), json!(300)),
         ("domain_suffix".into(), json!("localhost")),
         ("release_retention_count".into(), json!(10)),
         ("build_timeout_seconds".into(), json!(600)),
@@ -62,6 +64,8 @@ fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
             let n=value.as_u64().ok_or("Monitoring interval must be an integer")?;
             if !(2..=60).contains(&n) { return Err("Monitoring interval must be between 2 and 60 seconds".into()); }
         }
+        "website_health_monitoring_enabled" => { value.as_bool().ok_or("Automatic website health monitoring must be true or false")?; }
+        "website_health_interval_seconds" => { let n=value.as_u64().ok_or("Website health interval must be an integer")?; if !(30..=3600).contains(&n) { return Err("Website health interval must be between 30 and 3600 seconds".into()); } }
         "runtime_auto_restart" => { value.as_bool().ok_or("Automatic runtime restart must be true or false")?; }
         "public_exposure_enabled" => { value.as_bool().ok_or("Public exposure must be true or false")?; }
         "runtime_restart_limit" => { let n=value.as_u64().ok_or("Runtime restart limit must be an integer")?; if !(1..=10).contains(&n) { return Err("Runtime restart limit must be between 1 and 10".into()); } }
@@ -270,6 +274,12 @@ mod tests {
         assert!(validate_setting("build_timeout_seconds",&json!(1800)).is_ok());
         assert!(validate_setting("build_timeout_seconds",&json!(29)).is_err());
         assert!(validate_setting("build_timeout_seconds",&json!(1801)).is_err());
+        assert!(validate_setting("website_health_monitoring_enabled",&json!(false)).is_ok());
+        assert!(validate_setting("website_health_monitoring_enabled",&json!("yes")).is_err());
+        assert!(validate_setting("website_health_interval_seconds",&json!(30)).is_ok());
+        assert!(validate_setting("website_health_interval_seconds",&json!(3600)).is_ok());
+        assert!(validate_setting("website_health_interval_seconds",&json!(29)).is_err());
+        assert!(validate_setting("website_health_interval_seconds",&json!(3601)).is_err());
         assert!(validate_setting("runtime_auto_restart",&json!(true)).is_ok());
         assert!(validate_setting("runtime_auto_restart",&json!("yes")).is_err());
         assert!(validate_setting("public_exposure_enabled",&json!(false)).is_ok());

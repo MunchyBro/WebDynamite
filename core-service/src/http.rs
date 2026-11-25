@@ -1327,6 +1327,52 @@ async fn run_website_health_check(
     Ok(Json(json!({"id":check_id,"website_id":id,"website_name":name,"status":status,"url":url,"http_status":http_status,"latency_ms":latency_ms,"error":error,"checked_at_unix_ms":checked_at})))
 }
 
+/// Runs persisted website health probes while the Core Service process is alive.
+/// The scheduler waits one full interval after enabling or changing its interval, and
+/// awaits every batch before scheduling another run so checks can never overlap.
+pub fn start_website_health_scheduler(state: AppState) {
+    tokio::spawn(async move {
+        let mut next_run: Option<tokio::time::Instant> = None;
+        let mut active_interval: Option<u64> = None;
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let enabled = crate::settings::setting_bool(&state, "website_health_monitoring_enabled", false);
+            if !enabled {
+                next_run = None;
+                active_interval = None;
+                continue;
+            }
+            let interval = crate::settings::setting_number(&state, "website_health_interval_seconds", 300).clamp(30, 3600);
+            if active_interval != Some(interval) {
+                active_interval = Some(interval);
+                next_run = Some(tokio::time::Instant::now() + Duration::from_secs(interval));
+                continue;
+            }
+            if next_run.is_some_and(|deadline| tokio::time::Instant::now() < deadline) {
+                continue;
+            }
+            let website_ids = {
+                let Ok(db) = state.db.lock() else { continue; };
+                let Ok(mut query) = db.prepare("SELECT id FROM websites WHERE status='running' ORDER BY id") else { continue; };
+                let Ok(rows) = query.query_map([], |row| row.get::<_, String>(0)) else { continue; };
+                rows.filter_map(Result::ok).collect::<Vec<_>>()
+            };
+            for batch in website_ids.chunks(4) {
+                let mut tasks = tokio::task::JoinSet::new();
+                for id in batch {
+                    let state = state.clone();
+                    let id = id.clone();
+                    tasks.spawn(async move {
+                        let _ = run_website_health_check(State(state), Path(id)).await;
+                    });
+                }
+                while tasks.join_next().await.is_some() {}
+            }
+            next_run = Some(tokio::time::Instant::now() + Duration::from_secs(interval));
+        }
+    });
+}
+
 async fn website_health_history(
     State(state):State<AppState>,
     Path(id):Path<String>,
