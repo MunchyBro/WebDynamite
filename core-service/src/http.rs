@@ -105,6 +105,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/monitoring/metrics", get(system_metrics))
         .route("/api/v1/websites/:id/health-check", axum::routing::post(run_website_health_check))
         .route("/api/v1/websites/:id/health-history", get(website_health_history))
+        .route("/api/v1/health-alerts", get(list_website_health_alerts))
+        .route("/api/v1/health-alerts/:id/acknowledge", axum::routing::post(acknowledge_website_health_alert))
         .route("/api/v1/databases", get(list_databases).post(create_database))
         .route("/api/v1/databases/:id", axum::routing::delete(delete_database))
         .route("/api/v1/databases/:id/test", axum::routing::post(test_database))
@@ -1302,6 +1304,7 @@ async fn run_website_health_check(
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                 let check_id=Uuid::new_v4().to_string();
                 let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+                persist_health_transition_alert(&db,&id,&name,"unhealthy",now).map_err(database_error)?;
                 db.execute("INSERT INTO website_health_checks(id,website_id,status,url,http_status,latency_ms,error,checked_at_unix_ms) VALUES (?1,?2,'unhealthy','',NULL,0,?3,?4)",
                     params![check_id,id,error.2.clone(),now]).map_err(database_error)?;
                 db.execute("DELETE FROM website_health_checks WHERE website_id=?1 AND id NOT IN (SELECT id FROM website_health_checks WHERE website_id=?1 ORDER BY checked_at_unix_ms DESC,id DESC LIMIT 100)",[&id]).map_err(database_error)?;
@@ -1320,6 +1323,7 @@ async fn run_website_health_check(
     let checked_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     {
         let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        persist_health_transition_alert(&db,&id,&name,status,checked_at).map_err(database_error)?;
         db.execute("INSERT INTO website_health_checks(id,website_id,status,url,http_status,latency_ms,error,checked_at_unix_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![check_id,id,status,url,http_status,latency_ms,error,checked_at]).map_err(database_error)?;
         db.execute("DELETE FROM website_health_checks WHERE website_id=?1 AND id NOT IN (SELECT id FROM website_health_checks WHERE website_id=?1 ORDER BY checked_at_unix_ms DESC,id DESC LIMIT 100)",[&id]).map_err(database_error)?;
@@ -1371,6 +1375,43 @@ pub fn start_website_health_scheduler(state: AppState) {
             next_run = Some(tokio::time::Instant::now() + Duration::from_secs(interval));
         }
     });
+}
+
+fn persist_health_transition_alert(db:&rusqlite::Connection, website_id:&str, website_name:&str, status:&str, checked_at:u64)->Result<(),rusqlite::Error>{
+    let previous:Option<String>=db.query_row(
+        "SELECT status FROM website_health_checks WHERE website_id=?1 ORDER BY checked_at_unix_ms DESC,id DESC LIMIT 1",
+        [website_id],|row|row.get(0)
+    ).optional()?;
+    let event=match (previous.as_deref(),status) {
+        (Some("healthy"),"unhealthy") | (None,"unhealthy") => Some("down"),
+        (Some("unhealthy"),"healthy") => Some("recovered"),
+        _ => None,
+    };
+    if let Some(event)=event {
+        let message=if event=="down" {format!("{website_name} is unavailable.")} else {format!("{website_name} has recovered.")};
+        db.execute("INSERT INTO website_health_alerts(id,website_id,event,message,created_at_unix_ms) VALUES(?1,?2,?3,?4,?5)",
+            params![Uuid::new_v4().to_string(),website_id,event,message,checked_at])?;
+    }
+    Ok(())
+}
+
+async fn list_website_health_alerts(State(state):State<AppState>)->Result<Json<serde_json::Value>,ApiError>{
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let mut query=db.prepare("SELECT a.id,a.website_id,w.name,a.event,a.message,a.created_at_unix_ms,a.acknowledged_at_unix_ms FROM website_health_alerts a JOIN websites w ON w.id=a.website_id ORDER BY a.created_at_unix_ms DESC,a.id DESC LIMIT 200").map_err(database_error)?;
+    let rows=query.query_map([],|row|Ok(json!({"id":row.get::<_,String>(0)?,"website_id":row.get::<_,String>(1)?,"website_name":row.get::<_,String>(2)?,"event":row.get::<_,String>(3)?,"message":row.get::<_,String>(4)?,"created_at_unix_ms":row.get::<_,u64>(5)?,"acknowledged_at_unix_ms":row.get::<_,Option<u64>>(6)?}))).map_err(database_error)?;
+    let alerts=rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    Ok(Json(json!({"alerts":alerts})))
+}
+
+async fn acknowledge_website_health_alert(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<serde_json::Value>,ApiError>{
+    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let changed=db.execute("UPDATE website_health_alerts SET acknowledged_at_unix_ms=?1 WHERE id=?2 AND acknowledged_at_unix_ms IS NULL",params![now,id]).map_err(database_error)?;
+    if changed==0 {
+        let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM website_health_alerts WHERE id=?1)",[&id],|row|row.get(0)).map_err(database_error)?;
+        if !exists{return Err(ApiError(StatusCode::NOT_FOUND,"health_alert_not_found","Health alert was not found.".into()));}
+    }
+    Ok(Json(json!({"id":id,"acknowledged":true,"acknowledged_at_unix_ms":now})))
 }
 
 async fn website_health_history(
