@@ -1,5 +1,7 @@
 # WebDynamite
 
+<p align="center"><img src="assets/webdynamite-logo.svg" alt="WebDynamite logo" width="220" /></p>
+
 **A Windows-first desktop control center for running, managing, and publishing websites from your own PC.**
 
 WebDynamite brings local website hosting, domains, deployment workflows, databases, file management, monitoring, and backups into one desktop application. It is built for developers who want control over the services running on their own machine, with optional ways to expose selected websites to a LAN or the public internet.
