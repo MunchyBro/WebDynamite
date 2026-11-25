@@ -209,6 +209,17 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_website_health_history ON website_health_checks(website_id, checked_at_unix_ms DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (18);")?;
+    // Version 19 stores deduplicated website-down and recovery alerts.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS website_health_alerts (
+        id TEXT PRIMARY KEY NOT NULL,
+        website_id TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+        event TEXT NOT NULL CHECK (event IN ('down','recovered')),
+        message TEXT NOT NULL,
+        created_at_unix_ms INTEGER NOT NULL,
+        acknowledged_at_unix_ms INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_website_health_alerts_created ON website_health_alerts(created_at_unix_ms DESC);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (19);")?;
     Ok(())
 }
 
@@ -222,7 +233,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
