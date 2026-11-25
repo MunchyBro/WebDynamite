@@ -16,7 +16,7 @@ The Core Service validates relative paths, resolves the destination parent insid
 
 ## Current limitations
 
-- Deleting folders is limited to empty folders.
+- Folder deletion shows a recursive item-count and byte-size preview, then requires explicit confirmation. Deletion is blocked for folders containing symbolic links or special files, and capped at 10,000 entries / 1 GiB per operation.
 - Symbolic links are not followed.
 - Text editing is limited to UTF-8 files up to 1 MiB.
 - Uploads are limited to 16 MiB per file, 100 files and 256 MiB per batch; downloads are limited to 32 MiB per file. ZIP archive creation is available for the current folder. ZIP extraction creates a new subfolder and rejects unsafe paths, symbolic links, duplicate paths, and existing destination folders. Archive creation and extraction are capped at 1,000 entries, 256 MiB uncompressed, and 16 MiB compressed. Folder upload preserves relative subdirectories but is limited to the same 100-file / 256 MiB batch caps.
