@@ -4,7 +4,7 @@
 
 **A Windows-first desktop control center for running, managing, and publishing websites from your own PC.**
 
-WebDynamite brings local website hosting, domains, deployment workflows, databases, file management, monitoring, and backups into one desktop application. It is built for developers who want control over the services running on their own machine, with optional ways to expose selected websites to a LAN or the public internet.
+The desktop app, browser favicon, README, and Windows installer use the WebDynamite blue server-and-globe identity. WebDynamite brings local website hosting, domains, deployment workflows, databases, file management, monitoring, and backups into one desktop application. It is built for developers who want control over the services running on their own machine, with optional ways to expose selected websites to a LAN or the public internet.
 
 > **Project status:** WebDynamite is under active development. The repository contains working desktop and Core Service functionality, but it is not yet a fully hardened commercial hosting platform. Review the limitations and security notes below before exposing a machine to the internet.
 
