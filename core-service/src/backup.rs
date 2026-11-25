@@ -325,15 +325,16 @@ fn schedule_sync(state:&AppState)->Result<BackupSchedule,BackupError>{
 #[derive(Serialize)]
 struct BackupStorageSummary{backup_count:u64,verified_count:u64,unverified_count:u64,total_backup_bytes:u64,volume_total_bytes:u64,volume_available_bytes:u64,volume_mount_point:String}
 fn storage_summary_sync(state:&AppState)->Result<BackupStorageSummary,BackupError>{
- let rows={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
-  let mut q=db.prepare("SELECT backup_path FROM backups").map_err(db_error)?;
+ let ids={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;
+  let mut q=db.prepare("SELECT id FROM backups").map_err(db_error)?;
   let mapped=q.query_map([],|r|r.get::<_,String>(0)).map_err(db_error)?;
   mapped.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  let mut verified=0u64;let mut total_bytes=0u64;
- for path in &rows{
-  let candidate=PathBuf::from(path);
-  if verify_sync(&candidate).is_ok(){verified+=1;}
-  if let Ok(size)=directory_size(&candidate){total_bytes=total_bytes.saturating_add(size);}
+ for id in &ids{
+  if let Ok(path)=backup_path(state,id){
+   if verify_sync(&path).is_ok(){verified+=1;}
+   if let Ok(size)=directory_size(&path){total_bytes=total_bytes.saturating_add(size);}
+  }
  }
  let disks=Disks::new_with_refreshed_list();
  let selected=disks.iter().filter(|disk|state.backups_dir.starts_with(disk.mount_point()))
@@ -341,7 +342,7 @@ fn storage_summary_sync(state:&AppState)->Result<BackupStorageSummary,BackupErro
  let (volume_total_bytes,volume_available_bytes,volume_mount_point)=selected.map(|disk|(
   disk.total_space(),disk.available_space(),disk.mount_point().to_string_lossy().to_string()
  )).unwrap_or((0,0,String::new()));
- Ok(BackupStorageSummary{backup_count:rows.len() as u64,verified_count:verified,unverified_count:rows.len() as u64-verified,total_backup_bytes:total_bytes,volume_total_bytes,volume_available_bytes,volume_mount_point})
+ Ok(BackupStorageSummary{backup_count:ids.len() as u64,verified_count:verified,unverified_count:ids.len() as u64-verified,total_backup_bytes:total_bytes,volume_total_bytes,volume_available_bytes,volume_mount_point})
 }
 fn directory_size(root:&FsPath)->Result<u64,BackupError>{
  let metadata=fs::symlink_metadata(root).map_err(|e|io_error("backup_metadata_failed",e))?;
