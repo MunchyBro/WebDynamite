@@ -201,9 +201,38 @@ fn list_sync(state:&AppState)->Result<Vec<BackupRecord>,BackupError>{
 fn preview_sync(state:&AppState,id:&str)->Result<Value,BackupError>{
  let path=backup_path(state,id)?;let manifest=verify_sync(&path)?;
  let metadata:Value=serde_json::from_slice(&fs::read(path.join("metadata.json")).map_err(|e|io_error("backup_metadata_missing",e))?).map_err(|e|backup_error(StatusCode::UNPROCESSABLE_ENTITY,"backup_metadata_invalid",e.to_string()))?;
- let sites=metadata["websites"].as_array().cloned().unwrap_or_default().into_iter().map(|v|json!({"id":v[0],"name":v[1],"project_path":v[2]})).collect::<Vec<_>>();
- let databases=metadata["managed_databases"].as_array().cloned().unwrap_or_default().into_iter().map(|v|json!({"id":v[0],"name":v[1],"engine":v[2]})).collect::<Vec<_>>();
- Ok(json!({"backup_id":id,"verified":true,"checksum":manifest.checksum,"file_count":manifest.file_count,"size_bytes":manifest.size_bytes,"website_count":manifest.website_count,"database_count":manifest.database_count,"websites":sites,"databases":databases,"restore_scope":"All registered websites, managed SQLite databases, local/public domain mappings and build metadata will be restored. Website folders and managed database contents will be overwritten."}))
+ let mut blockers=Vec::<String>::new();
+ let active:i64={let db=state.db.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable."))?;db.query_row("SELECT COUNT(*) FROM websites WHERE status!='stopped'",[],|r|r.get(0)).map_err(db_error)?};
+ let process_count=state.processes.lock().map_err(|_|backup_error(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Website process registry is unavailable."))?.len();
+ if active>0||process_count>0{blockers.push(format!("Stop all websites and managed processes before restoring ({} active website(s), {} managed process(es)).",active,process_count));}
+ let mut website_bytes=0u64;
+ let sites=metadata["websites"].as_array().cloned().unwrap_or_default().into_iter().map(|v|{
+  let id=v[0].as_str().unwrap_or("").to_string();let name=v[1].as_str().unwrap_or("Unnamed website").to_string();let project=v[2].as_str().unwrap_or("").to_string();
+  let current=PathBuf::from(&project).canonicalize().ok().filter(|p|p.is_dir());
+  let exists=current.is_some();
+  let bytes=current.as_ref().and_then(|p|directory_size(p).ok()).unwrap_or(0);
+  if !exists{blockers.push(format!("Website restore destination is missing or unavailable: {project}"));}
+  website_bytes=website_bytes.saturating_add(bytes);
+  json!({"id":id,"name":name,"project_path":project,"destination_exists":exists,"existing_bytes":bytes})
+ }).collect::<Vec<_>>();
+ let db_dir=state.config_dir.join("databases");
+ let mut database_bytes=0u64;
+ let databases=metadata["managed_databases"].as_array().cloned().unwrap_or_default().into_iter().map(|v|{
+  let id=v[0].as_str().unwrap_or("").to_string();let name=v[1].as_str().unwrap_or("Unnamed database").to_string();let engine=v[2].as_str().unwrap_or("unknown").to_string();
+  let valid=valid_backup_entry_id(&id)&&engine=="sqlite";
+  if !valid{blockers.push(format!("Managed database entry is unsupported or has an invalid identifier: {name}"));}
+  let target=db_dir.join(format!("{id}.sqlite3"));
+  let bytes=fs::metadata(&target).ok().filter(|m|m.is_file()).map(|m|m.len()).unwrap_or(0);
+  database_bytes=database_bytes.saturating_add(bytes);
+  json!({"id":id,"name":name,"engine":engine,"existing_bytes":bytes})
+ }).collect::<Vec<_>>();
+ let disks=Disks::new_with_refreshed_list();
+ let backup_dir=state.backups_dir.canonicalize().unwrap_or_else(|_|state.backups_dir.clone());
+ let selected=disks.iter().filter(|disk|backup_dir.starts_with(disk.mount_point())).max_by_key(|disk|disk.mount_point().as_os_str().len());
+ let (available,mount)=selected.map(|disk|(disk.available_space(),disk.mount_point().to_string_lossy().to_string())).unwrap_or((0,String::new()));
+ let safety_estimate=website_bytes.saturating_add(database_bytes);
+ let overwrite_estimate=safety_estimate;
+ Ok(json!({"backup_id":id,"verified":true,"checksum":manifest.checksum,"file_count":manifest.file_count,"size_bytes":manifest.size_bytes,"website_count":manifest.website_count,"database_count":manifest.database_count,"websites":sites,"databases":databases,"restore_scope":"All registered websites, managed SQLite databases, local/public domain mappings and build metadata will be restored. Website folders and managed database contents will be overwritten.","preflight_blockers":blockers,"can_restore":blockers.is_empty(),"existing_website_bytes":website_bytes,"existing_database_bytes":database_bytes,"overwrite_estimated_bytes":overwrite_estimate,"safety_backup_estimated_bytes":safety_estimate,"backup_volume_available_bytes":available,"backup_volume_mount_point":mount,"safety_backup_space_warning":available>0&&available<safety_estimate}))
 }
 fn replace_tree(source:&FsPath,target:&FsPath)->Result<(),BackupError>{
  let parent=target.parent().ok_or_else(||backup_error(StatusCode::BAD_REQUEST,"invalid_project_path","Website folder has no parent directory."))?;
