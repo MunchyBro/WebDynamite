@@ -105,6 +105,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/monitoring/metrics", get(system_metrics))
         .route("/api/v1/websites/:id/health-check", axum::routing::post(run_website_health_check))
         .route("/api/v1/websites/:id/health-history", get(website_health_history))
+        .route("/api/v1/health-reports", get(website_health_report))
         .route("/api/v1/health-alerts", get(list_website_health_alerts))
         .route("/api/v1/health-alerts/:id/acknowledge", axum::routing::post(acknowledge_website_health_alert))
         .route("/api/v1/databases", get(list_databases).post(create_database))
@@ -1412,6 +1413,44 @@ async fn acknowledge_website_health_alert(State(state):State<AppState>,Path(id):
         if !exists{return Err(ApiError(StatusCode::NOT_FOUND,"health_alert_not_found","Health alert was not found.".into()));}
     }
     Ok(Json(json!({"id":id,"acknowledged":true,"acknowledged_at_unix_ms":now})))
+}
+
+#[derive(Debug, Deserialize)]
+struct HealthReportQuery { days: Option<u32>, website_id: Option<String> }
+
+async fn website_health_report(
+    State(state):State<AppState>,
+    Query(query):Query<HealthReportQuery>,
+)->Result<Json<serde_json::Value>,ApiError>{
+    let days=query.days.unwrap_or(7);
+    if !(1..=90).contains(&days) {
+        return Err(ApiError(StatusCode::BAD_REQUEST,"invalid_report_range","Report range must be between 1 and 90 days.".into()));
+    }
+    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let from=now.saturating_sub(u64::from(days)*24*60*60*1000);
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let mut statement=db.prepare(
+        "SELECT w.id,w.name,COUNT(h.id),SUM(CASE WHEN h.status='healthy' THEN 1 ELSE 0 END),COALESCE(AVG(h.latency_ms),0),MAX(h.checked_at_unix_ms),SUM(CASE WHEN h.status='unhealthy' THEN 1 ELSE 0 END)
+         FROM websites w LEFT JOIN website_health_checks h ON h.website_id=w.id AND h.checked_at_unix_ms>=?1 AND h.checked_at_unix_ms<=?2
+         WHERE (?3 IS NULL OR w.id=?3) GROUP BY w.id,w.name ORDER BY w.name"
+    ).map_err(database_error)?;
+    let rows=statement.query_map(params![from,now,query.website_id],|row|{
+        let total:i64=row.get(2)?;
+        let healthy:i64=row.get::<_,Option<i64>>(3)?.unwrap_or(0);
+        let latency:f64=row.get(4)?;
+        Ok(json!({
+            "website_id":row.get::<_,String>(0)?,
+            "website_name":row.get::<_,String>(1)?,
+            "checks":total,
+            "healthy_checks":healthy,
+            "unhealthy_checks":row.get::<_,Option<i64>>(6)?.unwrap_or(0),
+            "success_rate_percent":if total>0 {(healthy as f64/total as f64)*100.0} else {0.0},
+            "average_latency_ms":latency.round() as u64,
+            "last_checked_at_unix_ms":row.get::<_,Option<u64>>(5)?
+        }))
+    }).map_err(database_error)?;
+    let websites=rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    Ok(Json(json!({"from_unix_ms":from,"to_unix_ms":now,"days":days,"metric":"health-check success rate (not time-weighted uptime)","websites":websites})))
 }
 
 async fn website_health_history(
