@@ -26,3 +26,10 @@ A low-space warning is shown when less than 1 GiB is available. This is an advis
 In the Backups screen, choose the retention count and select **Preview retention cleanup** to see how many currently verified backups would be kept or removed and the approximate storage space that would be recovered. The preview is read-only: it does not delete or modify any backup.
 
 Only backups that pass integrity verification are eligible for automatic retention cleanup. Unverified, missing, or otherwise unavailable backups are reported separately and are protected from retention deletion. The preview reflects the inventory at the time it runs; the scheduled cleanup occurs only after a successful automatic backup and may differ if backup files change before then.
+
+
+## Restore preflight
+
+The restore preview checks the current website and managed-process state, confirms that each website destination is available, and reports the current website/database data that would be overwritten. It also estimates the size of the automatic pre-restore safety backup and reports free space on the backup volume. Missing destinations, unsupported database entries, or running websites/processes block the restore action until resolved.
+
+Space figures are estimates based on the current files and can change before restore. The restore operation repeats its own integrity, destination and stopped-process checks; the preview is not a reservation of disk space and does not modify any files.
