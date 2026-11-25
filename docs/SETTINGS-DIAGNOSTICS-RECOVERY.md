@@ -61,3 +61,8 @@ Website health checks create a persistent alert when a website changes from heal
 ## Website uptime reports
 
 The Monitoring report supports 1, 7, 30, and 90 day windows. It summarizes recorded health checks per website, including the healthy-check success rate, failure count, average response latency, and latest check time. The success rate is a ratio of recorded checks, not time-weighted uptime; missed checks and time between checks are not inferred as downtime. Reports use the retained health-check history (up to 100 checks per website).
+
+
+## Website health report export and filters
+
+The Monitoring page can filter the recorded-check report to one website or show all websites, and export the selected rows as UTF-8 CSV. The report summary combines only the currently selected websites and period. Its average response time is weighted by recorded check count. CSV text fields are quoted and formula-like leading characters are neutralized to reduce spreadsheet formula-injection risk. Alert history can be filtered to all events, unacknowledged events, outages, or recoveries; filtering does not change or delete stored alerts.
