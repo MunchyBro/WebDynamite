@@ -25,7 +25,7 @@ The page also highlights current CPU, memory or disk usage at or above 85%. Thes
 The authenticated diagnostics report checks:
 - Core Service availability, uptime and loopback management bind.
 - SQLite `PRAGMA integrity_check` and website / managed-database counts.
-- Node.js, npm, configured PHP and Python executables, Git and Caddy availability/version.
+- Node.js, npm, configured PHP and Python executables, Git and Caddy availability/version. Runtime version probes run concurrently, each with a five-second timeout, a 16 KiB output cap and a 512-character displayed version line. A hung or broken executable is reported as a diagnostic failure instead of holding the diagnostics request indefinitely.
 - Existence and write access of managed logs, releases, backups and configuration directories.
 - Number of currently supervised child processes.
 - Security invariants: management API remains loopback-only and public exposure remains opt-in.

@@ -1,6 +1,6 @@
 use axum::{extract::State, routing::get, Json, Router};
 use serde_json::{json, Map, Value};
-use std::{collections::BTreeMap, fs, path::{Path, PathBuf}, process::Command, time::SystemTime};
+use std::{collections::BTreeMap, fs, io::Read, path::{Path, PathBuf}, process::{Command, Stdio}, sync::mpsc, thread, time::{Duration, Instant, SystemTime}};
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -124,14 +124,60 @@ fn prune_logs(directory:&Path,days:u64) {
     }
 }
 
+const COMMAND_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+const COMMAND_OUTPUT_LIMIT: u64 = 16 * 1024;
+
+fn first_output_line(output: &str) -> Option<String> {
+    let line = output.lines().next()?.trim();
+    if line.is_empty() { return None; }
+    Some(line.chars().take(512).collect())
+}
+
+fn read_command_stream<R: Read + Send + 'static>(mut stream: R) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stream.by_ref().take(COMMAND_OUTPUT_LIMIT).read_to_end(&mut bytes);
+        let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    receiver
+}
+
 fn command_check(program:&str,args:&[&str])->Value {
-    match Command::new(program).args(args).output() {
-        Ok(output) => {
-            let text=String::from_utf8_lossy(if output.stdout.is_empty(){&output.stderr}else{&output.stdout});
-            json!({"available":output.status.success(),"program":program,"version":text.lines().next().unwrap_or("").trim()})
+    let started = Instant::now();
+    let mut child = match Command::new(program).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(error) => return json!({"available":false,"program":program,"version":null,"timed_out":false,"duration_ms":started.elapsed().as_millis(),"error":error.to_string()}),
+    };
+    let stdout = child.stdout.take().map(read_command_stream);
+    let stderr = child.stderr.take().map(read_command_stream);
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < COMMAND_CHECK_TIMEOUT => thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                timed_out = true;
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
         }
-        Err(_) => json!({"available":false,"program":program,"version":null}),
-    }
+    };
+    let stdout = stdout.and_then(|reader| reader.recv_timeout(Duration::from_millis(250)).ok()).unwrap_or_default();
+    let stderr = stderr.and_then(|reader| reader.recv_timeout(Duration::from_millis(250)).ok()).unwrap_or_default();
+    let version = first_output_line(if stdout.trim().is_empty() { &stderr } else { &stdout });
+    let error = if timed_out { Some("The command exceeded the 5-second diagnostic timeout.".to_string()) }
+        else if status.as_ref().is_some_and(|result| !result.success()) {
+            Some(first_output_line(&stderr).unwrap_or_else(||format!("Command exited with {}.",status.as_ref().and_then(|result|result.code()).map(|code|code.to_string()).unwrap_or_else(||"an unknown status".into()))))
+        } else if status.is_none() { Some("The command could not be monitored to completion.".into()) }
+        else { None };
+    json!({"available":status.as_ref().is_some_and(|result|result.success())&&!timed_out,"program":program,"version":version,"timed_out":timed_out,"duration_ms":started.elapsed().as_millis(),"error":error})
 }
 
 fn directory_check(path:&Path)->Value {
@@ -160,10 +206,22 @@ async fn diagnostics(State(state):State<AppState>)->Json<Value> {
         let proxy_installed=proxy.as_ref().is_some_and(|o|o.status.success());
         let proxy_version=proxy.map(|o|String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string());
         let process_count=s.processes.lock().map(|p|p.len()).unwrap_or(0);
+        let (node, npm, php_check, python_check, git) = thread::scope(|scope| {
+            let node = scope.spawn(|| command_check("node", &["--version"]));
+            let npm = scope.spawn(|| command_check("npm", &["--version"]));
+            let php_check = scope.spawn(|| command_check(&php, &["-v"]));
+            let python_check = scope.spawn(|| command_check(&python, &["--version"]));
+            let git = scope.spawn(|| command_check("git", &["--version"]));
+            (node.join().unwrap_or_else(|_|json!({"available":false,"program":"node","version":null,"timed_out":false,"error":"Diagnostic worker failed"})),
+             npm.join().unwrap_or_else(|_|json!({"available":false,"program":"npm","version":null,"timed_out":false,"error":"Diagnostic worker failed"})),
+             php_check.join().unwrap_or_else(|_|json!({"available":false,"program":php,"version":null,"timed_out":false,"error":"Diagnostic worker failed"})),
+             python_check.join().unwrap_or_else(|_|json!({"available":false,"program":python,"version":null,"timed_out":false,"error":"Diagnostic worker failed"})),
+             git.join().unwrap_or_else(|_|json!({"available":false,"program":"git","version":null,"timed_out":false,"error":"Diagnostic worker failed"})))
+        });
         json!({
             "service":{"status":"online","uptime_seconds":s.started_at.elapsed().as_secs(),"management_bind":"127.0.0.1:47821"},
             "database":{"integrity":integrity,"healthy":integrity=="ok","website_count":websites,"managed_database_count":databases},
-            "runtimes":{"node":command_check("node",&["--version"]),"npm":command_check("npm",&["--version"]),"php":command_check(&php,&["-v"]),"python":command_check(&python,&["--version"]),"git":command_check("git",&["--version"]),"caddy":{"available":proxy_installed,"program":s.caddy_bin.to_string_lossy(),"version":proxy_version}},
+            "runtimes":{"node":node,"npm":npm,"php":php_check,"python":python_check,"git":git,"caddy":{"available":proxy_installed,"program":s.caddy_bin.to_string_lossy(),"version":proxy_version,"timed_out":false,"duration_ms":null,"error":null}},
             "storage":{"logs":directory_check(&s.logs_dir),"releases":directory_check(&s.releases_dir),"backups":directory_check(&s.backups_dir),"config":directory_check(&s.config_dir)},
             "processes":{"managed_count":process_count},
             "security":{"management_api_loopback_only":true,"public_exposure_opt_in":true}
@@ -192,6 +250,13 @@ async fn reconcile(State(state):State<AppState>)->Json<Value>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagnostic_output_is_trimmed_and_bounded() {
+        assert_eq!(first_output_line("  v22.1.0  \nextra"), Some("v22.1.0".into()));
+        assert_eq!(first_output_line("  \n"), None);
+        assert_eq!(first_output_line(&"x".repeat(600)).unwrap().len(), 512);
+    }
+
     #[test]
     fn settings_validation_rejects_unsafe_or_unknown_values() {
         assert!(validate_setting("monitoring_interval_seconds",&json!(1)).is_err());
