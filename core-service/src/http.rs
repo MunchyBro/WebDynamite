@@ -103,6 +103,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/v1/tunnels/:website_id/start", axum::routing::post(crate::tunnel::start))
         .route("/api/v1/tunnels/:website_id/stop", axum::routing::post(crate::tunnel::stop))
         .route("/api/v1/monitoring/metrics", get(system_metrics))
+        .route("/api/v1/websites/:id/health-check", axum::routing::post(run_website_health_check))
+        .route("/api/v1/websites/:id/health-history", get(website_health_history))
         .route("/api/v1/databases", get(list_databases).post(create_database))
         .route("/api/v1/databases/:id", axum::routing::delete(delete_database))
         .route("/api/v1/databases/:id/test", axum::routing::post(test_database))
@@ -1249,6 +1251,95 @@ async fn import_database(State(state): State<AppState>, Json(input): Json<serde_
     Ok((StatusCode::CREATED,Json(json!({"id":id,"name":name,"engine":"sqlite","size_bytes":bytes.len(),"created_at":created_at}))))
 }
 
+fn website_http_status_is_healthy(status:u16)->bool{(200..400).contains(&status)}
+
+fn probe_http_status(port:u16,path:&str)->Result<u16,String>{
+    let address=SocketAddr::from(([127,0,0,1],port));
+    let mut stream=TcpStream::connect_timeout(&address,Duration::from_millis(500))
+        .map_err(|e|format!("Could not connect to 127.0.0.1:{port}: {e}"))?;
+    let timeout=Some(Duration::from_millis(750));
+    stream.set_read_timeout(timeout).map_err(|e|e.to_string())?;
+    stream.set_write_timeout(timeout).map_err(|e|e.to_string())?;
+    let request=format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nUser-Agent: WebDynamite-HealthCheck/1\r\nAccept: */*\r\n\r\n");
+    stream.write_all(request.as_bytes()).map_err(|e|format!("Could not send health request: {e}"))?;
+    let mut response=[0u8;4096];
+    let count=stream.read(&mut response).map_err(|e|format!("No HTTP response received: {e}"))?;
+    if count==0{return Err("The server closed the connection without an HTTP response.".into());}
+    let first_line=String::from_utf8_lossy(&response[..count]);
+    let status=first_line.lines().next()
+        .and_then(|line|line.split_whitespace().nth(1))
+        .and_then(|value|value.parse::<u16>().ok())
+        .filter(|value|(100..600).contains(value))
+        .ok_or_else(||"The server returned a malformed HTTP status line.".to_string())?;
+    Ok(status)
+}
+
+async fn run_website_health_check(
+    State(state):State<AppState>,
+    Path(id):Path<String>,
+)->Result<Json<serde_json::Value>,ApiError>{
+    let (name,runtime,website_status,port,health_path): (String,String,String,Option<u16>,Option<String>)={
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.query_row(
+            "SELECT w.name,w.runtime,w.status,w.port,r.health_path FROM websites w LEFT JOIN runtime_profiles r ON r.website_id=w.id WHERE w.id=?1",
+            [&id],
+            |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))
+        ).map_err(|error|if matches!(error,rusqlite::Error::QueryReturnedNoRows){
+            ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into())
+        }else{database_error(error)})?
+    };
+    let (target_port,path,url)=if runtime=="static"{
+        (47821,format!("/hosted/{id}/index.html"),format!("http://127.0.0.1:47821/hosted/{id}/index.html"))
+    }else{
+        let port=port.filter(|_|website_status=="running").ok_or_else(||ApiError(StatusCode::CONFLICT,"website_not_running","Start this website before running an HTTP health check.".into()));
+        match port {
+            Ok(value)=>{
+                let path=health_path.unwrap_or_else(||"/".into());
+                if !valid_health_path(&path){return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR,"invalid_saved_health_path","The saved runtime health path is invalid. Update the runtime profile before checking health.".into()));}
+                (value,path.clone(),format!("http://127.0.0.1:{value}{path}"))
+            }
+            Err(error)=>{
+                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                let check_id=Uuid::new_v4().to_string();
+                let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+                db.execute("INSERT INTO website_health_checks(id,website_id,status,url,http_status,latency_ms,error,checked_at_unix_ms) VALUES (?1,?2,'unhealthy','',NULL,0,?3,?4)",
+                    params![check_id,id,error.2.clone(),now]).map_err(database_error)?;
+                db.execute("DELETE FROM website_health_checks WHERE website_id=?1 AND id NOT IN (SELECT id FROM website_health_checks WHERE website_id=?1 ORDER BY checked_at_unix_ms DESC,id DESC LIMIT 100)",[&id]).map_err(database_error)?;
+                return Ok(Json(json!({"id":check_id,"website_id":id,"website_name":name,"status":"unhealthy","url":null,"http_status":null,"latency_ms":0,"error":error.2,"checked_at_unix_ms":now})));
+            }
+        }
+    };
+    let started=Instant::now();
+    let probe=tokio::task::spawn_blocking(move||probe_http_status(target_port,&path)).await
+        .map_err(|error|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"health_probe_failed",error.to_string()))?;
+    let latency_ms=started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let (http_status,error)=match probe {Ok(status)=>(Some(status),None),Err(error)=>(None,Some(error))};
+    let healthy=http_status.is_some_and(website_http_status_is_healthy);
+    let status=if healthy{"healthy"}else{"unhealthy"};
+    let check_id=Uuid::new_v4().to_string();
+    let checked_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    {
+        let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+        db.execute("INSERT INTO website_health_checks(id,website_id,status,url,http_status,latency_ms,error,checked_at_unix_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![check_id,id,status,url,http_status,latency_ms,error,checked_at]).map_err(database_error)?;
+        db.execute("DELETE FROM website_health_checks WHERE website_id=?1 AND id NOT IN (SELECT id FROM website_health_checks WHERE website_id=?1 ORDER BY checked_at_unix_ms DESC,id DESC LIMIT 100)",[&id]).map_err(database_error)?;
+    }
+    Ok(Json(json!({"id":check_id,"website_id":id,"website_name":name,"status":status,"url":url,"http_status":http_status,"latency_ms":latency_ms,"error":error,"checked_at_unix_ms":checked_at})))
+}
+
+async fn website_health_history(
+    State(state):State<AppState>,
+    Path(id):Path<String>,
+)->Result<Json<serde_json::Value>,ApiError>{
+    let db=state.db.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+    let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|row|row.get(0)).map_err(database_error)?;
+    if !exists{return Err(ApiError(StatusCode::NOT_FOUND,"website_not_found","No website exists with that ID.".into()));}
+    let mut query=db.prepare("SELECT id,website_id,status,url,http_status,latency_ms,error,checked_at_unix_ms FROM website_health_checks WHERE website_id=?1 ORDER BY checked_at_unix_ms DESC,id DESC LIMIT 100").map_err(database_error)?;
+    let rows=query.query_map([&id],|row|Ok(json!({"id":row.get::<_,String>(0)?,"website_id":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"url":row.get::<_,String>(3)?,"http_status":row.get::<_,Option<u16>>(4)?,"latency_ms":row.get::<_,u64>(5)?,"error":row.get::<_,Option<String>>(6)?,"checked_at_unix_ms":row.get::<_,u64>(7)?}))).map_err(database_error)?;
+    let checks=rows.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    Ok(Json(json!({"website_id":id,"checks":checks})))
+}
+
 async fn system_metrics()->Result<Json<serde_json::Value>,ApiError>{
     let metrics=tokio::task::spawn_blocking(crate::monitor::snapshot).await
         .map_err(|e|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"metrics_collection_failed",e.to_string()))?;
@@ -2018,6 +2109,47 @@ pub(crate) async fn restart_after_crash(state: AppState, id: String) -> bool {
     let still_crashed=state.db.lock().ok().and_then(|db|db.query_row("SELECT status FROM websites WHERE id=?1",[&id],|row|row.get::<_,String>(0)).ok()).is_some_and(|status|status=="error");
     if !still_crashed{return false;}
     start_website_inner(state,id).await.is_ok()
+}
+
+
+#[cfg(test)]
+mod website_health_probe_tests {
+    use super::probe_http_status;
+    use std::{io::{Read,Write},net::TcpListener,thread};
+
+    #[test]
+    fn only_success_and_redirect_statuses_are_healthy() {
+        assert!(super::website_http_status_is_healthy(200));
+        assert!(super::website_http_status_is_healthy(302));
+        assert!(!super::website_http_status_is_healthy(404));
+        assert!(!super::website_http_status_is_healthy(503));
+    }
+
+    #[test]
+    fn reads_http_status_from_loopback_server() {
+        let listener=TcpListener::bind(("127.0.0.1",0)).unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let server=thread::spawn(move||{
+            let (mut stream,_)=listener.accept().unwrap();
+            let mut request=[0u8;1024];
+            let _=stream.read(&mut request);
+            stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        assert_eq!(probe_http_status(port,"/health").unwrap(),204);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_non_http_listener_responses() {
+        let listener=TcpListener::bind(("127.0.0.1",0)).unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let server=thread::spawn(move||{
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.write_all(b"not an HTTP response").unwrap();
+        });
+        assert!(probe_http_status(port,"/").is_err());
+        server.join().unwrap();
+    }
 }
 
 #[cfg(test)]
