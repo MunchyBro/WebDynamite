@@ -142,9 +142,11 @@ async fn recover_one(
     for _ in 0..limit {
         tokio::time::sleep(Duration::from_secs(restart_delay(&state))).await;
         if !crate::settings::setting_bool(&state, "hosting_auto_restart", false) {
+            record_event(&state, &key, "recovery_canceled", None, "Automatic recovery was disabled before the next attempt.");
             break;
         }
         if take_suppression(&state, &key) {
+            record_event(&state, &key, "recovery_canceled", None, "A manual stop canceled the pending automatic recovery.");
             break;
         }
         let used = attempts.lock().ok().and_then(|values| values.get(&key).copied()).unwrap_or(0);
@@ -155,6 +157,7 @@ async fn recover_one(
         }).unwrap_or(false);
         if !counted { break; }
 
+        record_event(&state, &key, "attempt_started", Some(used + 1), "Automatic hosting recovery attempt started.");
         let recovered = if key == "caddy" {
             crate::proxy::restart_for_supervisor(state.clone()).await
         } else if let Some(id) = key.strip_prefix("tunnel:") {
@@ -167,6 +170,7 @@ async fn recover_one(
         };
 
         if recovered {
+            record_event(&state, &key, "attempt_succeeded", Some(used + 1), "Hosting process restarted and passed its startup readiness check.");
             eprintln!("Hosting recovery attempt {} for {key} succeeded.", used + 1);
             // A successful start does not reset the budget immediately: only a full
             // five-minute stable run earns a fresh retry budget.
@@ -181,7 +185,12 @@ async fn recover_one(
             });
             break;
         }
+        record_event(&state, &key, "attempt_failed", Some(used + 1), "Recovery attempt failed its startup/readiness check.");
         eprintln!("Hosting recovery attempt {} for {key} failed; retry budget remains bounded.", used + 1);
+    }
+    let used = attempts.lock().ok().and_then(|values| values.get(&key).copied()).unwrap_or(0);
+    if used >= restart_limit(&state) && !is_running(&state, &key) {
+        record_event(&state, &key, "retry_budget_exhausted", Some(used), "Automatic recovery stopped after reaching the configured retry limit.");
     }
     if let Ok(mut pending) = in_flight.lock() { pending.remove(&key); }
 }
@@ -203,11 +212,13 @@ pub fn start(state: AppState) {
             };
             for key in exited {
                 if !crate::settings::setting_bool(&state, "hosting_auto_restart", false) {
+                    record_event(&state, &key, "recovery_disabled", None, "Unexpected process exit detected; automatic recovery is disabled.");
                     eprintln!("Hosting process exited ({key}); automatic recovery is disabled.");
                     continue;
                 }
                 let already_pending = in_flight.lock().map(|mut values| !values.insert(key.clone())).unwrap_or(true);
                 if already_pending { continue; }
+                record_event(&state, &key, "recovery_scheduled", None, "Unexpected process exit detected; bounded recovery has been scheduled.");
                 eprintln!("Hosting process exited ({key}); bounded recovery has been scheduled.");
                 tokio::spawn(recover_one(state.clone(), key, Arc::clone(&attempts), Arc::clone(&in_flight)));
             }
