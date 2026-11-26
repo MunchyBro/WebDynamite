@@ -7,6 +7,7 @@
 #[cfg(windows)]
 mod platform {
     use std::{ffi::c_void, io, ptr, slice};
+    use zeroize::Zeroize;
 
     #[repr(C)]
     struct DataBlob {
@@ -69,7 +70,7 @@ mod platform {
         // wipe the OS allocation before releasing it to the Windows heap.
         let output_bytes = slice::from_raw_parts_mut(output.data, output.size as usize);
         let result = output_bytes.to_vec();
-        output_bytes.fill(0);
+        output_bytes.zeroize();
         let _ = LocalFree(output.data.cast());
         Ok(result)
     }
