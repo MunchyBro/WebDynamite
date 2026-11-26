@@ -26,6 +26,9 @@ fn defaults() -> BTreeMap<String, Value> {
         ("runtime_restart_limit".into(), json!(3)),
         ("runtime_restart_delay_seconds".into(), json!(5)),
         ("public_exposure_enabled".into(), json!(false)),
+        ("hosting_auto_restart".into(), json!(false)),
+        ("hosting_restart_limit".into(), json!(3)),
+        ("hosting_restart_delay_seconds".into(), json!(10)),
     ])
 }
 
@@ -68,6 +71,9 @@ fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
         "website_health_interval_seconds" => { let n=value.as_u64().ok_or("Website health interval must be an integer")?; if !(30..=3600).contains(&n) { return Err("Website health interval must be between 30 and 3600 seconds".into()); } }
         "runtime_auto_restart" => { value.as_bool().ok_or("Automatic runtime restart must be true or false")?; }
         "public_exposure_enabled" => { value.as_bool().ok_or("Public exposure must be true or false")?; }
+        "hosting_auto_restart" => { value.as_bool().ok_or("Automatic hosting recovery must be true or false")?; }
+        "hosting_restart_limit" => { let n=value.as_u64().ok_or("Hosting restart limit must be an integer")?; if !(1..=5).contains(&n) { return Err("Hosting restart limit must be between 1 and 5".into()); } }
+        "hosting_restart_delay_seconds" => { let n=value.as_u64().ok_or("Hosting restart delay must be an integer")?; if !(5..=300).contains(&n) { return Err("Hosting restart delay must be between 5 and 300 seconds".into()); } }
         "runtime_restart_limit" => { let n=value.as_u64().ok_or("Runtime restart limit must be an integer")?; if !(1..=10).contains(&n) { return Err("Runtime restart limit must be between 1 and 10".into()); } }
         "runtime_restart_delay_seconds" => { let n=value.as_u64().ok_or("Runtime restart delay must be an integer")?; if !(1..=300).contains(&n) { return Err("Runtime restart delay must be between 1 and 300 seconds".into()); } }
         "build_timeout_seconds" => {
