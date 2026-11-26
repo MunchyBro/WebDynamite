@@ -8,6 +8,10 @@ pub(crate) fn suppress_restart(state: &AppState, key: &str) {
     }
 }
 
+pub(crate) fn clear_suppression(state: &AppState, key: &str) {
+    if let Ok(mut values) = state.hosting_restart_suppressed.lock() { values.remove(key); }
+}
+
 fn take_suppression(state: &AppState, key: &str) -> bool {
     state.hosting_restart_suppressed.lock()
         .map(|mut values| values.remove(key))
