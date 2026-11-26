@@ -395,7 +395,6 @@ async fn run_build(token:String,website_id:String)->Result<Value,String>{
 async fn deploy_website(token:String,website_id:String)->Result<Value,String>{
  authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/deployments/{website_id}/deploy"),None).await?.json().await.map_err(|e|api_error("Automated deployment failed",e))
 }
-#[tauri::command]
 fn encode_query_component(value:&str)->String{
  let mut encoded=String::new();
  for byte in value.bytes(){if byte.is_ascii_alphanumeric()||matches!(byte,b'-'|b'_'|b'.'|b'~'){encoded.push(byte as char);}else{encoded.push_str(&format!("%{byte:02X}"));}}
