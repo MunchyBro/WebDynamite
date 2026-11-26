@@ -224,6 +224,24 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_website_health_alerts_created ON website_health_alerts(created_at_unix_ms DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (19);")?;
+
+    // Version 21 adds opt-in automatic TLS expiry monitoring and deduplicated alerts.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS tls_monitoring_settings (
+        id INTEGER PRIMARY KEY CHECK (id=1),
+        enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+        interval_hours INTEGER NOT NULL DEFAULT 24 CHECK (interval_hours BETWEEN 1 AND 168),
+        warning_days INTEGER NOT NULL DEFAULT 30 CHECK (warning_days BETWEEN 1 AND 90),
+        next_run_at INTEGER, last_run_at INTEGER, last_status TEXT, last_error TEXT
+    );
+    INSERT OR IGNORE INTO tls_monitoring_settings(id) VALUES (1);
+    CREATE TABLE IF NOT EXISTS tls_certificate_alerts (
+        id TEXT PRIMARY KEY NOT NULL, hostname TEXT NOT NULL COLLATE NOCASE,
+        event TEXT NOT NULL CHECK (event IN ('expiring','expired','renewed')),
+        message TEXT NOT NULL, thumbprint TEXT NOT NULL, days_remaining INTEGER,
+        created_at INTEGER NOT NULL, acknowledged_at INTEGER, fingerprint TEXT NOT NULL UNIQUE
+    );
+    CREATE INDEX IF NOT EXISTS idx_tls_alerts_created ON tls_certificate_alerts(created_at DESC);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (21);")?;
     Ok(())
 }
 
@@ -237,7 +255,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
@@ -259,6 +277,10 @@ mod tests {
         let health_history: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='website_health_checks'", [], |row| row.get(0)).unwrap();
         assert_eq!(health_history, 1);
         assert_eq!(settings, 1);
+        let tls_settings: i64 = connection.query_row("SELECT COUNT(*) FROM tls_monitoring_settings", [], |row| row.get(0)).unwrap();
+        let tls_alerts: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tls_certificate_alerts'", [], |row| row.get(0)).unwrap();
+        assert_eq!(tls_settings, 1);
+        assert_eq!(tls_alerts, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }

@@ -269,6 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     supervise_processes(state.clone());
     backup::start_scheduler(state.clone());
+    proxy::start_tls_monitoring_scheduler(state.clone());
     http::start_website_health_scheduler(state.clone());
     let app = http::router(state.clone(), token);
     let address = SocketAddr::from(([127, 0, 0, 1], 47821));
