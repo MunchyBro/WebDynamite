@@ -70,13 +70,13 @@ fn take_suppression(state: &AppState, key: &str) -> bool {
 }
 
 /// Detect and reap exited hosting children. Inspection errors retain handles and metadata.
-fn reconcile(state: &AppState) -> Vec<String> {
+fn reconcile(state: &AppState) -> Vec<(String, String)> {
     let mut exited = Vec::new();
     if let Ok(mut slot) = state.proxy_process.lock() {
         if let Some(child) = slot.as_mut() {
             if let Ok(Some(status)) = child.try_wait() {
                 *slot = None;
-                if !status.success() { exited.push("caddy".to_string()); }
+                if !status.success() { exited.push(("caddy".to_string(), exit_message(status.code()))); }
             }
         }
     }
@@ -87,7 +87,7 @@ fn reconcile(state: &AppState) -> Vec<String> {
         for (id, child) in children.iter_mut() {
             if let Ok(Some(status)) = child.try_wait() {
                 exited_ids.push(id.clone());
-                if !status.success() { unexpected_ids.push(id.clone()); }
+                if !status.success() { unexpected_ids.push((id.clone(), exit_message(status.code()))); }
             }
         }
         for id in &exited_ids {
@@ -98,10 +98,17 @@ fn reconcile(state: &AppState) -> Vec<String> {
         if let (Ok(mut urls), Ok(mut started)) = (state.tunnel_urls.lock(), state.tunnel_started_at.lock()) {
             remove_tunnel_metadata(&mut urls, &mut started, &exited_ids);
         }
-        exited.extend(unexpected_ids.into_iter().map(|id| format!("tunnel:{id}")));
+        exited.extend(unexpected_ids.into_iter().map(|(id, message)| (format!("tunnel:{id}"), message)));
     }
-    exited.retain(|key| !take_suppression(state, key));
+    exited.retain(|(key, _)| !take_suppression(state, key));
     exited
+}
+
+fn exit_message(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("Hosting process exited unexpectedly with exit code {code}."),
+        None => "Hosting process exited unexpectedly without a numeric exit code (signal or platform-specific termination).".to_string(),
+    }
 }
 
 fn remove_tunnel_metadata(
@@ -210,16 +217,17 @@ pub fn start(state: AppState) {
                     continue;
                 }
             };
-            for key in exited {
+            for (key, exit_detail) in exited {
+                record_event(&state, &key, "process_exited", None, &exit_detail);
                 if !crate::settings::setting_bool(&state, "hosting_auto_restart", false) {
-                    record_event(&state, &key, "recovery_disabled", None, "Unexpected process exit detected; automatic recovery is disabled.");
-                    eprintln!("Hosting process exited ({key}); automatic recovery is disabled.");
+                    record_event(&state, &key, "recovery_disabled", None, "Automatic recovery is disabled; the exited process was not restarted.");
+                    eprintln!("Hosting process exited ({key}); automatic recovery is disabled: {exit_detail}");
                     continue;
                 }
                 let already_pending = in_flight.lock().map(|mut values| !values.insert(key.clone())).unwrap_or(true);
                 if already_pending { continue; }
                 record_event(&state, &key, "recovery_scheduled", None, "Unexpected process exit detected; bounded recovery has been scheduled.");
-                eprintln!("Hosting process exited ({key}); bounded recovery has been scheduled.");
+                eprintln!("Hosting process exited ({key}); bounded recovery has been scheduled: {exit_detail}");
                 tokio::spawn(recover_one(state.clone(), key, Arc::clone(&attempts), Arc::clone(&in_flight)));
             }
         }
