@@ -10,7 +10,7 @@ use axum::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{collections::HashMap, fs::File, io::{Cursor, Read, Seek, SeekFrom, Write}, path::{Path as FsPath, PathBuf}, process::{Command, Stdio}, net::{SocketAddr, TcpListener, TcpStream}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::{Duration, Instant}};
+use std::{collections::HashMap, fs::File, io::{Cursor, Read, Seek, SeekFrom, Write}, path::{Path as FsPath, PathBuf}, process::{Child, Command, Stdio}, net::{SocketAddr, TcpListener, TcpStream}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::{Duration, Instant}};
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 use uuid::Uuid;
 
@@ -1819,6 +1819,28 @@ fn valid_health_path(value:&str)->bool {
     value.starts_with('/') && !value.starts_with("//") && value.len()<=256 && !value.chars().any(|c| matches!(c, '?' | '#' | ' ' | '\\' | '\r' | '\n' | '\t') || c.is_control())
 }
 
+fn terminate_runtime_child(child:&mut Child)->Result<(),String>{
+    let pid=child.id();
+    #[cfg(windows)]
+    {
+        match Command::new("taskkill").args(["/PID",&pid.to_string(),"/T","/F"]).output(){
+            Ok(output) if output.status.success()=>{},
+            Ok(output)=>{
+                if matches!(child.try_wait(),Ok(Some(_))){return Ok(());}
+                return Err(format!("taskkill could not terminate runtime process tree {pid}: {}",String::from_utf8_lossy(&output.stderr).trim()));
+            }
+            Err(error)=>{
+                if matches!(child.try_wait(),Ok(Some(_))){return Ok(());}
+                return Err(format!("Could not run taskkill for runtime process tree {pid}: {error}"));
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    child.kill().map_err(|error|format!("Could not terminate runtime process {pid}: {error}"))?;
+    child.wait().map_err(|error|format!("Could not reap runtime process {pid}: {error}"))?;
+    Ok(())
+}
+
 fn http_readiness_probe(port: u16, path:&str) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
@@ -1979,28 +2001,32 @@ async fn start_website_inner(state:AppState,id:String)->Result<Json<serde_json::
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let state_name=if status.success(){"stopped"}else{"crashed"};
+                let state_name=if status.success(){"stopped"}else{"error"};
                 let _=set_status(&state,&id,state_name);
                 return Err(ApiError(StatusCode::BAD_GATEWAY,"runtime_exited_during_startup",format!("The {runtime} process exited during startup (exit code: {}). Review the website logs.",status.code().map(|v|v.to_string()).unwrap_or_else(||"unknown".into()))));
             }
             Err(error) => {
-                let _=child.kill(); let _=child.wait();
-                let _=set_status(&state,&id,"failed");
-                return Err(ApiError(StatusCode::BAD_GATEWAY,"runtime_startup_check_failed",format!("Could not monitor the {runtime} process during startup: {error}")));
+                let cleanup=terminate_runtime_child(&mut child);
+                let _=set_status(&state,&id,"error");
+                let message=match cleanup{Ok(())=>format!("Could not monitor the {runtime} process during startup: {error}"),Err(cleanup_error)=>format!("Could not monitor the {runtime} process during startup: {error}. Cleanup also failed: {cleanup_error}")};
+                return Err(ApiError(StatusCode::BAD_GATEWAY,"runtime_startup_check_failed",message));
             }
             Ok(None) => {}
         }
-        if http_readiness_probe(port,&health_path) {
+        let probe_path=health_path.clone();
+        let accepting=tokio::task::spawn_blocking(move||http_readiness_probe(port,&probe_path)).await.unwrap_or(false);
+        if accepting {
             ready=true;
             break;
         }
         if Instant::now()>=deadline { break; }
-        std::thread::sleep(Duration::from_millis(200));
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
     if !ready {
-        let _=child.kill(); let _=child.wait();
-        let _=set_status(&state,&id,"failed");
-        return Err(ApiError(StatusCode::GATEWAY_TIMEOUT,"runtime_startup_timeout",format!("The {runtime} process did not begin accepting connections on 127.0.0.1:{port} within 15 seconds. Review the website logs and launch profile.")));
+        let cleanup=terminate_runtime_child(&mut child);
+        let _=set_status(&state,&id,"error");
+        let message=match cleanup{Ok(())=>format!("The {runtime} process did not begin accepting connections on 127.0.0.1:{port} within 15 seconds. Review the website logs and launch profile."),Err(cleanup_error)=>format!("The {runtime} process did not begin accepting connections on 127.0.0.1:{port} within 15 seconds. Runtime cleanup also failed: {cleanup_error}. Review the website logs and launch profile.")};
+        return Err(ApiError(StatusCode::GATEWAY_TIMEOUT,"runtime_startup_timeout",message));
     }
     state.processes.lock().map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"process_registry_locked","Process registry is unavailable.".into()))?.insert(id.clone(),child);
     if let Ok(mut times)=state.process_started_at.lock(){times.insert(id.clone(),Instant::now());}
