@@ -157,7 +157,6 @@ pub(crate) fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelI
 
     let mut children = state.tunnel_processes.lock()
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
-    if children.contains_key(&id) { crate::hosting_supervisor::suppress_restart(&state, &format!("tunnel:{id}")); }
     if let Some(child) = children.get_mut(&id) {
         match child.try_wait() {
             Ok(None) => return Err(error(StatusCode::CONFLICT, "A tunnel is already running for this website.")),
@@ -272,6 +271,7 @@ pub async fn stop(
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
     let mut children = state.tunnel_processes.lock()
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
+    if children.contains_key(&id) { crate::hosting_supervisor::suppress_restart(&state, &format!("tunnel:{id}")); }
     if let Some(child) = children.get_mut(&id) {
         match child.try_wait() {
             Ok(Some(_)) => {}
