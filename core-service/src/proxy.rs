@@ -336,6 +336,10 @@ pub(crate) async fn restart_for_supervisor(state:AppState)->bool{
  if crate::hosting_supervisor::take_suppression_for_recovery(&state,"caddy"){return false;}
  if !crate::settings::setting_bool(&state,"hosting_auto_restart",false){return false;}
  let Ok((_response,started_here))=start_sync(state.clone()) else{return false;};
+ if crate::hosting_supervisor::take_suppression_for_recovery(&state,"caddy") {
+  if started_here {if let Ok(mut slot)=state.proxy_process.lock(){if let Some(mut child)=slot.take(){let _=child.kill();let _=child.wait();}}}
+  return false;
+ }
  for _ in 0..40 {
   if tokio::task::spawn_blocking(caddy_admin_ready).await.unwrap_or(false){return true;}
   let exited=state.proxy_process.lock().ok().and_then(|mut slot|match slot.as_mut(){Some(child)=>child.try_wait().ok().map(|status|status.is_some()),None=>Some(true)}).unwrap_or(true);
