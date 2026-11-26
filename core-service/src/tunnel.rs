@@ -130,6 +130,9 @@ pub async fn start(
 }
 
 pub(crate) fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
+    if crate::hosting_supervisor::take_suppression_for_recovery(&state, &format!("tunnel:{id}")) {
+        return Err(error(StatusCode::CONFLICT, "A manual stop canceled the pending automatic tunnel recovery."));
+    }
     if !crate::settings::setting_bool(&state, "public_exposure_enabled", false) {
         return Err(error(StatusCode::FORBIDDEN, "Public exposure is disabled globally. Enable it in Networking before starting a tunnel."));
     }
