@@ -12,6 +12,10 @@ pub(crate) fn clear_suppression(state: &AppState, key: &str) {
     if let Ok(mut values) = state.hosting_restart_suppressed.lock() { values.remove(key); }
 }
 
+pub(crate) fn take_suppression_for_recovery(state: &AppState, key: &str) -> bool {
+    take_suppression(state,key)
+}
+
 fn take_suppression(state: &AppState, key: &str) -> bool {
     state.hosting_restart_suppressed.lock()
         .map(|mut values| values.remove(key))
