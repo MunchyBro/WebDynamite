@@ -242,6 +242,17 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_tls_alerts_created ON tls_certificate_alerts(created_at DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (21);")?;
+    // Version 22 records a bounded audit trail for automatic Caddy and tunnel recovery.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS hosting_recovery_events (
+        id TEXT PRIMARY KEY NOT NULL,
+        process_key TEXT NOT NULL,
+        event TEXT NOT NULL,
+        attempt INTEGER,
+        message TEXT NOT NULL,
+        created_at_unix_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_hosting_recovery_events_created ON hosting_recovery_events(created_at_unix_ms DESC);
+    INSERT OR IGNORE INTO schema_migrations(version) VALUES (22);")?;
     Ok(())
 }
 
@@ -255,7 +266,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());
@@ -281,6 +292,8 @@ mod tests {
         let tls_alerts: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tls_certificate_alerts'", [], |row| row.get(0)).unwrap();
         assert_eq!(tls_settings, 1);
         assert_eq!(tls_alerts, 1);
+        let recovery_events: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hosting_recovery_events'", [], |row| row.get(0)).unwrap();
+        assert_eq!(recovery_events, 1);
         let count: i64 = connection.query_row("SELECT COUNT(*) FROM websites", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }

@@ -1,5 +1,52 @@
 use crate::AppState;
+use axum::{extract::State, routing::get, Json, Router};
+use serde::Serialize;
+use rusqlite::params;
 use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
+
+
+#[derive(Debug, Serialize)]
+struct RecoveryEvent {
+    id: String,
+    process_key: String,
+    event: String,
+    attempt: Option<u64>,
+    message: String,
+    created_at_unix_ms: u64,
+}
+
+/// Store a concise, bounded recovery audit event without retaining process output or URLs.
+pub(crate) fn record_event(state: &AppState, key: &str, event: &str, attempt: Option<u64>, message: &str) {
+    let Ok(db) = state.db.lock() else { return; };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis().min(u64::MAX as u128) as u64;
+    let _ = db.execute(
+        "INSERT INTO hosting_recovery_events(id,process_key,event,attempt,message,created_at_unix_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![uuid::Uuid::new_v4().to_string(), key, event, attempt, message, now],
+    );
+    let _ = db.execute(
+        "DELETE FROM hosting_recovery_events WHERE id NOT IN (SELECT id FROM hosting_recovery_events ORDER BY created_at_unix_ms DESC,rowid DESC LIMIT 200)",
+        [],
+    );
+}
+
+async fn list_recovery_events(State(state): State<AppState>) -> Result<Json<Vec<RecoveryEvent>>, (axum::http::StatusCode, String)> {
+    let db = state.db.lock().map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Database lock is unavailable".to_string()))?;
+    let mut statement = db.prepare(
+        "SELECT id,process_key,event,attempt,message,created_at_unix_ms FROM hosting_recovery_events ORDER BY created_at_unix_ms DESC,rowid DESC LIMIT 100"
+    ).map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let rows = statement.query_map([], |row| Ok(RecoveryEvent {
+        id: row.get(0)?, process_key: row.get(1)?, event: row.get(2)?,
+        attempt: row.get::<_, Option<u64>>(3)?, message: row.get(4)?, created_at_unix_ms: row.get(5)?,
+    })).map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let mut events = Vec::new();
+    for row in rows { events.push(row.map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?); }
+    Ok(Json(events))
+}
+
+pub fn router() -> Router<AppState> {
+    Router::new().route("/api/v1/hosting/recovery-events", get(list_recovery_events))
+}
 
 /// Mark an intentional stop so an exit observed by the supervisor is not recovered.
 pub(crate) fn suppress_restart(state: &AppState, key: &str) {
@@ -95,9 +142,11 @@ async fn recover_one(
     for _ in 0..limit {
         tokio::time::sleep(Duration::from_secs(restart_delay(&state))).await;
         if !crate::settings::setting_bool(&state, "hosting_auto_restart", false) {
+            record_event(&state, &key, "recovery_canceled", None, "Automatic recovery was disabled before the next attempt.");
             break;
         }
         if take_suppression(&state, &key) {
+            record_event(&state, &key, "recovery_canceled", None, "A manual stop canceled the pending automatic recovery.");
             break;
         }
         let used = attempts.lock().ok().and_then(|values| values.get(&key).copied()).unwrap_or(0);
@@ -108,6 +157,7 @@ async fn recover_one(
         }).unwrap_or(false);
         if !counted { break; }
 
+        record_event(&state, &key, "attempt_started", Some(used + 1), "Automatic hosting recovery attempt started.");
         let recovered = if key == "caddy" {
             crate::proxy::restart_for_supervisor(state.clone()).await
         } else if let Some(id) = key.strip_prefix("tunnel:") {
@@ -120,6 +170,7 @@ async fn recover_one(
         };
 
         if recovered {
+            record_event(&state, &key, "attempt_succeeded", Some(used + 1), "Hosting process restarted and passed its startup readiness check.");
             eprintln!("Hosting recovery attempt {} for {key} succeeded.", used + 1);
             // A successful start does not reset the budget immediately: only a full
             // five-minute stable run earns a fresh retry budget.
@@ -134,7 +185,12 @@ async fn recover_one(
             });
             break;
         }
+        record_event(&state, &key, "attempt_failed", Some(used + 1), "Recovery attempt failed its startup/readiness check.");
         eprintln!("Hosting recovery attempt {} for {key} failed; retry budget remains bounded.", used + 1);
+    }
+    let used = attempts.lock().ok().and_then(|values| values.get(&key).copied()).unwrap_or(0);
+    if used >= restart_limit(&state) && !is_running(&state, &key) {
+        record_event(&state, &key, "retry_budget_exhausted", Some(used), "Automatic recovery stopped after reaching the configured retry limit.");
     }
     if let Ok(mut pending) = in_flight.lock() { pending.remove(&key); }
 }
@@ -156,11 +212,13 @@ pub fn start(state: AppState) {
             };
             for key in exited {
                 if !crate::settings::setting_bool(&state, "hosting_auto_restart", false) {
+                    record_event(&state, &key, "recovery_disabled", None, "Unexpected process exit detected; automatic recovery is disabled.");
                     eprintln!("Hosting process exited ({key}); automatic recovery is disabled.");
                     continue;
                 }
                 let already_pending = in_flight.lock().map(|mut values| !values.insert(key.clone())).unwrap_or(true);
                 if already_pending { continue; }
+                record_event(&state, &key, "recovery_scheduled", None, "Unexpected process exit detected; bounded recovery has been scheduled.");
                 eprintln!("Hosting process exited ({key}); bounded recovery has been scheduled.");
                 tokio::spawn(recover_one(state.clone(), key, Arc::clone(&attempts), Arc::clone(&in_flight)));
             }

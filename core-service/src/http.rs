@@ -134,6 +134,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .merge(crate::git::router())
         .merge(crate::backup::router())
         .merge(crate::settings::router())
+        .merge(crate::hosting_supervisor::router())
         .layer(DefaultBodyLimit::max(24 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(token, require_bearer));
     Router::new()
