@@ -202,6 +202,18 @@ pub(crate) fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelI
     children.insert(id.clone(), child);
     drop(children);
 
+    // A manual stop may arrive while cloudflared is being spawned. Re-check the
+    // cancellation flag after registration so the just-started child is stopped.
+    if crate::hosting_supervisor::take_suppression_for_recovery(&state, &format!("tunnel:{id}")) {
+        if let Ok(mut children) = state.tunnel_processes.lock() {
+            if let Some(child) = children.get_mut(&id) { let _ = child.kill(); let _ = child.wait(); }
+            children.remove(&id);
+        }
+        if let Ok(mut urls) = state.tunnel_urls.lock() { urls.remove(&id); }
+        if let Ok(mut started) = state.tunnel_started_at.lock() { started.remove(&id); }
+        return Err(error(StatusCode::CONFLICT, "A manual stop canceled the pending automatic tunnel recovery."));
+    }
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let url = loop {
         let process_exit = {
