@@ -318,6 +318,7 @@ fn start_sync(state:AppState)->Result<(Json<Value>,bool),(axum::http::StatusCode
  Ok((Json(json!({"running":true,"pid":pid,"config_path":path,"log_path":log_path,"message":"Caddy process started; waiting for its local admin endpoint"})),true))
 }
 async fn stop(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+ if state.proxy_process.lock().map(|slot|slot.is_some()).unwrap_or(false) { crate::hosting_supervisor::suppress_restart(&state,"caddy"); }
  let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
  if let Some(mut child)=slot.take(){let _=child.kill();let _=child.wait();}
  Ok(Json(json!({"running":false,"message":"Caddy stopped"})))
@@ -327,7 +328,21 @@ async fn reload(State(state):State<AppState>)->Result<Json<Value>,(axum::http::S
  let path=config_path(&state);let p=path.to_string_lossy().to_string();
  match caddy_output(&state,&["reload","--config",&p,"--adapter","caddyfile"]){Ok(output)=>Ok(Json(json!({"running":true,"reloaded":true,"output":output}))),Err(e)=>Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_reload_failed","message":e}}))))}
 }
-pub fn stop_on_shutdown(state:&AppState){if let Ok(mut slot)=state.proxy_process.lock(){if let Some(mut child)=slot.take(){let _=child.kill();let _=child.wait();}}}
+pub fn stop_on_shutdown(state:&AppState){if state.proxy_process.lock().map(|slot|slot.is_some()).unwrap_or(false){crate::hosting_supervisor::suppress_restart(state,"caddy");}if let Ok(mut slot)=state.proxy_process.lock(){if let Some(mut child)=slot.take(){let _=child.kill();let _=child.wait();}}}
+
+/// Restart Caddy through the same validation and admin-readiness gate used by the API.
+pub(crate) async fn restart_for_supervisor(state:AppState)->bool{
+ if !crate::settings::setting_bool(&state,"hosting_auto_restart",false){return false;}
+ let Ok((_response,started_here))=start_sync(state.clone()) else{return false;};
+ for _ in 0..40 {
+  if tokio::task::spawn_blocking(caddy_admin_ready).await.unwrap_or(false){return true;}
+  let exited=state.proxy_process.lock().ok().and_then(|mut slot|match slot.as_mut(){Some(child)=>child.try_wait().ok().map(|status|status.is_some()),None=>Some(true)}).unwrap_or(true);
+  if exited{return false;}
+  tokio::time::sleep(Duration::from_millis(125)).await;
+ }
+ if started_here {if let Ok(mut slot)=state.proxy_process.lock(){if let Some(mut child)=slot.take(){let _=child.kill();let _=child.wait();}}}
+ false
+}
 
 #[cfg(test)]
 mod certificate_time_tests {
