@@ -1,7 +1,8 @@
 use axum::{extract::{Path, State}, Json, http::StatusCode};
 use serde::Serialize;
 use std::{
-    io::{BufRead, BufReader},
+    fs::{self, OpenOptions},
+    io::{BufRead, BufReader, Write},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -17,6 +18,14 @@ pub struct TunnelInfo {
     running: bool,
     url: Option<String>,
     started_at: Option<u64>,
+    log_path: Option<String>,
+}
+
+fn tunnel_log_path(state: &AppState, website_id: &str) -> std::path::PathBuf {
+    let safe_id: String = website_id.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    state.logs_dir.join("tunnels").join(format!("{}.log", if safe_id.is_empty() { "unknown" } else { &safe_id }))
 }
 
 fn now() -> u64 {
@@ -39,14 +48,27 @@ fn capture_urls<R: std::io::Read + Send + 'static>(
     stream: R,
     urls: Arc<Mutex<std::collections::HashMap<String, String>>>,
     website_id: String,
+    log_path: std::path::PathBuf,
+    logged_bytes: Arc<Mutex<usize>>,
 ) {
     thread::spawn(move || {
-        for line in BufReader::new(stream).lines().flatten() {
+        let mut log = OpenOptions::new().create(true).append(true).open(log_path).ok();
+        for line in BufReader::new(stream).lines() {
+            let Ok(line) = line else { break; };
+            let line_bytes = line.len().saturating_add(1);
+            if let Ok(mut used) = logged_bytes.lock() {
+                if used.saturating_add(line_bytes) <= 512 * 1024 {
+                    if let Some(file) = log.as_mut() {
+                        if writeln!(file, "{line}").is_ok() {
+                            *used += line_bytes;
+                        }
+                    }
+                }
+            }
             if let Some(url) = quick_tunnel_url(&line) {
                 if let Ok(mut registered) = urls.lock() {
                     registered.entry(website_id.clone()).or_insert(url);
                 }
-                break;
             }
         }
     });
@@ -77,7 +99,7 @@ pub async fn list(
     let mut output = Vec::with_capacity(sites.len());
     for (id, name, runtime) in sites {
         let running = children.get_mut(&id)
-            .map(|child| matches!(child.try_wait(), Ok(None)))
+            .map(|child| child.try_wait().map(|status| status.is_none()).unwrap_or(true))
             .unwrap_or(false);
         if !running {
             children.remove(&id);
@@ -91,6 +113,7 @@ pub async fn list(
             running,
             url: if running { urls.get(&id).cloned() } else { None },
             started_at: if running { started.get(&id).copied() } else { None },
+            log_path: Some(tunnel_log_path(&state, &id).to_string_lossy().into_owned()),
         });
     }
     Ok(Json(output))
@@ -129,11 +152,18 @@ pub async fn start(
     let mut children = state.tunnel_processes.lock()
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
     if let Some(child) = children.get_mut(&id) {
-        if matches!(child.try_wait(), Ok(None)) {
-            return Err(error(StatusCode::CONFLICT, "A tunnel is already running for this website."));
+        match child.try_wait() {
+            Ok(None) => return Err(error(StatusCode::CONFLICT, "A tunnel is already running for this website.")),
+            Ok(Some(_)) => { children.remove(&id); }
+            Err(e) => return Err(error(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not inspect the existing tunnel process: {e}"))),
         }
-        children.remove(&id);
     }
+
+    let log_path = tunnel_log_path(&state, &id);
+    let log_dir = log_path.parent().ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel log directory is unavailable"))?;
+    fs::create_dir_all(log_dir).map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not create tunnel log directory: {e}")))?;
+    OpenOptions::new().create(true).write(true).truncate(true).open(&log_path)
+        .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not create tunnel log {}: {e}", log_path.display())))?;
 
     let mut child = Command::new(&state.cloudflared_bin)
         .args(["tunnel", "--url", &origin, "--no-autoupdate"])
@@ -157,8 +187,9 @@ pub async fn start(
 
     let stdout = child.stdout.take().ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "Could not capture tunnel stdout"))?;
     let stderr = child.stderr.take().ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "Could not capture tunnel stderr"))?;
-    capture_urls(stdout, state.tunnel_urls.clone(), id.clone());
-    capture_urls(stderr, state.tunnel_urls.clone(), id.clone());
+    let logged_bytes = Arc::new(Mutex::new(0usize));
+    capture_urls(stdout, state.tunnel_urls.clone(), id.clone(), log_path.clone(), logged_bytes.clone());
+    capture_urls(stderr, state.tunnel_urls.clone(), id.clone(), log_path.clone(), logged_bytes);
     children.insert(id.clone(), child);
 
     Ok(Json(TunnelInfo {
@@ -168,6 +199,7 @@ pub async fn start(
         running: true,
         url: None,
         started_at: Some(started_at),
+        log_path: Some(log_path.to_string_lossy().into_owned()),
     }))
 }
 
@@ -175,12 +207,20 @@ pub async fn stop(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    if let Ok(mut children) = state.tunnel_processes.lock() {
-        if let Some(mut child) = children.remove(&id) {
-            let _ = child.kill();
-            let _ = child.wait();
+    let mut children = state.tunnel_processes.lock()
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
+    if let Some(child) = children.get_mut(&id) {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                child.kill().map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not stop tunnel process: {e}")))?;
+                child.wait().map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not reap tunnel process: {e}")))?;
+            }
+            Err(e) => return Err(error(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not inspect tunnel process before stopping: {e}"))),
         }
+        children.remove(&id);
     }
+    drop(children);
     if let Ok(mut urls) = state.tunnel_urls.lock() { urls.remove(&id); }
     if let Ok(mut started) = state.tunnel_started_at.lock() { started.remove(&id); }
     Ok(StatusCode::NO_CONTENT)
