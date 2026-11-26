@@ -1,6 +1,6 @@
 use axum::{extract::{Path, State}, routing::get, Json, Router};
 use serde_json::{json, Value};
-use std::{process::{Command, Stdio}, fs};
+use std::{fs::{self, OpenOptions}, net::{SocketAddr, TcpStream}, process::{Command, Stdio}, time::Duration};
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -15,6 +15,13 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/proxy/reload", axum::routing::post(reload))
 }
 fn config_path(state:&AppState)->std::path::PathBuf { state.config_dir.join("Caddyfile") }
+fn caddy_log_path(state:&AppState)->std::path::PathBuf { state.logs_dir.join("caddy.log") }
+fn caddy_admin_ready()->bool {
+    TcpStream::connect_timeout(
+        &SocketAddr::from(([127,0,0,1],2019)),
+        Duration::from_millis(250),
+    ).is_ok()
+}
 pub(crate) fn generate_config(state:&AppState)->Result<(String,usize,usize),String>{
  let public_exposure_enabled=crate::settings::setting_bool(state,"public_exposure_enabled",false);
  let db=state.db.lock().map_err(|_|"Database lock is unavailable".to_string())?;
@@ -184,22 +191,57 @@ fn chrono_free_parse_epoch(value:&str)->Option<i64>{
 async fn status(State(state):State<AppState>)->Json<Value>{
  let installed=Command::new(&state.caddy_bin).arg("version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|result|result.success()).unwrap_or(false);
  let running=if let Ok(mut slot)=state.proxy_process.lock(){let exited=match slot.as_mut(){Some(child)=>matches!(child.try_wait(),Ok(Some(_))),None=>false};if exited{*slot=None;false}else{slot.is_some()}}else{false};
- Json(json!({"installed":installed,"running":running,"binary":state.caddy_bin,"config_path":config_path(&state),"admin_endpoint":"http://127.0.0.1:2019","note":"Caddy listens on the ports declared by your domain routes. Public exposure and HTTPS require DNS, firewall and domain configuration."}))
+ let admin_ready=tokio::task::spawn_blocking(caddy_admin_ready).await.unwrap_or(false);
+ Json(json!({"installed":installed,"running":running,"admin_ready":admin_ready,"binary":state.caddy_bin,"config_path":config_path(&state),"log_path":caddy_log_path(&state),"admin_endpoint":"http://127.0.0.1:2019","note":"Admin readiness confirms only that Caddy's local admin socket accepts TCP connections. Public exposure and HTTPS still require DNS, firewall and domain configuration."}))
 }
 async fn validate(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
  match validate_config(&state){Ok(output)=>Ok(Json(json!({"valid":true,"output":output,"config_path":config_path(&state)}))),Err(e)=>Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_validation_failed","message":e}}))))}
 }
-async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{ start_sync(state) }
-fn start_sync(state:AppState)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+ let (mut response,started_here)=start_sync(state.clone())?;
+ let log_path=caddy_log_path(&state);
+ for _ in 0..40 {
+  if tokio::task::spawn_blocking(caddy_admin_ready).await.unwrap_or(false) {
+   response["ready"]=json!(true);
+   response["admin_ready"]=json!(true);
+   response["log_path"]=json!(log_path);
+   return Ok(response);
+  }
+  let exited={
+   let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
+   match slot.as_mut() {
+    Some(child)=>match child.try_wait(){
+     Ok(Some(status))=>{*slot=None;Some(status)},
+     Ok(None)=>None,
+     Err(error)=>return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"caddy_status_failed","message":format!("Could not inspect the Caddy process: {error}. Logs: {}",log_path.display())}})))),
+    },
+    None=>Some(std::process::ExitStatus::default()),
+   }
+  };
+  if let Some(status)=exited {
+   return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"caddy_exited_during_startup","message":format!("Caddy exited before its local admin endpoint became ready (status: {status}). Review {}",log_path.display())}}))));
+  }
+  tokio::time::sleep(Duration::from_millis(125)).await;
+ }
+ if started_here {
+  if let Ok(mut slot)=state.proxy_process.lock(){if let Some(mut child)=slot.take(){let _=child.kill();let _=child.wait();}}
+ }
+ Err((axum::http::StatusCode::GATEWAY_TIMEOUT,Json(json!({"error":{"code":"caddy_start_timeout","message":format!("Caddy did not open its local admin endpoint at 127.0.0.1:2019 within 5 seconds. {}. Review the Caddy log.",if started_here{"The newly started process was stopped."}else{"The existing process was left running."})},"log_path":log_path}))))
+}
+fn start_sync(state:AppState)->Result<(Json<Value>,bool),(axum::http::StatusCode,Json<Value>)>{
  if let Err(e)=validate_config(&state){return Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_validation_failed","message":e}}))));}
  let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
  let already_running=match slot.as_mut(){Some(child)=>match child.try_wait(){Ok(None)=>true,Ok(Some(_))=>false,Err(_)=>true},None=>false};
- if already_running {let pid=slot.as_ref().map(|process|process.id()).unwrap_or_default();return Ok(Json(json!({"running":true,"pid":pid,"message":"Caddy is already running"})));}
+ if already_running {let pid=slot.as_ref().map(|process|process.id()).unwrap_or_default();return Ok((Json(json!({"running":true,"pid":pid,"message":"Caddy is already running"})),false));}
  if slot.is_some(){*slot=None;}
+ fs::create_dir_all(&state.logs_dir).map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"caddy_log_directory_failed","message":format!("Could not create Caddy log directory: {e}")}}))))?;
+ let log_path=caddy_log_path(&state);
+ let log=OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"caddy_log_open_failed","message":format!("Could not open Caddy log {}: {e}",log_path.display())}}))))?;
+ let stderr=log.try_clone().map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"caddy_log_clone_failed","message":format!("Could not prepare Caddy stderr log: {e}")}}))))?;
  let path=config_path(&state);
- let child=Command::new(&state.caddy_bin).args(["run","--config"]).arg(&path).args(["--adapter","caddyfile"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e|(axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_start_failed","message":format!("Could not start Caddy: {e}")}}))))?;
+ let child=Command::new(&state.caddy_bin).args(["run","--config"]).arg(&path).args(["--adapter","caddyfile"]).stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(stderr)).spawn().map_err(|e|(axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"caddy_start_failed","message":format!("Could not start Caddy: {e}")}}))))?;
  let pid=child.id(); *slot=Some(child); drop(slot);
- Ok(Json(json!({"running":true,"pid":pid,"config_path":path,"message":"Caddy start requested"})))
+ Ok((Json(json!({"running":true,"pid":pid,"config_path":path,"log_path":log_path,"message":"Caddy process started; waiting for its local admin endpoint"})),true))
 }
 async fn stop(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
  let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
