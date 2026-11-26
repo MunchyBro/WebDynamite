@@ -175,8 +175,7 @@ pub async fn start(
             "cloudflared could not start. Install cloudflared or set CLOUDFLARED_BIN. {e}"
         )))?;
 
-    // Clear metadata from any previous process before reader threads can publish
-    // the new process URL; otherwise a fast CLI response could be erased below.
+    // Clear old metadata before reader threads can publish the replacement URL.
     let started_at = now();
     state.tunnel_urls.lock()
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel URL registry unavailable"))?
@@ -191,16 +190,86 @@ pub async fn start(
     capture_urls(stdout, state.tunnel_urls.clone(), id.clone(), log_path.clone(), logged_bytes.clone());
     capture_urls(stderr, state.tunnel_urls.clone(), id.clone(), log_path.clone(), logged_bytes);
     children.insert(id.clone(), child);
+    drop(children);
 
-    Ok(Json(TunnelInfo {
-        website_id: id,
-        website_name: name,
-        runtime,
-        running: true,
-        url: None,
-        started_at: Some(started_at),
-        log_path: Some(log_path.to_string_lossy().into_owned()),
-    }))
+    // A spawned CLI is not a usable tunnel until it announces its assigned URL.
+    // Bound the wait so startup errors are reported promptly instead of showing a
+    // misleading RUNNING state with no public address.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let process_exit = {
+            let mut children = state.tunnel_processes.lock()
+                .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
+            match children.get_mut(&id) {
+                Some(child) => match child.try_wait() {
+                    Ok(None) => None,
+                    Ok(Some(status)) => Some(Ok(status.code())),
+                    Err(e) => Some(Err(e.to_string())),
+                },
+                None => Some(Err("Tunnel process disappeared during startup.".to_string())),
+            }
+        };
+
+        if let Some(exit) = process_exit {
+            match exit {
+                Ok(code) => {
+                    if let Ok(mut children) = state.tunnel_processes.lock() { children.remove(&id); }
+                    if let Ok(mut urls) = state.tunnel_urls.lock() { urls.remove(&id); }
+                    if let Ok(mut started) = state.tunnel_started_at.lock() { started.remove(&id); }
+                    return Err(error(StatusCode::BAD_GATEWAY, format!(
+                        "cloudflared exited before announcing a Quick Tunnel URL (exit code: {}). See {}",
+                        code.map(|value| value.to_string()).unwrap_or_else(|| "unknown".into()),
+                        log_path.display()
+                    )));
+                }
+                Err(detail) => {
+                    return Err(error(StatusCode::INTERNAL_SERVER_ERROR, format!(
+                        "Could not verify tunnel startup: {detail}. The process handle was retained for safe inspection."
+                    )));
+                }
+            }
+        }
+
+        let url = state.tunnel_urls.lock()
+            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel URL registry unavailable"))?
+            .get(&id).cloned();
+        if let Some(url) = url {
+            return Ok(Json(TunnelInfo {
+                website_id: id,
+                website_name: name,
+                runtime,
+                running: true,
+                url: Some(url),
+                started_at: Some(started_at),
+                log_path: Some(log_path.to_string_lossy().into_owned()),
+            }));
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            let mut children = state.tunnel_processes.lock()
+                .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
+            if let Some(child) = children.get_mut(&id) {
+                child.kill().map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!(
+                    "Tunnel did not announce a URL within 10 seconds and could not be stopped: {e}. See {}",
+                    log_path.display()
+                )))?;
+                child.wait().map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!(
+                    "Tunnel startup timed out and its process could not be reaped: {e}. See {}",
+                    log_path.display()
+                )))?;
+            }
+            children.remove(&id);
+            drop(children);
+            if let Ok(mut urls) = state.tunnel_urls.lock() { urls.remove(&id); }
+            if let Ok(mut started) = state.tunnel_started_at.lock() { started.remove(&id); }
+            return Err(error(StatusCode::GATEWAY_TIMEOUT, format!(
+                "cloudflared did not announce a Quick Tunnel URL within 10 seconds. The process was stopped; inspect {}",
+                log_path.display()
+            )));
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 pub async fn stop(
