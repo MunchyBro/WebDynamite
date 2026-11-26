@@ -155,3 +155,8 @@ A custom launch profile overrides automatic runtime detection for a non-static w
 ## Runtime startup reliability (Hosting phase 1)
 
 Dynamic runtime startup probes the configured readiness path for up to 15 seconds before reporting the website as running. The readiness wait yields to the asynchronous Core Service runtime between probes, so one slow website startup does not occupy a Tokio worker for the entire wait. If startup exits or times out, WebDynamite records the website as `error` (or `stopped` for a clean early exit) and attempts to terminate the complete process tree on Windows before returning. Cleanup failures are included in the API error instead of being silently ignored. A successful readiness response confirms only that the configured local HTTP path is responding; it does not verify application correctness or public reachability.
+
+
+## Caddy startup verification and logs
+
+Starting Caddy is not treated as success merely because Windows created a process. WebDynamite waits up to five seconds for Caddy's local admin TCP endpoint at `127.0.0.1:2019` and reports a startup error if the process exits or the endpoint never becomes ready. The proxy status response includes the process state, local admin readiness and the log-file path. Caddy stdout and stderr are appended to `logs/caddy.log` so startup and runtime errors remain available for diagnosis. This check proves only local Caddy admin-socket readiness; it does not prove a website route, public DNS, inbound connectivity or HTTPS issuance.
