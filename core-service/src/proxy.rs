@@ -1,5 +1,7 @@
 use axum::{extract::{Path, State}, routing::get, Json, Router};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use rusqlite::{params, OptionalExtension};
 use std::{fs::{self, OpenOptions}, net::{SocketAddr, TcpStream}, process::{Command, Stdio}, time::Duration};
 use crate::AppState;
 
@@ -9,11 +11,83 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/proxy/tls-check/:hostname", axum::routing::post(tls_check))
         .route("/api/v1/proxy/tls-details/:hostname", get(tls_details))
         .route("/api/v1/proxy/tls-history/:hostname", get(tls_history))
+        .route("/api/v1/proxy/tls-monitoring", get(get_tls_monitoring).put(save_tls_monitoring))
+        .route("/api/v1/proxy/tls-alerts", get(list_tls_alerts))
+        .route("/api/v1/proxy/tls-alerts/:id/acknowledge", axum::routing::post(acknowledge_tls_alert))
         .route("/api/v1/proxy/validate", axum::routing::post(validate))
         .route("/api/v1/proxy/start", axum::routing::post(start))
         .route("/api/v1/proxy/stop", axum::routing::post(stop))
         .route("/api/v1/proxy/reload", axum::routing::post(reload))
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TlsMonitoringSettings { enabled: bool, interval_hours: i64, warning_days: i64, next_run_at: Option<i64>, last_run_at: Option<i64>, last_status: Option<String>, last_error: Option<String> }
+#[derive(Debug, Deserialize)]
+struct SaveTlsMonitoring { enabled: bool, interval_hours: i64, warning_days: i64 }
+fn unix_now() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64 }
+fn tls_settings_sync(state:&AppState)->Result<TlsMonitoringSettings,String>{
+ let db=state.db.lock().map_err(|_|"Database lock is unavailable".to_string())?;
+ db.query_row("SELECT enabled,interval_hours,warning_days,next_run_at,last_run_at,last_status,last_error FROM tls_monitoring_settings WHERE id=1",[],|r|Ok(TlsMonitoringSettings{enabled:r.get::<_,i64>(0)?!=0,interval_hours:r.get(1)?,warning_days:r.get(2)?,next_run_at:r.get(3)?,last_run_at:r.get(4)?,last_status:r.get(5)?,last_error:r.get(6)?})).map_err(|e|e.to_string())
+}
+async fn get_tls_monitoring(State(state):State<AppState>)->Result<Json<TlsMonitoringSettings>,(axum::http::StatusCode,Json<Value>)>{
+ tls_settings_sync(&state).map(Json).map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"tls_settings_failed","message":e}}))))
+}
+async fn save_tls_monitoring(State(state):State<AppState>,Json(input):Json<SaveTlsMonitoring>)->Result<Json<TlsMonitoringSettings>,(axum::http::StatusCode,Json<Value>)>{
+ if !(1..=168).contains(&input.interval_hours)||!(1..=90).contains(&input.warning_days){return Err((axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":{"code":"invalid_tls_monitoring_settings","message":"Check interval must be 1–168 hours and expiry warning must be 1–90 days."}}))));}
+ let next=if input.enabled{Some(unix_now()+input.interval_hours*3600)}else{None};
+ {let db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_locked","message":"Database lock is unavailable."}}))))?;
+ db.execute("UPDATE tls_monitoring_settings SET enabled=?1,interval_hours=?2,warning_days=?3,next_run_at=?4,last_error=NULL WHERE id=1",params![input.enabled as i64,input.interval_hours,input.warning_days,next]).map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"tls_settings_save_failed","message":e.to_string()}}))))?;}
+ get_tls_monitoring(State(state)).await
+}
+async fn list_tls_alerts(State(state):State<AppState>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+ let db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_locked","message":"Database lock is unavailable."}}))))?;
+ let mut q=db.prepare("SELECT id,hostname,event,message,thumbprint,days_remaining,created_at,acknowledged_at FROM tls_certificate_alerts ORDER BY created_at DESC,id DESC LIMIT 200").map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"tls_alert_query_failed","message":e.to_string()}}))))?;
+ let rows=q.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"hostname":r.get::<_,String>(1)?,"event":r.get::<_,String>(2)?,"message":r.get::<_,String>(3)?,"thumbprint":r.get::<_,String>(4)?,"days_remaining":r.get::<_,Option<i64>>(5)?,"created_at":r.get::<_,i64>(6)?,"acknowledged_at":r.get::<_,Option<i64>>(7)?}))).map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"tls_alert_query_failed","message":e.to_string()}}))))?;
+ let mut alerts=Vec::new();for row in rows{alerts.push(row.map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"tls_alert_query_failed","message":e.to_string()}}))))?);}
+ Ok(Json(json!({"alerts":alerts,"count":alerts.len(),"retention":200})))
+}
+async fn acknowledge_tls_alert(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<Value>,(axum::http::StatusCode,Json<Value>)>{
+ let now=unix_now();let db=state.db.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"database_locked","message":"Database lock is unavailable."}}))))?;
+ let changed=db.execute("UPDATE tls_certificate_alerts SET acknowledged_at=?1 WHERE id=?2 AND acknowledged_at IS NULL",params![now,id]).map_err(|e|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"tls_alert_ack_failed","message":e.to_string()}}))))?;
+ if changed==0{return Err((axum::http::StatusCode::NOT_FOUND,Json(json!({"error":{"code":"tls_alert_not_found","message":"Alert was not found or was already acknowledged."}}))));}
+ Ok(Json(json!({"id":id,"acknowledged_at":now})))
+}
+fn inspect_certificate_sync(hostname:&str)->Result<Value,String>{
+ if !cfg!(windows){return Err("Automatic certificate inspection currently requires Windows PowerShell.".into());}
+ const SCRIPT:&str=r#"$ErrorActionPreference='Stop'; $hostName=$env:WEBDYNAMITE_TLS_HOST; $client=[System.Net.Sockets.TcpClient]::new(); $client.ReceiveTimeout=8000; $client.SendTimeout=8000; try { $task=$client.ConnectAsync($hostName,443); if(-not $task.Wait(8000)){ throw 'Connection timed out while contacting port 443.' }; $callback=[System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$certificate,$chain,$errors) return $true }; $stream=[System.Net.Security.SslStream]::new($client.GetStream(),$false,$callback); try { $stream.ReadTimeout=8000; $stream.WriteTimeout=8000; $stream.AuthenticateAsClient($hostName); $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($stream.RemoteCertificate); [pscustomobject]@{ subject=$cert.Subject; issuer=$cert.Issuer; not_before=$cert.NotBefore.ToUniversalTime().ToString('o'); not_after=$cert.NotAfter.ToUniversalTime().ToString('o'); thumbprint=$cert.Thumbprint } | ConvertTo-Json -Compress } finally { $stream.Dispose() } } finally { $client.Dispose() }"#;
+ let output=Command::new("powershell.exe").args(["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",SCRIPT]).env("WEBDYNAMITE_TLS_HOST",hostname).output().map_err(|e|format!("Could not start PowerShell certificate inspection: {e}"))?;
+ if !output.status.success(){let detail=String::from_utf8_lossy(&output.stderr).trim().to_string();return Err(if detail.is_empty(){"Could not retrieve the remote TLS certificate.".into()}else{detail});}
+ serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).map_err(|e|format!("PowerShell returned invalid certificate metadata: {e}"))
+}
+fn record_tls_scan(state:&AppState,hostname:&str,cert:&Value,warning_days:i64,now:i64)->Result<(),String>{
+ let subject=cert.get("subject").and_then(Value::as_str).unwrap_or("");let issuer=cert.get("issuer").and_then(Value::as_str).unwrap_or("");
+ let not_before=cert.get("not_before").and_then(Value::as_str).unwrap_or("");let not_after=cert.get("not_after").and_then(Value::as_str).unwrap_or("");
+ let thumbprint=cert.get("thumbprint").and_then(Value::as_str).unwrap_or("");if thumbprint.is_empty(){return Err("Certificate response did not include a thumbprint.".into());}
+ let expiry=chrono_free_parse_epoch(not_after).ok_or_else(||"Certificate expiry timestamp could not be parsed.".to_string())?;let days=(expiry-now).div_euclid(86400);
+ let db=state.db.lock().map_err(|_|"Database lock is unavailable".to_string())?;
+ let previous:Option<String>=db.query_row("SELECT thumbprint FROM tls_certificate_history WHERE hostname=?1 ORDER BY checked_at DESC,id DESC LIMIT 1",[hostname],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+ db.execute("INSERT INTO tls_certificate_history(hostname,subject,issuer,not_before,not_after,thumbprint,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![hostname,subject,issuer,not_before,not_after,thumbprint,now]).map_err(|e|e.to_string())?;
+ db.execute("DELETE FROM tls_certificate_history WHERE hostname=?1 AND id NOT IN (SELECT id FROM tls_certificate_history WHERE hostname=?1 ORDER BY checked_at DESC,id DESC LIMIT 30)",[hostname]).map_err(|e|e.to_string())?;
+ let mut add_alert=|event:&str,message:String,fingerprint:String,remaining:Option<i64>|->Result<(),String>{
+  db.execute("INSERT OR IGNORE INTO tls_certificate_alerts(id,hostname,event,message,thumbprint,days_remaining,created_at,fingerprint) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![uuid::Uuid::new_v4().to_string(),hostname,event,message,thumbprint,remaining,now,fingerprint]).map_err(|e|e.to_string())?;Ok(())
+ };
+ if let Some(previous_thumbprint)=previous.as_deref(){if previous_thumbprint!=thumbprint{add_alert("renewed",format!("A different TLS certificate is now presented by {hostname}."),format!("{hostname}:renewed:{thumbprint}"),Some(days))?;}}
+ if days<0{add_alert("expired",format!("The TLS certificate for {hostname} expired {} day(s) ago.",days.saturating_abs()),format!("{hostname}:expired:{thumbprint}"),Some(days))?;}
+ else if days<=warning_days{add_alert("expiring",format!("The TLS certificate for {hostname} expires in {days} day(s)."),format!("{hostname}:expiring:{thumbprint}"),Some(days))?;}
+ Ok(())
+}
+pub fn start_tls_monitoring_scheduler(state:AppState){
+ tokio::spawn(async move{let mut tick=tokio::time::interval(Duration::from_secs(30));loop{tick.tick().await;
+  let settings=match tls_settings_sync(&state){Ok(value)=>value,Err(_)=>continue};if !settings.enabled||settings.next_run_at.is_none_or(|next|unix_now()<next){continue;}
+  let now=unix_now();let hostnames={let db=match state.db.lock(){Ok(value)=>value,Err(_)=>continue};let mut q=match db.prepare("SELECT hostname FROM public_domains ORDER BY hostname"){Ok(value)=>value,Err(_)=>continue};let rows=match q.query_map([],|r|r.get::<_,String>(0)){Ok(value)=>value,Err(_)=>continue};rows.filter_map(Result::ok).collect::<Vec<_>>()};
+  if let Ok(db)=state.db.lock(){let _=db.execute("UPDATE tls_monitoring_settings SET next_run_at=?1 WHERE id=1",params![now+settings.interval_hours*3600]);}
+  let task_state=state.clone();let warning=settings.warning_days;let outcome=tokio::task::spawn_blocking(move||{let mut checked=0usize;let mut failures=Vec::new();for hostname in hostnames{match inspect_certificate_sync(&hostname).and_then(|cert|record_tls_scan(&task_state,&hostname,&cert,warning,now)){Ok(())=>checked+=1,Err(error)=>failures.push(format!("{hostname}: {error}"))}}(checked,failures)}).await;
+  let (checked,failures)=match outcome{Ok(value)=>value,Err(error)=>(0,vec![error.to_string()])};let status=if failures.is_empty(){"success"}else if checked>0{"partial"}else{"failed"};
+  let error=if failures.is_empty(){None}else{Some(failures.into_iter().take(5).collect::<Vec<_>>().join("; "))};
+  if let Ok(db)=state.db.lock(){let _=db.execute("UPDATE tls_monitoring_settings SET last_run_at=?1,last_status=?2,last_error=?3 WHERE id=1",params![now,status,error]);}
+ }});
+}
+
 fn config_path(state:&AppState)->std::path::PathBuf { state.config_dir.join("Caddyfile") }
 fn caddy_log_path(state:&AppState)->std::path::PathBuf { state.logs_dir.join("caddy.log") }
 fn caddy_admin_ready()->bool {
