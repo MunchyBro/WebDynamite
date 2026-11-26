@@ -1,5 +1,52 @@
 use crate::AppState;
+use axum::{extract::State, routing::get, Json, Router};
+use serde::Serialize;
+use rusqlite::params;
 use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
+
+
+#[derive(Debug, Serialize)]
+struct RecoveryEvent {
+    id: String,
+    process_key: String,
+    event: String,
+    attempt: Option<u64>,
+    message: String,
+    created_at_unix_ms: u64,
+}
+
+/// Store a concise, bounded recovery audit event without retaining process output or URLs.
+pub(crate) fn record_event(state: &AppState, key: &str, event: &str, attempt: Option<u64>, message: &str) {
+    let Ok(db) = state.db.lock() else { return; };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis().min(u64::MAX as u128) as u64;
+    let _ = db.execute(
+        "INSERT INTO hosting_recovery_events(id,process_key,event,attempt,message,created_at_unix_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![uuid::Uuid::new_v4().to_string(), key, event, attempt, message, now],
+    );
+    let _ = db.execute(
+        "DELETE FROM hosting_recovery_events WHERE id NOT IN (SELECT id FROM hosting_recovery_events ORDER BY created_at_unix_ms DESC,rowid DESC LIMIT 200)",
+        [],
+    );
+}
+
+async fn list_recovery_events(State(state): State<AppState>) -> Result<Json<Vec<RecoveryEvent>>, (axum::http::StatusCode, String)> {
+    let db = state.db.lock().map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Database lock is unavailable".to_string()))?;
+    let mut statement = db.prepare(
+        "SELECT id,process_key,event,attempt,message,created_at_unix_ms FROM hosting_recovery_events ORDER BY created_at_unix_ms DESC,rowid DESC LIMIT 100"
+    ).map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let rows = statement.query_map([], |row| Ok(RecoveryEvent {
+        id: row.get(0)?, process_key: row.get(1)?, event: row.get(2)?,
+        attempt: row.get::<_, Option<u64>>(3)?, message: row.get(4)?, created_at_unix_ms: row.get(5)?,
+    })).map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let mut events = Vec::new();
+    for row in rows { events.push(row.map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?); }
+    Ok(Json(events))
+}
+
+pub fn router() -> Router<AppState> {
+    Router::new().route("/api/v1/hosting/recovery-events", get(list_recovery_events))
+}
 
 /// Mark an intentional stop so an exit observed by the supervisor is not recovered.
 pub(crate) fn suppress_restart(state: &AppState, key: &str) {
