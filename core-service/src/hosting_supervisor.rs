@@ -120,6 +120,7 @@ async fn recover_one(
         };
 
         if recovered {
+            eprintln!("Hosting recovery attempt {} for {key} succeeded.", used + 1);
             // A successful start does not reset the budget immediately: only a full
             // five-minute stable run earns a fresh retry budget.
             let stable_state = state.clone();
@@ -133,6 +134,7 @@ async fn recover_one(
             });
             break;
         }
+        eprintln!("Hosting recovery attempt {} for {key} failed; retry budget remains bounded.", used + 1);
     }
     if let Ok(mut pending) = in_flight.lock() { pending.remove(&key); }
 }
