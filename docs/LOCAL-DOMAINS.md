@@ -150,3 +150,8 @@ Detection is intentionally conservative and uses conventional entry points and a
 A custom launch profile overrides automatic runtime detection for a non-static website. Configure an executable and one argument per line in **Runtime Profiles**. Arguments are passed directly without a command shell. The process working directory is the project folder and it receives `PORT` and `HOST=127.0.0.1` environment variables. Use `{port}` and `{project}` placeholders in arguments. Save or remove profiles only while the website is stopped. Removing a profile restores the built-in runtime launcher. Profiles are included in full-system backups.
 
 **Security:** a custom executable runs with the same operating-system permissions as WebDynamite. This feature does not sandbox processes or prevent a user-selected program from binding to other interfaces; use trusted executables and configure them to listen only on loopback.
+
+
+## Runtime startup reliability (Hosting phase 1)
+
+Dynamic runtime startup probes the configured readiness path for up to 15 seconds before reporting the website as running. The readiness wait yields to the asynchronous Core Service runtime between probes, so one slow website startup does not occupy a Tokio worker for the entire wait. If startup exits or times out, WebDynamite records the website as `error` (or `stopped` for a clean early exit) and attempts to terminate the complete process tree on Windows before returning. Cleanup failures are included in the API error instead of being silently ignored. A successful readiness response confirms only that the configured local HTTP path is responding; it does not verify application correctness or public reachability.
