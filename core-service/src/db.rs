@@ -209,6 +209,10 @@ pub fn initialize(connection: &Connection) -> Result<()> {
     );
     CREATE INDEX IF NOT EXISTS idx_website_health_history ON website_health_checks(website_id, checked_at_unix_ms DESC);
     INSERT OR IGNORE INTO schema_migrations(version) VALUES (18);")?;
+    // Version 20 stores the exact build profile used by each run.
+    if !has_column(connection, "build_runs", "args_json")? { connection.execute("ALTER TABLE build_runs ADD COLUMN args_json TEXT NOT NULL DEFAULT '[]'", [])?; }
+    if !has_column(connection, "build_runs", "output_dir")? { connection.execute("ALTER TABLE build_runs ADD COLUMN output_dir TEXT NOT NULL DEFAULT 'dist'", [])?; }
+    connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (20)", [])?;
     // Version 19 stores deduplicated website-down and recovery alerts.
     connection.execute_batch("CREATE TABLE IF NOT EXISTS website_health_alerts (
         id TEXT PRIMARY KEY NOT NULL,
@@ -233,7 +237,7 @@ mod tests {
         initialize(&connection).unwrap();
         initialize(&connection).unwrap();
         let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         assert!(has_column(&connection, "websites", "start_command").unwrap());
         assert!(has_column(&connection, "websites", "port").unwrap());
         assert!(has_column(&connection, "websites", "lan_enabled").unwrap());

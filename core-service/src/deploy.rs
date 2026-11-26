@@ -21,7 +21,7 @@ struct RunsQuery{website_id:Option<String>,limit:Option<u32>,offset:Option<u32>,
 #[derive(Serialize)]
 struct Profile{id:String,website_id:String,website_name:String,program:String,args:Vec<String>,output_dir:String,updated_at:String}
 #[derive(Serialize)]
-struct BuildRun{id:String,website_id:String,website_name:String,program:String,status:String,exit_code:Option<i32>,duration_ms:i64,logs:String,created_at:String}
+struct BuildRun{id:String,website_id:String,website_name:String,program:String,status:String,exit_code:Option<i32>,duration_ms:i64,logs:String,created_at:String,args:Vec<String>,output_dir:String}
 #[derive(Serialize)]
 struct Release{id:String,website_id:String,website_name:String,source:String,commit_hash:Option<String>,active:bool,file_count:u64,size_bytes:u64,created_at:String}
 fn allowed_program(program:&str)->bool{matches!(program,"node"|"python"|"php"|"cargo"|"dotnet")}
@@ -68,9 +68,9 @@ async fn list_runs(State(state):State<AppState>,Query(query):Query<RunsQuery>)->
  if search.len()>120{return Err(DeployError(StatusCode::BAD_REQUEST,"build_search_too_long","Build history search must be 120 characters or fewer.".into()));}
  let search=if search.is_empty(){None}else{Some(search)};
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
- let sql="SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id WHERE (?1 IS NULL OR r.website_id=?1) AND (?2 IS NULL OR (?2='failed' AND r.status<>'success') OR r.status=?2) AND (?3 IS NULL OR instr(lower(r.program||' '||r.status||' '||r.logs),lower(?3))>0) ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?4 OFFSET ?5";
+ let sql="SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at,r.args_json,r.output_dir FROM build_runs r JOIN websites w ON w.id=r.website_id WHERE (?1 IS NULL OR r.website_id=?1) AND (?2 IS NULL OR (?2='failed' AND r.status<>'success') OR r.status=?2) AND (?3 IS NULL OR instr(lower(r.program||' '||r.status||' '||r.logs),lower(?3))>0) ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?4 OFFSET ?5";
  let mut q=db.prepare(sql).map_err(db_error)?;
- let map=|r:&rusqlite::Row<'_>|Ok(BuildRun{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,program:r.get(3)?,status:r.get(4)?,exit_code:r.get(5)?,duration_ms:r.get(6)?,logs:r.get(7)?,created_at:r.get(8)?});
+ let map=|r:&rusqlite::Row<'_>|Ok(BuildRun{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,program:r.get(3)?,status:r.get(4)?,exit_code:r.get(5)?,duration_ms:r.get(6)?,logs:r.get(7)?,created_at:r.get(8)?,args:serde_json::from_str(&r.get::<_,String>(9)?).unwrap_or_default(),output_dir:r.get(10)?});
  let rows=q.query_map(params![query.website_id.as_deref(),status,search,limit,offset],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
  Ok(Json(rows))
 }
@@ -151,10 +151,10 @@ async fn run_build(State(state):State<AppState>,Path(website_id):Path<String>)->
  }
  let id=Uuid::new_v4().to_string();
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
- db.execute("INSERT INTO build_runs(id,website_id,program,status,exit_code,duration_ms,logs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,website_id,profile.0,status,exit_code,elapsed,logs]).map_err(db_error)?;
+ db.execute("INSERT INTO build_runs(id,website_id,program,status,exit_code,duration_ms,logs,args_json,output_dir) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![id,website_id,profile.0,status,exit_code,elapsed,logs,serde_json::to_string(&profile.1).unwrap_or_else(|_| "[]".into()),profile.2]).map_err(db_error)?;
  let website_name:String=db.query_row("SELECT name FROM websites WHERE id=?1",params![website_id],|r|r.get(0)).map_err(db_error)?;
  let created_at:String=db.query_row("SELECT created_at FROM build_runs WHERE id=?1",params![id],|r|r.get(0)).map_err(db_error)?;
-Ok((if status=="success"{StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},Json(BuildRun{id,website_id,website_name,program:profile.0,status:status.into(),exit_code,duration_ms:elapsed,logs,created_at})))
+Ok((if status=="success"{StatusCode::OK}else{StatusCode::UNPROCESSABLE_ENTITY},Json(BuildRun{id,website_id,website_name,program:profile.0,status:status.into(),exit_code,duration_ms:elapsed,logs,created_at,args:profile.1,output_dir:profile.2})))
 }
 
 fn terminate_build_process(child:&mut Child){

@@ -58,3 +58,8 @@ The build history API accepts `limit` (default 50, bounded to 1–100) and `offs
 ## Server-side build history filters
 
 The build history endpoint accepts an optional `status` filter (`all`, `success`, or `failed`) and a case-insensitive `search` substring (maximum 120 characters). Search covers the build executable, status and captured output. Filters are applied before pagination, so **Load older runs** continues through the same filtered result set. The desktop UI reloads from the newest page when a filter changes. CSV export includes the filtered records currently loaded in the UI only; it does not silently fetch the entire history.
+
+
+## Build run details and reproducibility
+
+New build runs store a snapshot of their executable arguments and output directory. The Deployment Manager displays the run ID, exit code, duration, output folder and retained log, and can load the historical configuration into the profile editor. Loading a configuration does not execute code or overwrite the saved profile; saving remains an explicit action. Captured logs remain subject to the existing 256 KiB history limit.
