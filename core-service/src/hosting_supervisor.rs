@@ -27,18 +27,20 @@ fn reconcile(state: &AppState) -> Vec<String> {
     let mut exited = Vec::new();
     if let Ok(mut slot) = state.proxy_process.lock() {
         if let Some(child) = slot.as_mut() {
-            if matches!(child.try_wait(), Ok(Some(_))) {
+            if let Ok(Some(status)) = child.try_wait() {
                 *slot = None;
-                exited.push("caddy".to_string());
+                if !status.success() { exited.push("caddy".to_string()); }
             }
         }
     }
 
     let mut exited_ids = Vec::new();
+    let mut unexpected_ids = Vec::new();
     if let Ok(mut children) = state.tunnel_processes.lock() {
         for (id, child) in children.iter_mut() {
-            if matches!(child.try_wait(), Ok(Some(_))) {
+            if let Ok(Some(status)) = child.try_wait() {
                 exited_ids.push(id.clone());
+                if !status.success() { unexpected_ids.push(id.clone()); }
             }
         }
         for id in &exited_ids {
@@ -49,7 +51,7 @@ fn reconcile(state: &AppState) -> Vec<String> {
         if let (Ok(mut urls), Ok(mut started)) = (state.tunnel_urls.lock(), state.tunnel_started_at.lock()) {
             remove_tunnel_metadata(&mut urls, &mut started, &exited_ids);
         }
-        exited.extend(exited_ids.into_iter().map(|id| format!("tunnel:{id}")));
+        exited.extend(unexpected_ids.into_iter().map(|id| format!("tunnel:{id}")));
     }
     exited.retain(|key| !take_suppression(state, key));
     exited
