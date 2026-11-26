@@ -396,8 +396,16 @@ async fn deploy_website(token:String,website_id:String)->Result<Value,String>{
  authorized_request(&token,reqwest::Method::POST,&format!("/api/v1/deployments/{website_id}/deploy"),None).await?.json().await.map_err(|e|api_error("Automated deployment failed",e))
 }
 #[tauri::command]
-async fn list_build_runs(token:String,website_id:String,limit:u32,offset:u32)->Result<Vec<Value>,String>{
- let suffix=if website_id.is_empty(){format!("?limit={limit}&offset={offset}")}else{format!("?website_id={website_id}&limit={limit}&offset={offset}")};
+fn encode_query_component(value:&str)->String{
+ let mut encoded=String::new();
+ for byte in value.bytes(){if byte.is_ascii_alphanumeric()||matches!(byte,b'-'|b'_'|b'.'|b'~'){encoded.push(byte as char);}else{encoded.push_str(&format!("%{byte:02X}"));}}
+ encoded
+}
+#[tauri::command]
+async fn list_build_runs(token:String,website_id:String,limit:u32,offset:u32,status:String,search:String)->Result<Vec<Value>,String>{
+ let mut parts=vec![format!("limit={limit}"),format!("offset={offset}"),format!("status={}",encode_query_component(&status)),format!("search={}",encode_query_component(&search))];
+ if !website_id.is_empty(){parts.push(format!("website_id={}",encode_query_component(&website_id)));}
+ let suffix=format!("?{}",parts.join("&"));
  authorized_request(&token,reqwest::Method::GET,&format!("/api/v1/deployments/runs{suffix}"),None).await?.json().await.map_err(|e|api_error("Could not read build history",e))
 }
 

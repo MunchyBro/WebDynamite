@@ -17,7 +17,7 @@ fn db_error(e:rusqlite::Error)->DeployError{DeployError(StatusCode::INTERNAL_SER
 #[derive(Deserialize)]
 struct SaveProfile{website_id:String,program:String,args:Vec<String>,output_dir:String}
 #[derive(Deserialize)]
-struct RunsQuery{website_id:Option<String>,limit:Option<u32>,offset:Option<u32>}
+struct RunsQuery{website_id:Option<String>,limit:Option<u32>,offset:Option<u32>,status:Option<String>,search:Option<String>}
 #[derive(Serialize)]
 struct Profile{id:String,website_id:String,website_name:String,program:String,args:Vec<String>,output_dir:String,updated_at:String}
 #[derive(Serialize)]
@@ -62,11 +62,16 @@ async fn save_profile(State(state):State<AppState>,Json(input):Json<SaveProfile>
 async fn list_runs(State(state):State<AppState>,Query(query):Query<RunsQuery>)->Result<Json<Vec<BuildRun>>,DeployError>{
  let limit=query.limit.unwrap_or(50).clamp(1,100);
  let offset=query.offset.unwrap_or(0).min(1_000_000);
+ let status=query.status.as_deref().filter(|value|*value!="all");
+ if let Some(value)=status{if !matches!(value,"success"|"failed"){return Err(DeployError(StatusCode::BAD_REQUEST,"invalid_build_status","Status must be all, success or failed.".into()));}}
+ let search=query.search.as_deref().unwrap_or("").trim();
+ if search.len()>120{return Err(DeployError(StatusCode::BAD_REQUEST,"build_search_too_long","Build history search must be 120 characters or fewer.".into()));}
+ let search=if search.is_empty(){None}else{Some(search)};
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
- let sql=if query.website_id.is_some(){"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id WHERE r.website_id=?1 ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?2 OFFSET ?3"}else{"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?1 OFFSET ?2"};
+ let sql="SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id WHERE (?1 IS NULL OR r.website_id=?1) AND (?2 IS NULL OR (?2='failed' AND r.status<>'success') OR r.status=?2) AND (?3 IS NULL OR instr(lower(r.program||' '||r.status||' '||r.logs),lower(?3))>0) ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?4 OFFSET ?5";
  let mut q=db.prepare(sql).map_err(db_error)?;
  let map=|r:&rusqlite::Row<'_>|Ok(BuildRun{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,program:r.get(3)?,status:r.get(4)?,exit_code:r.get(5)?,duration_ms:r.get(6)?,logs:r.get(7)?,created_at:r.get(8)?});
- let rows=if let Some(id)=query.website_id{q.query_map(params![id,limit,offset],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map(params![limit,offset],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
+ let rows=q.query_map(params![query.website_id.as_deref(),status,search,limit,offset],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
  Ok(Json(rows))
 }
 #[axum::debug_handler]
