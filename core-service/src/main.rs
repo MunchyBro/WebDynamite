@@ -68,6 +68,7 @@ pub struct AppState {
     pub tunnel_processes: Arc<Mutex<HashMap<String, Child>>>,
     pub tunnel_urls: Arc<Mutex<HashMap<String, String>>>,
     pub tunnel_started_at: Arc<Mutex<HashMap<String, u64>>>,
+    pub hosting_restart_suppressed: Arc<Mutex<HashSet<String>>>,
     pub cloudflared_bin: PathBuf,
     pub started_at: std::time::Instant,
 }
@@ -265,6 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tunnel_processes: Arc::new(Mutex::new(HashMap::new())),
         tunnel_urls: Arc::new(Mutex::new(HashMap::new())),
         tunnel_started_at: Arc::new(Mutex::new(HashMap::new())),
+        hosting_restart_suppressed: Arc::new(Mutex::new(HashSet::new())),
         cloudflared_bin: env::var_os("CLOUDFLARED_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cloudflared")),
         started_at: std::time::Instant::now(),
     };

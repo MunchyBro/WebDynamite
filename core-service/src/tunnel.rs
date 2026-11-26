@@ -123,12 +123,16 @@ pub async fn start(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
+    crate::hosting_supervisor::clear_suppression(&state, &format!("tunnel:{id}"));
     tokio::task::spawn_blocking(move || start_blocking(state, id))
         .await
         .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!("Tunnel startup task failed: {e}")))?
 }
 
-fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
+pub(crate) fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
+    if crate::hosting_supervisor::take_suppression_for_recovery(&state, &format!("tunnel:{id}")) {
+        return Err(error(StatusCode::CONFLICT, "A manual stop canceled the pending automatic tunnel recovery."));
+    }
     if !crate::settings::setting_bool(&state, "public_exposure_enabled", false) {
         return Err(error(StatusCode::FORBIDDEN, "Public exposure is disabled globally. Enable it in Networking before starting a tunnel."));
     }
@@ -197,6 +201,18 @@ fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelInfo>, (Stat
     capture_urls(stderr, state.tunnel_urls.clone(), id.clone(), log_path.clone(), logged_bytes);
     children.insert(id.clone(), child);
     drop(children);
+
+    // A manual stop may arrive while cloudflared is being spawned. Re-check the
+    // cancellation flag after registration so the just-started child is stopped.
+    if crate::hosting_supervisor::take_suppression_for_recovery(&state, &format!("tunnel:{id}")) {
+        if let Ok(mut children) = state.tunnel_processes.lock() {
+            if let Some(child) = children.get_mut(&id) { let _ = child.kill(); let _ = child.wait(); }
+            children.remove(&id);
+        }
+        if let Ok(mut urls) = state.tunnel_urls.lock() { urls.remove(&id); }
+        if let Ok(mut started) = state.tunnel_started_at.lock() { started.remove(&id); }
+        return Err(error(StatusCode::CONFLICT, "A manual stop canceled the pending automatic tunnel recovery."));
+    }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let url = loop {
@@ -271,6 +287,7 @@ pub async fn stop(
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
     let mut children = state.tunnel_processes.lock()
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
+    crate::hosting_supervisor::suppress_restart(&state, &format!("tunnel:{id}"));
     if let Some(child) = children.get_mut(&id) {
         match child.try_wait() {
             Ok(Some(_)) => {}
@@ -290,6 +307,8 @@ pub async fn stop(
 
 pub fn stop_all(state: &AppState) {
     if let Ok(mut children) = state.tunnel_processes.lock() {
+        let ids=children.keys().map(|id|format!("tunnel:{id}")).collect::<Vec<_>>();
+        for key in ids { crate::hosting_supervisor::suppress_restart(state,&key); }
         for (_, mut child) in children.drain() {
             let _ = child.kill();
             let _ = child.wait();
