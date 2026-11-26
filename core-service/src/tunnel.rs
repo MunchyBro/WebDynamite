@@ -123,6 +123,7 @@ pub async fn start(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
+    crate::hosting_supervisor::clear_suppression(&state, &format!("tunnel:{id}"));
     tokio::task::spawn_blocking(move || start_blocking(state, id))
         .await
         .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!("Tunnel startup task failed: {e}")))?
@@ -271,7 +272,7 @@ pub async fn stop(
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
     let mut children = state.tunnel_processes.lock()
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
-    if children.contains_key(&id) { crate::hosting_supervisor::suppress_restart(&state, &format!("tunnel:{id}")); }
+    crate::hosting_supervisor::suppress_restart(&state, &format!("tunnel:{id}"));
     if let Some(child) = children.get_mut(&id) {
         match child.try_wait() {
             Ok(Some(_)) => {}
