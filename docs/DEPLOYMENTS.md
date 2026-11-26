@@ -49,3 +49,8 @@ Automatic restart is an opt-in global setting, disabled by default. It applies t
 ## Build history filters and export
 
 The Deployment Manager build history can be filtered to all, successful, or failed runs. Summary cards show the visible run count, successful and failed counts, and average duration for the filtered set. Export CSV downloads the currently loaded (latest 50 per selected website) filtered rows, including captured logs. CSV cells are quoted and formula-leading values are neutralized before export. Export does not include runs outside the loaded history window.
+
+
+## Paginated build history
+
+The build history API accepts `limit` (default 50, bounded to 1–100) and `offset` (default 0, bounded to 1,000,000). Results are ordered newest-first with a row identifier tie-breaker for stable ordering. The Deployment Manager initially loads 50 runs and offers **Load older runs** to fetch subsequent pages. Filters, summary cards, and CSV export apply to the runs currently loaded in the UI; refresh resets the list to the newest page.

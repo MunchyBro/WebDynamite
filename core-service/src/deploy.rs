@@ -17,7 +17,7 @@ fn db_error(e:rusqlite::Error)->DeployError{DeployError(StatusCode::INTERNAL_SER
 #[derive(Deserialize)]
 struct SaveProfile{website_id:String,program:String,args:Vec<String>,output_dir:String}
 #[derive(Deserialize)]
-struct RunsQuery{website_id:Option<String>}
+struct RunsQuery{website_id:Option<String>,limit:Option<u32>,offset:Option<u32>}
 #[derive(Serialize)]
 struct Profile{id:String,website_id:String,website_name:String,program:String,args:Vec<String>,output_dir:String,updated_at:String}
 #[derive(Serialize)]
@@ -60,11 +60,13 @@ async fn save_profile(State(state):State<AppState>,Json(input):Json<SaveProfile>
  Ok(Json(profile))
 }
 async fn list_runs(State(state):State<AppState>,Query(query):Query<RunsQuery>)->Result<Json<Vec<BuildRun>>,DeployError>{
+ let limit=query.limit.unwrap_or(50).clamp(1,100);
+ let offset=query.offset.unwrap_or(0).min(1_000_000);
  let db=state.db.lock().map_err(|_|DeployError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
- let sql=if query.website_id.is_some(){"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id WHERE r.website_id=?1 ORDER BY r.created_at DESC LIMIT 50"}else{"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id ORDER BY r.created_at DESC LIMIT 50"};
+ let sql=if query.website_id.is_some(){"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id WHERE r.website_id=?1 ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?2 OFFSET ?3"}else{"SELECT r.id,r.website_id,w.name,r.program,r.status,r.exit_code,r.duration_ms,r.logs,r.created_at FROM build_runs r JOIN websites w ON w.id=r.website_id ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?1 OFFSET ?2"};
  let mut q=db.prepare(sql).map_err(db_error)?;
  let map=|r:&rusqlite::Row<'_>|Ok(BuildRun{id:r.get(0)?,website_id:r.get(1)?,website_name:r.get(2)?,program:r.get(3)?,status:r.get(4)?,exit_code:r.get(5)?,duration_ms:r.get(6)?,logs:r.get(7)?,created_at:r.get(8)?});
- let rows=if let Some(id)=query.website_id{q.query_map(params![id],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map([],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
+ let rows=if let Some(id)=query.website_id{q.query_map(params![id,limit,offset],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?}else{q.query_map(params![limit,offset],map).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?};
  Ok(Json(rows))
 }
 #[axum::debug_handler]
