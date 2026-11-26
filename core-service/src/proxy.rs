@@ -211,15 +211,15 @@ async fn start(State(state):State<AppState>)->Result<Json<Value>,(axum::http::St
    let mut slot=state.proxy_process.lock().map_err(|_|(axum::http::StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":{"code":"proxy_lock","message":"Caddy process registry is unavailable"}}))))?;
    match slot.as_mut() {
     Some(child)=>match child.try_wait(){
-     Ok(Some(status))=>{*slot=None;Some(status)},
+     Ok(Some(status))=>{*slot=None;Some(status.to_string())},
      Ok(None)=>None,
      Err(error)=>return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"caddy_status_failed","message":format!("Could not inspect the Caddy process: {error}. Logs: {}",log_path.display())}})))),
     },
-    None=>Some(std::process::ExitStatus::default()),
+    None=>Some("the process handle is unavailable".to_string()),
    }
   };
   if let Some(status)=exited {
-   return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"caddy_exited_during_startup","message":format!("Caddy exited before its local admin endpoint became ready (status: {status}). Review {}",log_path.display())}}))));
+   return Err((axum::http::StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":"caddy_exited_during_startup","message":format!("Caddy exited before its local admin endpoint became ready ({status}). Review {}",log_path.display())}}))));
   }
   tokio::time::sleep(Duration::from_millis(125)).await;
  }
