@@ -290,6 +290,12 @@ mod tests {
         assert!(validate_setting("runtime_auto_restart",&json!("yes")).is_err());
         assert!(validate_setting("public_exposure_enabled",&json!(false)).is_ok());
         assert!(validate_setting("public_exposure_enabled",&json!("off")).is_err());
+        assert!(validate_setting("hosting_auto_restart",&json!(false)).is_ok());
+        assert!(validate_setting("hosting_auto_restart",&json!("yes")).is_err());
+        assert!(validate_setting("hosting_restart_limit",&json!(1)).is_ok());
+        assert!(validate_setting("hosting_restart_limit",&json!(6)).is_err());
+        assert!(validate_setting("hosting_restart_delay_seconds",&json!(5)).is_ok());
+        assert!(validate_setting("hosting_restart_delay_seconds",&json!(4)).is_err());
         assert!(validate_setting("runtime_restart_limit",&json!(1)).is_ok());
         assert!(validate_setting("runtime_restart_limit",&json!(11)).is_err());
         assert!(validate_setting("runtime_restart_delay_seconds",&json!(300)).is_ok());
