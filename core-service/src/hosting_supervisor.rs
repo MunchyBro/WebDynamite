@@ -1,5 +1,5 @@
 use crate::AppState;
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 /// Reconcile Caddy and Quick Tunnel child handles independently of UI/API polling.
 /// All process inspection runs on Tokio's blocking pool; no std mutex guard crosses
@@ -46,14 +46,19 @@ fn reconcile(state: &AppState) -> (bool, usize) {
     }
 
     if !exited_ids.is_empty() {
-        if let Ok(mut urls) = state.tunnel_urls.lock() {
-            for id in &exited_ids { urls.remove(id); }
-        }
-        if let Ok(mut started) = state.tunnel_started_at.lock() {
-            for id in &exited_ids { started.remove(id); }
+        if let (Ok(mut urls), Ok(mut started)) = (state.tunnel_urls.lock(), state.tunnel_started_at.lock()) {
+            remove_tunnel_metadata(&mut urls, &mut started, &exited_ids);
         }
     }
     (caddy_exited, exited_ids.len())
+}
+
+fn remove_tunnel_metadata(
+    urls: &mut std::collections::HashMap<String, String>,
+    started: &mut std::collections::HashMap<String, u64>,
+    exited_ids: &[String],
+) {
+    for id in exited_ids { urls.remove(id); started.remove(id); }
 }
 
 #[cfg(test)]
@@ -73,7 +78,7 @@ mod tests {
             ("dead-site".to_string(), 10_u64),
             ("live-site".to_string(), 20_u64),
         ]);
-        for id in &exited { urls.remove(id); started.remove(id); }
+        remove_tunnel_metadata(&mut urls, &mut started, &exited);
         assert!(!urls.contains_key("dead-site"));
         assert!(!started.contains_key("dead-site"));
         assert!(urls.contains_key("live-site"));
