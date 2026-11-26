@@ -9,6 +9,7 @@ mod git;
 mod backup;
 mod settings;
 mod tunnel;
+mod hosting_supervisor;
 pub mod secrets;
 pub mod secret_store_acl;
 pub mod secret_store;
@@ -268,6 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         started_at: std::time::Instant::now(),
     };
     supervise_processes(state.clone());
+    hosting_supervisor::start(state.clone());
     backup::start_scheduler(state.clone());
     proxy::start_tls_monitoring_scheduler(state.clone());
     http::start_website_health_scheduler(state.clone());
