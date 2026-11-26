@@ -128,7 +128,7 @@ pub async fn start(
         .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, format!("Tunnel startup task failed: {e}")))?
 }
 
-fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
+pub(crate) fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelInfo>, (StatusCode, Json<serde_json::Value>)> {
     if !crate::settings::setting_bool(&state, "public_exposure_enabled", false) {
         return Err(error(StatusCode::FORBIDDEN, "Public exposure is disabled globally. Enable it in Networking before starting a tunnel."));
     }
@@ -157,6 +157,7 @@ fn start_blocking(state: AppState, id: String) -> Result<Json<TunnelInfo>, (Stat
 
     let mut children = state.tunnel_processes.lock()
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Tunnel process registry unavailable"))?;
+    if children.contains_key(&id) { crate::hosting_supervisor::suppress_restart(&state, &format!("tunnel:{id}")); }
     if let Some(child) = children.get_mut(&id) {
         match child.try_wait() {
             Ok(None) => return Err(error(StatusCode::CONFLICT, "A tunnel is already running for this website.")),
@@ -290,6 +291,8 @@ pub async fn stop(
 
 pub fn stop_all(state: &AppState) {
     if let Ok(mut children) = state.tunnel_processes.lock() {
+        let ids=children.keys().map(|id|format!("tunnel:{id}")).collect::<Vec<_>>();
+        for key in ids { crate::hosting_supervisor::suppress_restart(state,&key); }
         for (_, mut child) in children.drain() {
             let _ = child.kill();
             let _ = child.wait();
