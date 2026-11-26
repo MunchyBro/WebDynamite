@@ -20,7 +20,7 @@ The SSL & Security screen provides two on-demand checks for each registered publ
 
 A failed check can indicate DNS, routing, Caddy, remote-server, or certificate trouble; inspect the displayed error and server logs.
 
-Both operations are point-in-time checks, not continuous monitoring. The certificate details view highlights certificates that are expired or have 30 days or less remaining, but it does not yet send background notifications or retain renewal history. A successful HEAD request also does not verify application routes or content.
+Both operations are point-in-time checks, not continuous monitoring. The certificate details view highlights certificates that are expired or have 30 days or less remaining. Each successful metadata inspection is retained in a per-hostname history (latest 30 entries), viewable from **Certificate history** and exportable as CSV. This is an inspection history, not a complete Caddy renewal audit: it records only times a user manually inspects the remote certificate. No background expiry notifications are sent. A successful HEAD request also does not verify application routes or content.
 
 ## Local development domains
 
