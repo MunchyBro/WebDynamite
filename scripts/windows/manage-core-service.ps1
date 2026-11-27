@@ -74,7 +74,7 @@ switch ($Mode) {
         }
         $binaryPath = '"' + $binary + '"'
         $created = & sc.exe create $ServiceName "binPath= $binaryPath" "start= demand" "obj= $ServiceAccount" 'password= ""' 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "Could not register $ServiceName: $created" }
+        if ($LASTEXITCODE -ne 0) { throw "Could not register ${ServiceName}: $created" }
         try {
             $sidResult = & sc.exe sidtype $ServiceName unrestricted 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Could not enable the WebDynamite service SID: $sidResult" }
@@ -100,7 +100,7 @@ switch ($Mode) {
         if ($service.State -ne "Stopped") {
             $stop = & sc.exe stop $ServiceName 2>&1
             if ($LASTEXITCODE -ne 0 -and ($stop | Out-String) -notmatch "1062") {
-                throw "Could not stop $ServiceName: $stop"
+                throw "Could not stop ${ServiceName}: $stop"
             }
             $deadline = [DateTime]::UtcNow.AddSeconds(30)
             do {
@@ -111,7 +111,7 @@ switch ($Mode) {
             if ($service -and $service.State -ne "Stopped") { throw "$ServiceName did not stop within 30 seconds; refusing deletion." }
         }
         $deleted = & sc.exe delete $ServiceName 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "Could not unregister $ServiceName: $deleted" }
+        if ($LASTEXITCODE -ne 0) { throw "Could not unregister ${ServiceName}: $deleted" }
         Write-Output "$ServiceName unregistered. ProgramData data and secrets were not deleted."
     }
 }
