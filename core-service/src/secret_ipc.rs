@@ -52,6 +52,11 @@ fn storage_key(website_id: &str, name: &str) -> String {
 /// restrictive DACL; this dispatcher deliberately does not create it.
 pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResponse {
     if let Err(code) = authorize_request(&request.operation, &request.data) {
+        if request.operation == "secret.put" {
+            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
+                value.zeroize();
+            }
+        }
         return response(request, Err(code));
     }
     let result = match request.operation.as_str() {
@@ -136,7 +141,7 @@ mod tests {
     #[test]
     fn status_fails_closed_for_a_missing_store_root() {
         let root = std::env::temp_dir().join(format!("webdynamite-ipc-missing-{}", uuid::Uuid::new_v4()));
-        let result = dispatch_secret_request(&root, &request("secret.status", json!({})));
+        let result = dispatch_secret_request(&root, &mut request("secret.status", json!({})));
         assert!(!result.ok);
         assert_eq!(result.error_code.as_deref(), Some("secret_store_unavailable"));
     }
@@ -145,7 +150,7 @@ mod tests {
     fn status_fails_closed_when_the_store_root_is_a_file() {
         let root = std::env::temp_dir().join(format!("webdynamite-ipc-file-{}", uuid::Uuid::new_v4()));
         std::fs::write(&root, b"not a directory").unwrap();
-        let result = dispatch_secret_request(&root, &request("secret.status", json!({})));
+        let result = dispatch_secret_request(&root, &mut request("secret.status", json!({})));
         assert!(!result.ok);
         assert_eq!(result.error_code.as_deref(), Some("secret_store_unavailable"));
         std::fs::remove_file(root).unwrap();
