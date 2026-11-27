@@ -51,7 +51,7 @@ mod windows_impl {
                 }
                 let token_text = String::from_utf8(std::mem::take(&mut token_bytes))
                     .map_err(|_| ERROR_INVALID_DATA)?;
-                let token = Zeroizing::new(token_text);
+                let mut token = Zeroizing::new(token_text);
                 if token.trim().len() < 32 {
                     return Err(ERROR_INVALID_DATA);
                 }
