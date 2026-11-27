@@ -30,6 +30,7 @@ pub mod trusted_config_handle_chain;
 pub mod trusted_service_config_loader;
 pub mod service_lifecycle;
 pub mod service_pipe_runtime;
+pub mod service_core_host_win;
 pub mod service_status;
 pub mod service_control;
 #[cfg(windows)]
@@ -290,6 +291,13 @@ where
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    match service_core_host_win::run_core_service_scm() {
+        Ok(()) => return Ok(()),
+        Err(1063) => {} // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT: launched interactively.
+        Err(code) => return Err(format!("Windows Service Control Manager startup failed: {code}").into()),
+    }
+
     let token = env::var("WEBDYNAMITE_API_TOKEN")
         .map_err(|_| "WEBDYNAMITE_API_TOKEN must be configured before starting the Core Service")?;
     if token.trim().len() < 32 { return Err("WEBDYNAMITE_API_TOKEN must contain at least 32 characters".into()); }
