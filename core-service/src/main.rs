@@ -347,3 +347,14 @@ mod supervisor_tests {
         drop(second);
     }
 }
+
+
+#[cfg(test)]
+mod core_runtime_contract_tests {
+    #[tokio::test]
+    async fn reusable_runtime_rejects_short_api_tokens_before_startup() {
+        let result = super::run_core_service("too-short".to_string(), async {}).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least 32 characters"));
+    }
+}
