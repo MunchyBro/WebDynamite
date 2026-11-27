@@ -13,7 +13,7 @@ mod windows_impl {
         thread::{self, JoinHandle},
         time::Duration,
     };
-    use zeroize::Zeroizing;
+    use zeroize::{Zeroize, Zeroizing};
     use windows_sys::Win32::Foundation::{ERROR_GEN_FAILURE, ERROR_INVALID_DATA};
 
     const SERVICE_NAME: &str = "WebDynamiteCore";
