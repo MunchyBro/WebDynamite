@@ -54,6 +54,9 @@ impl TrustedServiceConfig {
         if self.publisher_sha256.len() != 64 || !self.publisher_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("The publisher SHA-256 thumbprint must contain exactly 64 hexadecimal characters.".into());
         }
+        if self.publisher_sha256.bytes().all(|byte| byte == b'0') {
+            return Err("The publisher SHA-256 thumbprint must identify a real signed publisher, not an all-zero placeholder.".into());
+        }
         if !self.secret_store_root.is_absolute() || !self.data_root.is_absolute() {
             return Err("Secret-store and data roots must be absolute paths.".into());
         }
@@ -109,6 +112,8 @@ mod tests {
     fn rejects_bad_publisher_thumbprints_and_session_ids() {
         let thumb = VALID.replace("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "not-a-thumbprint");
         assert!(TrustedServiceConfig::parse_and_validate(thumb.as_bytes()).unwrap_err().contains("thumbprint"));
+        let placeholder = VALID.replace("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "0000000000000000000000000000000000000000000000000000000000000000");
+        assert!(TrustedServiceConfig::parse_and_validate(placeholder.as_bytes()).unwrap_err().contains("placeholder"));
         let session = VALID.replace("\"interactive_session_id\":1", "\"interactive_session_id\":0");
         assert!(TrustedServiceConfig::parse_and_validate(session.as_bytes()).unwrap_err().contains("session ID"));
     }
