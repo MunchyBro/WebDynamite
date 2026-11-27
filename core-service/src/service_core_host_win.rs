@@ -24,6 +24,7 @@ mod windows_impl {
     struct CoreRuntimeWorker {
         shutdown: Option<tokio::sync::oneshot::Sender<()>>,
         thread: Option<JoinHandle<Result<(), String>>>,
+        pipe_worker: Option<crate::service_pipe_runtime::AuthenticatedSecretPipeWorker>,
     }
 
     /// Enters SCM dispatch for the full HTTP/API Core Service, not merely the
@@ -41,25 +42,47 @@ mod windows_impl {
                     Path::new(CONFIG_PATH),
                     Path::new(TRUSTED_ROOT),
                 ).map_err(|_| ERROR_INVALID_DATA)?;
-                let mut token_bytes = crate::secret_store::read_secret(
+                // Start the authenticated desktop secret channel under the same
+                // SCM lifecycle. The worker validates the desktop process identity
+                // from trusted installer configuration before reading any request.
+                let mut pipe_worker = crate::service_pipe_runtime::start_authenticated_secret_pipe_worker(
+                    config.clone(),
+                    Arc::clone(&lifecycle),
+                    1_000,
+                ).map_err(|_| ERROR_INVALID_DATA)?;
+
+                let mut token_bytes = match crate::secret_store::read_secret(
                     &config.secret_store_root,
                     API_TOKEN_NAME,
-                ).map_err(|_| ERROR_INVALID_DATA)?;
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        let _ = pipe_worker.stop();
+                        return Err(ERROR_INVALID_DATA);
+                    }
+                };
                 if std::str::from_utf8(&token_bytes).is_err() {
                     token_bytes.zeroize();
+                    let _ = pipe_worker.stop();
                     return Err(ERROR_INVALID_DATA);
                 }
-                let token_text = String::from_utf8(std::mem::take(&mut token_bytes))
-                    .map_err(|_| ERROR_INVALID_DATA)?;
+                let token_text = match String::from_utf8(std::mem::take(&mut token_bytes)) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        let _ = pipe_worker.stop();
+                        return Err(ERROR_INVALID_DATA);
+                    }
+                };
                 let mut token = Zeroizing::new(token_text);
                 if token.trim().len() < 32 {
+                    let _ = pipe_worker.stop();
                     return Err(ERROR_INVALID_DATA);
                 }
 
                 let data_root = config.data_root;
                 let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
                 let runtime_lifecycle = Arc::clone(&lifecycle);
-                let runtime_thread = thread::Builder::new()
+                let runtime_thread = match thread::Builder::new()
                     .name("webdynamite-core-runtime".into())
                     .spawn(move || {
                         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -72,18 +95,32 @@ mod windows_impl {
                         })).map_err(|error| error.to_string());
                         runtime_lifecycle.request_stop();
                         result
-                    })
-                    .map_err(|_| ERROR_GEN_FAILURE)?;
+                    }) {
+                    Ok(worker) => worker,
+                    Err(_) => {
+                        let _ = pipe_worker.stop();
+                        return Err(ERROR_GEN_FAILURE);
+                    }
+                };
 
-                let mut guard = start_slot.lock().map_err(|_| ERROR_GEN_FAILURE)?;
+                let mut guard = match start_slot.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        let _ = pipe_worker.stop();
+                        let _ = runtime_thread.join();
+                        return Err(ERROR_GEN_FAILURE);
+                    }
+                };
                 if guard.is_some() {
                     let _ = shutdown_tx.send(());
+                    let _ = pipe_worker.stop();
                     let _ = runtime_thread.join();
                     return Err(ERROR_GEN_FAILURE);
                 }
                 *guard = Some(CoreRuntimeWorker {
                     shutdown: Some(shutdown_tx),
                     thread: Some(runtime_thread),
+                    pipe_worker: Some(pipe_worker),
                 });
                 Ok(())
             },
@@ -98,12 +135,20 @@ mod windows_impl {
                 if let Some(shutdown) = worker.shutdown.take() {
                     let _ = shutdown.send(());
                 }
-                match worker.thread.take() {
+                let pipe_result = worker.pipe_worker.take()
+                    .map(|mut pipe| pipe.stop())
+                    .unwrap_or(Ok(()));
+                let runtime_result = match worker.thread.take() {
                     Some(handle) => match handle.join() {
                         Ok(Ok(())) => Ok(()),
                         Ok(Err(_)) | Err(_) => Err(ERROR_GEN_FAILURE),
                     },
                     None => Ok(()),
+                };
+                if pipe_result.is_err() || runtime_result.is_err() {
+                    Err(ERROR_GEN_FAILURE)
+                } else {
+                    Ok(())
                 }
             },
         )
