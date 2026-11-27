@@ -7,6 +7,7 @@
 #[cfg(windows)]
 mod platform {
     use std::{ffi::c_void, io, ptr, slice};
+    use zeroize::Zeroize;
 
     #[repr(C)]
     struct DataBlob {
@@ -64,7 +65,12 @@ mod platform {
             }
             return Err("Windows DPAPI returned an empty result.".into());
         }
-        let result = slice::from_raw_parts(output.data, output.size as usize).to_vec();
+        // DPAPI's output allocation contains plaintext after
+        // CryptUnprotectData. Copy it into the caller-owned buffer, then
+        // wipe the OS allocation before releasing it to the Windows heap.
+        let output_bytes = slice::from_raw_parts_mut(output.data, output.size as usize);
+        let result = output_bytes.to_vec();
+        output_bytes.zeroize();
         let _ = LocalFree(output.data.cast());
         Ok(result)
     }

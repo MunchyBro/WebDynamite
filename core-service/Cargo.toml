@@ -18,6 +18,7 @@ uuid = { version = "1", features = ["v4"] }
 sysinfo = "0.33"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+zeroize = "1"
 tokio-postgres = "0.7"
 futures-util = "0.3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "mysql"] }
