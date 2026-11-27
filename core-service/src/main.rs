@@ -31,6 +31,7 @@ pub mod trusted_service_config_loader;
 pub mod service_lifecycle;
 pub mod service_pipe_runtime;
 pub mod service_core_host_win;
+pub mod service_token_provision_win;
 pub mod service_status;
 pub mod service_control;
 #[cfg(windows)]
@@ -297,6 +298,17 @@ where
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = env::args_os();
+    let _program = args.next();
+    if args.next().as_deref() == Some(std::ffi::OsStr::new("--provision-api-token")) {
+        if args.next().is_some() {
+            return Err("--provision-api-token does not accept additional arguments".into());
+        }
+        service_token_provision_win::provision_api_token()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        println!("WebDynamite Core Service API token was created and verified in the protected machine-DPAPI store.");
+        return Ok(());
+    }
     #[cfg(windows)]
     match service_core_host_win::run_core_service_scm() {
         Ok(()) => return Ok(()),

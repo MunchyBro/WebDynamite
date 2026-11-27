@@ -105,6 +105,45 @@ pub fn write_secret_verified(root: &Path, name: &str, plaintext: &[u8]) -> Resul
     Ok(())
 }
 
+/// Creates a named secret only when it does not already exist, then verifies DPAPI read-back.
+/// Unlike write_secret_verified, this operation never replaces an existing credential.
+pub fn create_secret_verified(root: &Path, name: &str, plaintext: &[u8]) -> Result<(), String> {
+    if plaintext.is_empty() || plaintext.len() > MAX_SECRET_BYTES {
+        return Err("Secret must contain 1-65536 bytes.".into());
+    }
+    let destination = secret_path(root, name)?;
+    let ciphertext = crate::secrets::protect_machine(plaintext)?;
+    let envelope = encode_envelope(&ciphertext)?;
+    let temporary = root.join(format!(".{}.{}.tmp", name, uuid::Uuid::new_v4()));
+    let create_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("Could not create protected secret temporary file: {error}"))?;
+        file.write_all(&envelope)
+            .map_err(|error| format!("Could not write protected secret: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Could not flush protected secret to disk: {error}"))?;
+        drop(file);
+        // A hard link is an atomic create-if-absent operation on the same volume.
+        // It cannot replace a token provisioned by an earlier installer run.
+        atomic_create(&temporary, &destination)?;
+        Ok(())
+    })();
+    if create_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    create_result?;
+    let mut recovered = read_secret(root, name)?;
+    let matches = recovered.as_slice() == plaintext;
+    recovered.fill(0);
+    if !matches {
+        return Err("Protected secret verification failed; the existing source value was not changed.".into());
+    }
+    Ok(())
+}
+
 /// Reads and decrypts a named secret. Plaintext exists only in the returned memory buffer.
 pub fn read_secret(root: &Path, name: &str) -> Result<Vec<u8>, String> {
     let path = secret_path(root, name)?;
@@ -131,6 +170,15 @@ pub fn delete_secret(root: &Path, name: &str) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("Could not delete protected secret: {error}")),
     }
+}
+
+/// Atomically creates a destination without replacing an existing file.
+fn atomic_create(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::hard_link(source, destination)
+        .map_err(|error| format!("Could not create protected secret without replacing an existing value: {error}"))?;
+    fs::remove_file(source)
+        .map_err(|error| format!("Protected secret was created, but its temporary link could not be removed: {error}"))?;
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -178,6 +226,20 @@ mod tests {
         assert!(decode_envelope(MAGIC).is_err());
         assert!(decode_envelope(b"NOPEciphertext").is_err());
         assert_eq!(decode_envelope(b"WDS1ciphertext").unwrap(), b"ciphertext");
+    }
+
+    #[test]
+    fn atomic_create_never_replaces_an_existing_destination() {
+        let root = std::env::temp_dir().join(format!("webdynamite-create-only-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("temporary");
+        let destination = root.join("api-token.wds");
+        std::fs::write(&source, b"new protected value").unwrap();
+        std::fs::write(&destination, b"existing protected value").unwrap();
+        assert!(super::atomic_create(&source, &destination).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing protected value");
+        assert!(source.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
