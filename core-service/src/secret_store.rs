@@ -105,6 +105,47 @@ pub fn write_secret_verified(root: &Path, name: &str, plaintext: &[u8]) -> Resul
     Ok(())
 }
 
+/// Creates a named secret only when it does not already exist, then verifies DPAPI read-back.
+/// Unlike write_secret_verified, this operation never replaces an existing credential.
+pub fn create_secret_verified(root: &Path, name: &str, plaintext: &[u8]) -> Result<(), String> {
+    if plaintext.is_empty() || plaintext.len() > MAX_SECRET_BYTES {
+        return Err("Secret must contain 1-65536 bytes.".into());
+    }
+    let destination = secret_path(root, name)?;
+    let ciphertext = crate::secrets::protect_machine(plaintext)?;
+    let envelope = encode_envelope(&ciphertext)?;
+    let temporary = root.join(format!(".{}.{}.tmp", name, uuid::Uuid::new_v4()));
+    let create_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("Could not create protected secret temporary file: {error}"))?;
+        file.write_all(&envelope)
+            .map_err(|error| format!("Could not write protected secret: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Could not flush protected secret to disk: {error}"))?;
+        drop(file);
+        // A hard link is an atomic create-if-absent operation on the same volume.
+        // It cannot replace a token provisioned by an earlier installer run.
+        fs::hard_link(&temporary, &destination)
+            .map_err(|error| format!("Could not create protected secret without replacing an existing value: {error}"))?;
+        let _ = fs::remove_file(&temporary);
+        Ok(())
+    })();
+    if create_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    create_result?;
+    let mut recovered = read_secret(root, name)?;
+    let matches = recovered.as_slice() == plaintext;
+    recovered.fill(0);
+    if !matches {
+        return Err("Protected secret verification failed; the existing source value was not changed.".into());
+    }
+    Ok(())
+}
+
 /// Reads and decrypts a named secret. Plaintext exists only in the returned memory buffer.
 pub fn read_secret(root: &Path, name: &str) -> Result<Vec<u8>, String> {
     let path = secret_path(root, name)?;
