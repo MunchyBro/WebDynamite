@@ -304,7 +304,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if args.next().is_some() {
             return Err("--provision-api-token does not accept additional arguments".into());
         }
-        service_token_provision_win::provision_api_token().map_err(|error| error.into())?;
+        service_token_provision_win::provision_api_token()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
         println!("WebDynamite Core Service API token was created and verified in the protected machine-DPAPI store.");
         return Ok(());
     }
