@@ -31,6 +31,7 @@ function Get-RegisteredService {
 function Get-NormalizedBinaryPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { throw "A service binary path is required." }
     $full = [IO.Path]::GetFullPath($Path)
+    if (-not [IO.Path]::IsPathRooted($Path)) { throw "The service binary path must be absolute." }
     if ([IO.Path]::GetExtension($full) -ine ".exe") { throw "The service binary must be an .exe file." }
     if ($full.Contains('"')) { throw "The service binary path contains an invalid quote." }
     return $full
