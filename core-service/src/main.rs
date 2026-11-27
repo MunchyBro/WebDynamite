@@ -227,12 +227,10 @@ fn stop_all_processes(state: &AppState) {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let token = env::var("WEBDYNAMITE_API_TOKEN")
-        .map_err(|_| "WEBDYNAMITE_API_TOKEN must be configured before starting the Core Service")?;
-    if token.trim().len() < 32 { return Err("WEBDYNAMITE_API_TOKEN must contain at least 32 characters".into()); }
-
+pub async fn run_core_service<F>(token: String, shutdown_signal: F) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     let root = data_dir();
     let database_dir = root.join("database");
     let logs_dir = root.join("logs");
@@ -279,12 +277,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = SocketAddr::from(([127, 0, 0, 1], 47821));
     let listener = tokio::net::TcpListener::bind(address).await?;
     println!("WebDynamite Core Service listening on http://{address}");
-    let result = axum::serve(listener, app).with_graceful_shutdown(shutdown()).await;
+    let result = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal).await;
     stop_all_processes(&state);
     tunnel::stop_all(&state);
     proxy::stop_on_shutdown(&state);
     result?;
     Ok(())
+}
+
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let token = env::var("WEBDYNAMITE_API_TOKEN")
+        .map_err(|_| "WEBDYNAMITE_API_TOKEN must be configured before starting the Core Service")?;
+    if token.trim().len() < 32 { return Err("WEBDYNAMITE_API_TOKEN must contain at least 32 characters".into()); }
+    run_core_service(token, shutdown()).await
 }
 
 async fn shutdown() { let _ = tokio::signal::ctrl_c().await; }
