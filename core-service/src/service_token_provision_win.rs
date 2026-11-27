@@ -13,7 +13,7 @@ pub fn provision_api_token() -> Result<(), String> {
 
     let mut token = Zeroizing::new(Vec::with_capacity(64));
     for uuid in [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()] {
-        for byte in uuid.as_bytes() {
+        for &byte in uuid.as_bytes() {
             token.push(HEX[(byte >> 4) as usize]);
             token.push(HEX[(byte & 0x0f) as usize]);
         }
