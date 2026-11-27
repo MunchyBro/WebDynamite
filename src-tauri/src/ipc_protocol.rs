@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
+use zeroize::Zeroize;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -71,17 +72,23 @@ fn validate_response(response: &IpcResponse) -> Result<(), String> {
 /// Encodes one request as a four-byte big-endian length followed by UTF-8 JSON.
 pub fn write_request<W: Write>(writer: &mut W, request: &IpcRequest) -> Result<(), String> {
     validate_request(request)?;
-    let payload = serde_json::to_vec(request)
+    let mut payload = serde_json::to_vec(request)
         .map_err(|_| "Could not encode IPC request.".to_string())?;
-    if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
-        return Err("IPC request exceeds the maximum frame size.".into());
-    }
-    let length = u32::try_from(payload.len())
-        .map_err(|_| "IPC request length is invalid.".to_string())?;
-    writer.write_all(&length.to_be_bytes())
-        .and_then(|_| writer.write_all(&payload))
-        .and_then(|_| writer.flush())
-        .map_err(|error| format!("Could not write IPC request: {error}"))
+    // The serialized request may contain credentials. Wipe this owned byte
+    // buffer after every outcome, including oversized frames and I/O failures.
+    let result = (|| {
+        if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
+            return Err("IPC request exceeds the maximum frame size.".into());
+        }
+        let length = u32::try_from(payload.len())
+            .map_err(|_| "IPC request length is invalid.".to_string())?;
+        writer.write_all(&length.to_be_bytes())
+            .and_then(|_| writer.write_all(&payload))
+            .and_then(|_| writer.flush())
+            .map_err(|error| format!("Could not write IPC request: {error}"))
+    })();
+    payload.zeroize();
+    result
 }
 
 /// Reads one bounded response frame and rejects unsupported or ambiguous JSON.
