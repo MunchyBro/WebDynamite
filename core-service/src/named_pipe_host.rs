@@ -276,7 +276,7 @@ pub fn serve_one_authenticated_secret_connection(
         expected_session_id,
         expected_executable,
         expected_publisher_sha256,
-        move |request| crate::secret_ipc::dispatch_secret_request(&root, &request),
+        move |mut request| crate::secret_ipc::dispatch_secret_request(&root, &mut request),
     )
 }
 
@@ -300,6 +300,6 @@ pub fn serve_one_authenticated_overlapped_secret_connection(
         expected_executable,
         expected_publisher_sha256,
         timeout_ms,
-        move |request| crate::secret_ipc::dispatch_secret_request(&root, &request),
+        move |mut request| crate::secret_ipc::dispatch_secret_request(&root, &mut request),
     )
 }
