@@ -14,6 +14,8 @@ mod windows_impl {
         System::Pipes::{ConnectNamedPipe, DisconnectNamedPipe},
     };
 
+    use zeroize::Zeroize;
+
     use crate::{
         client_identity::verify_connected_client,
         ipc_authorization::authorize_request,
@@ -22,6 +24,21 @@ mod windows_impl {
         named_pipe_accept::connect_with_timeout,
         named_pipe_io::OverlappedPipeIo,
     };
+
+    fn rejected_request_response(mut request: IpcRequest, code: impl ToString) -> IpcResponse {
+        if request.operation == "secret.put" {
+            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
+                value.zeroize();
+            }
+        }
+        IpcResponse {
+            version: PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            ok: false,
+            data: None,
+            error_code: Some(code.to_string()),
+        }
+    }
 
     struct PipeIo(HANDLE);
 
@@ -95,17 +112,12 @@ mod windows_impl {
             // Recheck the same process object and pipe peer immediately before
             // handing the decoded request to application authorization/dispatch.
             verified.verify_still_connected(handle)?;
+            let request_id = request.request_id.clone();
             let response = match authorize_request(&request.operation, &request.data) {
-                Ok(()) => handler(request.clone()),
-                Err(code) => IpcResponse {
-                    version: PROTOCOL_VERSION,
-                    request_id: request.request_id.clone(),
-                    ok: false,
-                    data: None,
-                    error_code: Some(code.to_string()),
-                },
+                Ok(()) => handler(request),
+                Err(code) => rejected_request_response(request, code),
             };
-            if response.request_id != request.request_id {
+            if response.request_id != request_id {
                 return Err("IPC handler returned a response for a different request.".into());
             }
             write_response(&mut io, &response)
@@ -144,17 +156,12 @@ mod windows_impl {
 
             // Revalidate the same retained process and pipe peer before dispatch.
             verified.verify_still_connected(handle)?;
+            let request_id = request.request_id.clone();
             let response = match authorize_request(&request.operation, &request.data) {
-                Ok(()) => handler(request.clone()),
-                Err(code) => IpcResponse {
-                    version: PROTOCOL_VERSION,
-                    request_id: request.request_id.clone(),
-                    ok: false,
-                    data: None,
-                    error_code: Some(code.to_string()),
-                },
+                Ok(()) => handler(request),
+                Err(code) => rejected_request_response(request, code),
             };
-            if response.request_id != request.request_id {
+            if response.request_id != request_id {
                 return Err("IPC handler returned a response for a different request.".into());
             }
             write_response(&mut io, &response)
