@@ -231,6 +231,9 @@ pub async fn run_core_service<F>(token: String, shutdown_signal: F) -> Result<()
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    if token.trim().len() < 32 {
+        return Err("WEBDYNAMITE_API_TOKEN must contain at least 32 characters".into());
+    }
     let root = data_dir();
     let database_dir = root.join("database");
     let logs_dir = root.join("logs");
@@ -283,8 +286,6 @@ where
     proxy::stop_on_shutdown(&state);
     result?;
     Ok(())
-}
-
 }
 
 #[tokio::main]
