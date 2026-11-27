@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
+use zeroize::Zeroize;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -64,8 +65,12 @@ pub fn read_request<R: Read>(reader: &mut R) -> Result<IpcRequest, String> {
     let mut payload = vec![0u8; length];
     reader.read_exact(&mut payload)
         .map_err(|error| format!("Could not read complete IPC frame: {error}"))?;
-    let request: IpcRequest = serde_json::from_slice(&payload)
-        .map_err(|_| "IPC frame contains invalid or unsupported JSON.".to_string())?;
+    let parsed = serde_json::from_slice::<IpcRequest>(&payload)
+        .map_err(|_| "IPC frame contains invalid or unsupported JSON.".to_string());
+    // The framed JSON may contain environment secrets. Clear the temporary
+    // serialized copy immediately after deserialization, including parse errors.
+    payload.zeroize();
+    let request = parsed?;
     validate_request(&request)?;
     Ok(request)
 }

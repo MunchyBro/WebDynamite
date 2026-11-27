@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::{
     ipc_authorization::authorize_request,
@@ -49,19 +50,22 @@ fn storage_key(website_id: &str, name: &str) -> String {
 /// Secret values are written directly to the protected DPAPI store and are
 /// never returned over IPC. The store root must already have its installer-set
 /// restrictive DACL; this dispatcher deliberately does not create it.
-pub fn dispatch_secret_request(root: &Path, request: &IpcRequest) -> IpcResponse {
+pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResponse {
     if let Err(code) = authorize_request(&request.operation, &request.data) {
         return response(request, Err(code));
     }
     let result = match request.operation.as_str() {
         "secret.put" => {
-            let website_id = request.data.get("website_id").and_then(serde_json::Value::as_str);
-            let name = request.data.get("name").and_then(serde_json::Value::as_str);
-            let value = request.data.get("value").and_then(serde_json::Value::as_str);
-            match (website_id, name, value) {
-                (Some(website_id), Some(name), Some(value)) => {
-                    let key = storage_key(website_id, name);
-                    secret_store::write_secret_verified(root, &key, value.as_bytes())
+            let website_id = request.data.get("website_id").and_then(serde_json::Value::as_str).map(str::to_owned);
+            let name = request.data.get("name").and_then(serde_json::Value::as_str).map(str::to_owned);
+            match (website_id, name, request.data.get_mut("value")) {
+                (Some(website_id), Some(name), Some(serde_json::Value::String(value))) => {
+                    let key = storage_key(&website_id, &name);
+                    let stored = secret_store::write_secret_verified(root, &key, value.as_bytes());
+                    // The request owns this plaintext string. Wipe it even when
+                    // DPAPI, disk I/O, or read-back verification fails.
+                    value.zeroize();
+                    stored
                         .map(|_| serde_json::json!({"stored": true, "verified": true}))
                         .map_err(|_| "secret_store_unavailable")
                 }
@@ -123,7 +127,7 @@ mod tests {
     fn status_reports_root_presence_without_claiming_acl_or_dpapi_readiness() {
         let root = std::env::temp_dir().join(format!("webdynamite-ipc-status-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
-        let result = dispatch_secret_request(&root, &request("secret.status", json!({})));
+        let result = dispatch_secret_request(&root, &mut request("secret.status", json!({})));
         assert!(result.ok);
         assert_eq!(result.data, Some(json!({"root_exists": true})));
         std::fs::remove_dir(root).unwrap();
@@ -147,9 +151,24 @@ mod tests {
         std::fs::remove_file(root).unwrap();
     }
 
+
+    #[test]
+    fn secret_put_wipes_the_owned_request_value_after_storage_attempt() {
+        let root = std::env::temp_dir().join(format!("webdynamite-ipc-put-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let mut req = request("secret.put", json!({
+            "website_id": "site-a",
+            "name": "DATABASE_URL",
+            "value": "sensitive-test-value"
+        }));
+        let _ = dispatch_secret_request(&root, &mut req);
+        assert_eq!(req.data.get("value").and_then(serde_json::Value::as_str), Some(""));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn unknown_operations_are_not_dispatched() {
-        let result = dispatch_secret_request(Path::new("."), &request("filesystem.read", json!({})));
+        let result = dispatch_secret_request(Path::new("."), &mut request("filesystem.read", json!({})));
         assert!(!result.ok);
         assert_eq!(result.error_code.as_deref(), Some("operation_not_authorized"));
     }

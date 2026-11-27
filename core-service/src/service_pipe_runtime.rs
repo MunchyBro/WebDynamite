@@ -90,8 +90,8 @@ pub fn start_authenticated_secret_pipe_worker(
                 &publisher_sha256,
                 timeout_ms.clamp(MIN_ACCEPT_TIMEOUT_MS, MAX_ACCEPT_TIMEOUT_MS),
                 &worker_cancellation,
-                move |request| {
-                    crate::secret_ipc::dispatch_secret_request(&secret_store_root, &request)
+                move |mut request| {
+                    crate::secret_ipc::dispatch_secret_request(&secret_store_root, &mut request)
                 },
             );
             if result.is_err() {
