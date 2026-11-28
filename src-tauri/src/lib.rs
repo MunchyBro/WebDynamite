@@ -661,7 +661,6 @@ fn ipc_secret_delete(app: tauri::AppHandle, website_id: String, name: String) ->
     )
 }
 
-
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
  let app = tauri::Builder::default()
