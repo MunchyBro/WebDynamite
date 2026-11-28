@@ -237,7 +237,44 @@ fn normalize_thumbprint(value: &str) -> Result<String, String> {
         fn flush(&mut self) -> io::Result<()> { Ok(()) }
     }
 
+    fn wipe_sensitive_data(operation: &str, data: &mut Value) {
+        let field = match operation {
+            "secret.put" => Some("value"),
+            "database-credential.put" => Some("password"),
+            _ => None,
+        };
+        if let Some(field) = field {
+            if let Some(serde_json::Value::String(value)) = data.get_mut(field) { value.zeroize(); }
+        }
+    }
+
+    struct SensitiveDataGuard {
+        operation: String,
+        data: Option<Value>,
+    }
+    impl SensitiveDataGuard {
+        fn new(operation: &str, data: Value) -> Self {
+            Self { operation: operation.to_string(), data: Some(data) }
+        }
+        fn take(&mut self) -> Value { self.data.take().unwrap_or(Value::Null) }
+    }
+    impl Drop for SensitiveDataGuard {
+        fn drop(&mut self) {
+            if let Some(data) = self.data.as_mut() { wipe_sensitive_data(&self.operation, data); }
+        }
+    }
+
+    struct SensitiveRequestGuard {
+        operation: String,
+        request: IpcRequest,
+    }
+    impl Drop for SensitiveRequestGuard {
+        fn drop(&mut self) { wipe_sensitive_data(&self.operation, &mut self.request.data); }
+    }
+
     pub fn exchange(operation: &str, data: Value, expected_executable: &Path, expected_thumbprint: &str, expected_service_sid: &str) -> Result<IpcResponse, String> {
+        // Own a wipe guard before any validation or connection step can fail.
+        let mut data = SensitiveDataGuard::new(operation, data);
         if expected_executable.as_os_str().is_empty() {
             return Err("A protected installed Core Service executable path is required.".into());
         }
@@ -264,19 +301,20 @@ fn normalize_thumbprint(value: &str) -> Result<String, String> {
         verified.verify_still_connected(pipe.0)?;
 
         let request_id = uuid::Uuid::new_v4().simple().to_string();
-        let mut request = IpcRequest {
-            version: PROTOCOL_VERSION,
-            request_id: request_id.clone(),
+        let mut request = SensitiveRequestGuard {
             operation: operation.to_string(),
-            data,
+            request: IpcRequest {
+                version: PROTOCOL_VERSION,
+                request_id: request_id.clone(),
+                operation: operation.to_string(),
+                data: data.take(),
+            },
         };
         let mut io = PipeIo::new(pipe.0, super::WRITE_TIMEOUT);
-        let write_result = write_request(&mut io, &request);
-        if operation == "secret.put" {
-            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
-                value.zeroize();
-            }
-        }
+        let write_result = write_request(&mut io, &request.request);
+        // The frame writer has already wiped its serialized copy; wipe the
+        // in-memory request value immediately, even when the write failed.
+        wipe_sensitive_data(operation, &mut request.request.data);
         write_result?;
         verified.verify_still_connected(pipe.0)?;
         io.set_deadline(super::READ_TIMEOUT);

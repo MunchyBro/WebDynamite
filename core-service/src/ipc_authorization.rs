@@ -32,15 +32,10 @@ fn string_field<'a>(data: &'a Value, field: &str) -> Option<&'a str> {
 
 /// Authorizes the deliberately narrow desktop IPC surface.
 ///
-/// Supported operations:
-/// - `secret.put`: { website_id, name, value }
-/// - `secret.delete`: { website_id, name }
-/// - `secret.status`: {}
-/// - `service.auth-token`: {} — returns only the provisioned Core Service API
-///   token to the already-authenticated, publisher-pinned desktop process.
-///
-/// There is intentionally no website-secret read, arbitrary filesystem,
-/// process, command, or generic RPC operation.
+/// Supported operations include website secret put/delete/status, service token
+/// bootstrap, and narrowly scoped database profile credential put/get/delete.
+/// Database credential reads are permitted only for the authenticated,
+/// publisher-pinned desktop peer; arbitrary secret reads and generic RPC remain absent.
 pub fn authorize_request(operation: &str, data: &Value) -> Result<(), &'static str> {
     match operation {
         "secret.put" => {
@@ -71,6 +66,22 @@ pub fn authorize_request(operation: &str, data: &Value) -> Result<(), &'static s
             }
             Ok(())
         }
+        "database-credential.put" => {
+            if !has_exact_fields(data, &["engine", "profile_id", "password"]) { return Err("invalid_payload"); }
+            let engine = string_field(data, "engine").ok_or("invalid_payload")?;
+            let profile_id = string_field(data, "profile_id").ok_or("invalid_payload")?;
+            let password = string_field(data, "password").ok_or("invalid_payload")?;
+            if !matches!(engine, "mysql" | "postgres") || !valid_identifier(profile_id)
+                || password.is_empty() || password.len() > 4096 || password.contains('\0') { return Err("invalid_payload"); }
+            Ok(())
+        }
+        "database-credential.get" | "database-credential.delete" => {
+            if !has_exact_fields(data, &["engine", "profile_id"]) { return Err("invalid_payload"); }
+            let engine = string_field(data, "engine").ok_or("invalid_payload")?;
+            let profile_id = string_field(data, "profile_id").ok_or("invalid_payload")?;
+            if !matches!(engine, "mysql" | "postgres") || !valid_identifier(profile_id) { return Err("invalid_payload"); }
+            Ok(())
+        }
         "secret.status" | "service.auth-token" => {
             if has_exact_fields(data, &[]) { Ok(()) } else { Err("invalid_payload") }
         }
@@ -96,6 +107,9 @@ mod tests {
         })).is_ok());
         assert!(authorize_request("secret.status", &json!({})).is_ok());
         assert!(authorize_request("service.auth-token", &json!({})).is_ok());
+        assert!(authorize_request("database-credential.put", &json!({"engine":"mysql","profile_id":"profile-123","password":"db-password"})).is_ok());
+        assert!(authorize_request("database-credential.get", &json!({"engine":"postgres","profile_id":"profile-123"})).is_ok());
+        assert!(authorize_request("database-credential.delete", &json!({"engine":"postgres","profile_id":"profile-123"})).is_ok());
     }
 
     #[test]
@@ -124,5 +138,9 @@ mod tests {
             "website_id":"site-1","name":"DATABASE_URL","value":"unexpected"
         })).is_err());
         assert!(authorize_request("secret.status", &json!({"debug":true})).is_err());
+        assert!(authorize_request("database-credential.get", &json!({"engine":"sqlite","profile_id":"profile-1"})).is_err());
+        assert!(authorize_request("database-credential.put", &json!({"engine":"mysql","profile_id":"../outside","password":"secret"})).is_err());
+        assert!(authorize_request("database-credential.put", &json!({"engine":"mysql","profile_id":"profile-1","password":""})).is_err());
+        assert!(authorize_request("database-credential.delete", &json!({"engine":"mysql","profile_id":"profile-1","extra":true})).is_err());
     }
 }

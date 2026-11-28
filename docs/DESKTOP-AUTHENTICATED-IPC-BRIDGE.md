@@ -7,7 +7,8 @@ existing Windows named-pipe client:
 
 - `ipc_secret_status` sends `secret.status`;
 - `ipc_secret_put` sends `secret.put`;
-- `ipc_secret_delete` sends `secret.delete`.
+- `ipc_secret_delete` sends `secret.delete`;
+- database profile credentials use authenticated `database-credential.put/get/delete` operations.
 
 The bridge uses the bundled Core Service executable path and a publisher
 SHA-256 pin compiled into the trusted release build through

@@ -46,13 +46,63 @@ fn response(request: &IpcRequest, result: Result<serde_json::Value, &'static str
 /// or environment variable names in the protected store directory listing.
 pub(crate) fn storage_key(website_id: &str, name: &str) -> String {
     let mut digest = Sha256::new();
-    // Domain-separate this digest from every other SHA-256 use in the product
-    // and version the derivation so future storage formats can migrate safely.
     digest.update(b"WebDynamite.SecretStore.Key.v1\0");
     digest.update(website_id.as_bytes());
     digest.update([0]);
     digest.update(name.as_bytes());
     format!("{:x}", digest.finalize())
+}
+fn database_credential_key(engine: &str, profile_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"WebDynamite.DatabaseCredential.v1\0");
+    digest.update(engine.as_bytes());
+    digest.update([0]);
+    digest.update(profile_id.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn store_database_credential(root: &Path, key: &str, password: &[u8]) -> Result<(), &'static str> {
+    let mut previous = match secret_store::read_secret(root, key) {
+        Ok(bytes) => Some(bytes),
+        Err(_) => match std::fs::symlink_metadata(root.join(format!("{key}.wds"))) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            _ => return Err("database_credential_unavailable"),
+        },
+    };
+    let stored = secret_store::write_secret_verified(root, key, password);
+    if stored.is_err() {
+        // Preserve the previous DPAPI value if replacement verification fails.
+        let rollback = match previous.as_ref() {
+            Some(bytes) => secret_store::write_secret_verified(root, key, bytes),
+            None => secret_store::delete_secret(root, key),
+        };
+        if let Some(bytes) = previous.as_mut() { bytes.zeroize(); }
+        if rollback.is_err() { return Err("database_credential_rollback_failed"); }
+        return Err("secret_store_unavailable");
+    }
+    if let Some(bytes) = previous.as_mut() { bytes.zeroize(); }
+    Ok(())
+}
+
+fn read_database_credential(root: &Path, key: &str) -> Result<String, &'static str> {
+    match secret_store::read_secret(root, key) {
+        Ok(mut bytes) => {
+            let password = std::str::from_utf8(&bytes).ok()
+                .filter(|value| !value.is_empty() && value.len() <= 4096)
+                .map(str::to_owned);
+            bytes.zeroize();
+            password.ok_or("database_credential_unavailable")
+        }
+        Err(_) => {
+            // Only a genuinely absent file permits legacy migration. A corrupt,
+            // unreadable, or undecryptable existing file must never be replaced
+            // by an older Credential Manager value.
+            match std::fs::symlink_metadata(root.join(format!("{key}.wds"))) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err("database_credential_not_found"),
+                _ => Err("database_credential_unavailable"),
+            }
+        }
+    }
 }
 
 /// Handles only the narrowly allowlisted operations admitted by ipc_authorization.
@@ -63,10 +113,13 @@ pub(crate) fn storage_key(website_id: &str, name: &str) -> String {
 /// The store root must already have its installer-set restrictive DACL.
 pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResponse {
     if let Err(code) = authorize_request(&request.operation, &request.data) {
-        if request.operation == "secret.put" {
-            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
-                value.zeroize();
-            }
+        let field = match request.operation.as_str() {
+            "secret.put" => Some("value"),
+            "database-credential.put" => Some("password"),
+            _ => None,
+        };
+        if let Some(field) = field {
+            if let Some(serde_json::Value::String(value)) = request.data.get_mut(field) { value.zeroize(); }
         }
         return response(request, Err(code));
     }
@@ -109,13 +162,44 @@ pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResp
                 _ => Err("secret_store_unavailable"),
             }
         }
+        "database-credential.put" => {
+            let engine = request.data.get("engine").and_then(serde_json::Value::as_str).map(str::to_owned);
+            let profile_id = request.data.get("profile_id").and_then(serde_json::Value::as_str).map(str::to_owned);
+            match (engine, profile_id, request.data.get_mut("password")) {
+                (Some(engine), Some(profile_id), Some(serde_json::Value::String(password))) => {
+                    let key = database_credential_key(&engine, &profile_id);
+                    let stored = store_database_credential(root, &key, password.as_bytes());
+                    password.zeroize();
+                    stored.map(|_| serde_json::json!({"stored":true,"verified":true}))
+                }
+                _ => Err("invalid_payload"),
+            }
+        }
+        "database-credential.get" => {
+            let engine = request.data.get("engine").and_then(serde_json::Value::as_str);
+            let profile_id = request.data.get("profile_id").and_then(serde_json::Value::as_str);
+            match (engine, profile_id) {
+                (Some(engine), Some(profile_id)) => read_database_credential(
+                    root, &database_credential_key(engine, profile_id)
+                ).map(|value| serde_json::json!({"password":value})),
+                _ => Err("invalid_payload"),
+            }
+        }
+        "database-credential.delete" => {
+            let engine = request.data.get("engine").and_then(serde_json::Value::as_str);
+            let profile_id = request.data.get("profile_id").and_then(serde_json::Value::as_str);
+            match (engine, profile_id) {
+                (Some(engine), Some(profile_id)) => secret_store::delete_secret(root, &database_credential_key(engine, profile_id))
+                    .map(|_| serde_json::json!({"deleted":true})).map_err(|_| "secret_store_unavailable"),
+                _ => Err("invalid_payload"),
+            }
+        }
         "service.auth-token" => {
             let mut bytes = match secret_store::read_secret(root, "api-token") {
                 Ok(value) => value,
                 Err(_) => return response(request, Err("service_token_unavailable")),
             };
-            take_service_token(&mut bytes)
-                .map(|value| serde_json::json!({"token": value}))
+            take_service_token(&mut bytes).map(|value| serde_json::json!({"token": value}))
         }
         _ => Err("operation_not_authorized"),
     };
@@ -157,6 +241,27 @@ mod tests {
         assert_eq!(first, storage_key("site-a", "DATABASE_URL"));
         assert_ne!(first, storage_key("site-b", "DATABASE_URL"));
         assert_ne!(first, storage_key("site-a", "REDIS_URL"));
+    }
+
+    #[test]
+    fn database_credential_key_is_domain_separated_and_profile_scoped() {
+        let first = super::database_credential_key("mysql", "profile-a");
+        assert_eq!(first.len(), 64);
+        assert_eq!(first, super::database_credential_key("mysql", "profile-a"));
+        assert_ne!(first, super::database_credential_key("postgres", "profile-a"));
+        assert_ne!(first, super::database_credential_key("mysql", "profile-b"));
+        assert_ne!(first, storage_key("mysql", "profile-a"));
+    }
+
+    #[test]
+    fn missing_database_credential_is_distinguished_from_corrupt_existing_data() {
+        let root = std::env::temp_dir().join(format!("webdynamite-dbcred-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let key = super::database_credential_key("mysql", "profile-a");
+        assert_eq!(super::read_database_credential(&root, &key), Err("database_credential_not_found"));
+        std::fs::write(root.join(format!("{key}.wds")), b"corrupt").unwrap();
+        assert_eq!(super::read_database_credential(&root, &key), Err("database_credential_unavailable"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -25,21 +25,27 @@ mod windows_impl {
         named_pipe_io::OverlappedPipeIo,
     };
 
-    fn wipe_auth_token_response(response: &mut IpcResponse) {
-        if let Some(serde_json::Value::String(token)) = response
-            .data
-            .as_mut()
-            .and_then(|data| data.get_mut("token"))
-        {
-            token.zeroize();
+    fn wipe_sensitive_response(operation: &str, response: &mut IpcResponse) {
+        let field = match operation {
+            "service.auth-token" => Some("token"),
+            "database-credential.get" => Some("password"),
+            _ => None,
+        };
+        if let Some(field) = field {
+            if let Some(serde_json::Value::String(value)) = response.data.as_mut().and_then(|data| data.get_mut(field)) {
+                value.zeroize();
+            }
         }
     }
 
     fn rejected_request_response(mut request: IpcRequest, code: impl ToString) -> IpcResponse {
-        if request.operation == "secret.put" {
-            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
-                value.zeroize();
-            }
+        let field = match request.operation.as_str() {
+            "secret.put" => Some("value"),
+            "database-credential.put" => Some("password"),
+            _ => None,
+        };
+        if let Some(field) = field {
+            if let Some(serde_json::Value::String(value)) = request.data.get_mut(field) { value.zeroize(); }
         }
         IpcResponse {
             version: PROTOCOL_VERSION,
@@ -129,13 +135,11 @@ mod windows_impl {
                 Err(code) => rejected_request_response(request, code),
             };
             if response.request_id != request_id {
-                wipe_auth_token_response(&mut response);
+                wipe_sensitive_response(&operation, &mut response);
                 return Err("IPC handler returned a response for a different request.".into());
             }
             let write_result = write_response(&mut io, &response);
-            if operation == "service.auth-token" {
-                wipe_auth_token_response(&mut response);
-            }
+            wipe_sensitive_response(&operation, &mut response);
             write_result
         })();
 
@@ -179,13 +183,11 @@ mod windows_impl {
                 Err(code) => rejected_request_response(request, code),
             };
             if response.request_id != request_id {
-                wipe_auth_token_response(&mut response);
+                wipe_sensitive_response(&operation, &mut response);
                 return Err("IPC handler returned a response for a different request.".into());
             }
             let write_result = write_response(&mut io, &response);
-            if operation == "service.auth-token" {
-                wipe_auth_token_response(&mut response);
-            }
+            wipe_sensitive_response(&operation, &mut response);
             write_result
         })();
 
