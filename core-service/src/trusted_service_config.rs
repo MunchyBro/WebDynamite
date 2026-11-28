@@ -48,8 +48,10 @@ impl TrustedServiceConfig {
         if self.interactive_session_id == 0 {
             return Err("An interactive Windows session ID is required.".into());
         }
-        if !self.desktop_executable.is_absolute() || !has_exe_extension(&self.desktop_executable) {
-            return Err("The pinned desktop executable must be an absolute .exe path.".into());
+        if !self.desktop_executable.is_absolute() || !has_exe_extension(&self.desktop_executable)
+            || has_dot_path_components(&self.desktop_executable)
+        {
+            return Err("The pinned desktop executable must be a normalized absolute .exe path.".into());
         }
         if self.publisher_sha256.len() != 64 || !self.publisher_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("The publisher SHA-256 thumbprint must contain exactly 64 hexadecimal characters.".into());
@@ -57,11 +59,14 @@ impl TrustedServiceConfig {
         if self.publisher_sha256.bytes().all(|byte| byte == b'0') {
             return Err("The publisher SHA-256 thumbprint must identify a real signed publisher, not an all-zero placeholder.".into());
         }
-        if !self.secret_store_root.is_absolute() || !self.data_root.is_absolute() {
-            return Err("Secret-store and data roots must be absolute paths.".into());
+        if !self.secret_store_root.is_absolute() || !self.data_root.is_absolute()
+            || has_dot_path_components(&self.secret_store_root)
+            || has_dot_path_components(&self.data_root)
+        {
+            return Err("Secret-store and data roots must be normalized absolute paths.".into());
         }
-        if self.secret_store_root == self.data_root {
-            return Err("The secret-store root must be separate from the general data root.".into());
+        if paths_overlap(&self.secret_store_root, &self.data_root) {
+            return Err("The secret-store root and general data root must be separate, non-overlapping directories.".into());
         }
         Ok(())
     }
@@ -69,6 +74,25 @@ impl TrustedServiceConfig {
 
 fn has_exe_extension(path: &std::path::Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+}
+
+fn has_dot_path_components(path: &std::path::Path) -> bool {
+    // Inspect both Windows separators explicitly for consistent validation.
+    path.to_string_lossy().split(['\\', '/']).any(|part| matches!(part, "." | ".."))
+}
+
+/// Windows paths are case-insensitive. Treat either root containing the other
+/// as overlap so secrets cannot be placed inside the general data tree (or vice versa).
+fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let normalize = |path: &std::path::Path| {
+        path.to_string_lossy().replace('/', "\\")
+            .trim_end_matches('\\').to_ascii_lowercase()
+    };
+    let left = normalize(left);
+    let right = normalize(right);
+    left == right
+        || left.strip_prefix(&right).is_some_and(|tail| tail.starts_with('\\'))
+        || right.strip_prefix(&left).is_some_and(|tail| tail.starts_with('\\'))
 }
 
 fn valid_service_sid(value: &str) -> bool {
@@ -116,6 +140,28 @@ mod tests {
         assert!(TrustedServiceConfig::parse_and_validate(placeholder.as_bytes()).unwrap_err().contains("placeholder"));
         let session = VALID.replace("\"interactive_session_id\":1", "\"interactive_session_id\":0");
         assert!(TrustedServiceConfig::parse_and_validate(session.as_bytes()).unwrap_err().contains("session ID"));
+    }
+
+    #[test]
+    fn rejects_dot_segments_and_overlapping_secret_data_roots() {
+        assert!(has_dot_path_components(std::path::Path::new("C:\\ProgramData\\WebDynamite\\..\\Secrets")));
+        assert!(has_dot_path_components(std::path::Path::new("C:\\Program Files\\.\\WebDynamite.exe")));
+        assert!(paths_overlap(
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Secrets"),
+            std::path::Path::new("c:/programdata/webdynamite/secrets/nested")
+        ));
+        assert!(paths_overlap(
+            std::path::Path::new("C:\\ProgramData\\WebDynamite"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data")
+        ));
+        assert!(!paths_overlap(
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Secrets"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data")
+        ));
+        assert!(!paths_overlap(
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Database")
+        ));
     }
 
     #[test]
