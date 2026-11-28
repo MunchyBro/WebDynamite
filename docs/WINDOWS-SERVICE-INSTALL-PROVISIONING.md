@@ -66,3 +66,41 @@ This is an installer acceptance/preflight primitive only. The current NSIS
 bundle does not yet register or activate the SCM service, and the check must
 not be added as a release gate until a future installer actually provisions
 the service. The interactive Core Service runtime remains unchanged.
+
+
+## NSIS lifecycle integration (Phase 150)
+
+The per-machine NSIS installer now invokes the Core Service lifecycle through
+Tauri's supported installer hooks:
+
+- **Before install/upgrade:** stop an existing, identity-verified service so
+  Windows can safely replace its executable. A first install is a no-op here.
+- **After install/upgrade:** validate the installed desktop and Core Service
+  signatures; register the demand-start service; prepare and verify protected
+  ProgramData ACLs; create the machine-DPAPI API token only when it is absent;
+  atomically provision and verify the trusted desktop/service configuration;
+  start the service; and wait for the local API TCP listener.
+- **Before uninstall:** stop and unregister the service before its executable
+  is removed. The ProgramData database, configuration, and machine secrets are
+  deliberately preserved.
+
+The service runs only when both binaries have valid Authenticode signatures.
+An unsigned engineering installer remains installable as a desktop-only build
+and explicitly skips privileged service registration/activation. Invalid or
+untrusted signatures fail closed. Production release publication remains
+blocked until the real publisher certificate and signing pipeline are
+configured.
+
+The installer uses the per-machine NSIS mode because service registration,
+machine DPAPI, and protected ProgramData ACL provisioning require elevation.
+The lifecycle script is embedded into the NSIS installer at build time, so
+pre-install and uninstall hooks do not depend on files already having been
+copied into the application directory.
+
+CI runs deterministic PowerShell contract self-tests and builds the NSIS
+bundle. It does **not** substitute for a real signed Windows install/upgrade/
+repair/uninstall test on a disposable Windows machine. Before production
+release, exercise first install, upgrade with an existing token, repair,
+service startup failure, uninstall, and reinstall while verifying that user
+data and secrets survive. The local TCP listener check confirms startup only;
+it is not an authenticated API end-to-end test.

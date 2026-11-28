@@ -35,6 +35,12 @@
     ],
     "resources": {
       "../target/release/webdynamite-core.exe": "webdynamite-core.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "./windows/installer-hooks.nsh"
+      }
     }
   }
 }

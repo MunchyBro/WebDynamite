@@ -47,6 +47,10 @@ jobs:
         shell: pwsh
         run: ./scripts/windows/manage-core-service.ps1 -Mode SelfTest
 
+      - name: Validate Core Service installer lifecycle contract
+        shell: pwsh
+        run: ./scripts/windows/install-core-service.ps1 -Mode SelfTest
+
       - name: Validate trusted service configuration provisioning contract
         shell: pwsh
         run: ./scripts/windows/provision-trusted-service-config.ps1 -Mode SelfTest
