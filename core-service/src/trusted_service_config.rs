@@ -88,7 +88,16 @@ fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
         let value = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
         // Keep a drive root's trailing separator: "c:\" is the parent of
         // every path on that volume, and trimming it would turn it into "c:".
-        if value.len() == 3 && value.as_bytes()[1] == b':' && value.ends_with('\\') {
+        let is_drive_root = value.len() == 3
+            && value.as_bytes()[1] == b':'
+            && value.ends_with('\\');
+        // Extended/device namespace drive roots (\\?\C:\ and \\.\C:\)
+        // need the same treatment or descendants can evade overlap detection.
+        let is_namespaced_drive_root = value.len() == 7
+            && (value.starts_with("\\\\?\\") || value.starts_with("\\\\.\\"))
+            && value.as_bytes()[5] == b':'
+            && value.ends_with('\\');
+        if is_drive_root || is_namespaced_drive_root {
             value
         } else {
             value.trim_end_matches('\\').to_string()
@@ -176,6 +185,18 @@ mod tests {
         assert!(!paths_overlap(
             std::path::Path::new("D:\\"),
             std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data")
+        ));
+        assert!(paths_overlap(
+            std::path::Path::new(r"\\?\C:\"),
+            std::path::Path::new(r"\\?\C:\ProgramData\WebDynamite\Data")
+        ));
+        assert!(!paths_overlap(
+            std::path::Path::new(r"\\?\D:\"),
+            std::path::Path::new(r"\\?\C:\ProgramData\WebDynamite\Data")
+        ));
+        assert!(paths_overlap(
+            std::path::Path::new(r"\\.\C:\"),
+            std::path::Path::new(r"\\.\C:\ProgramData\WebDynamite\Data")
         ));
     }
 
