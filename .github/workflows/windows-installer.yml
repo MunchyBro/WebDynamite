@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   build-installer:
-    if: \${{ !startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     name: Build Windows NSIS engineering installer
     runs-on: windows-latest
     steps:
@@ -79,7 +79,7 @@ jobs:
           retention-days: 30
 
   publish-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     name: Sign, verify, and publish Windows release
     runs-on: windows-latest
     environment: production-release
@@ -99,90 +99,7 @@ jobs:
       - name: Require a semantic version tag on main
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\\.[0-9]+\\.[0-9]+([-.][0-9A-Za-z.-]+)?
-        shell: pwsh
-        env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
-        run: |
-          foreach ($name in @("WEBDYNAMITE_SIGNING_PFX_BASE64", "WEBDYNAMITE_SIGNING_PFX_PASSWORD", "WEBDYNAMITE_PUBLISHER_SHA256")) {
-            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "Protected production signing input $name is not configured. No release artifact will be built or published."
-            }
-          }
-          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
-          if ($pin -notmatch '^[0-9a-f]{64}$' -or $pin -eq ('0' * 64)) {
-            throw "WEBDYNAMITE_PUBLISHER_SHA256 must be a nonzero 64-character SHA-256 certificate pin."
-          }
-      - name: Validate protected publisher certificate and chain
-        shell: pwsh
-        env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
-        run: ./scripts/windows/validate-signing-certificate.ps1
-      - name: Provision the verified publisher pin for this build
-        shell: pwsh
-        env:
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
-        run: |
-          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
-          Set-Content -LiteralPath "src-tauri/resources/publisher.sha256" -Value $pin -NoNewline -Encoding ascii
-      - name: Install frontend dependencies
-        run: npm install
-      - name: Build Core Service
-        run: cargo build --release --manifest-path core-service/Cargo.toml
-      - name: Build desktop executable without bundling
-        run: npm run tauri -- build --no-bundle
-      - name: Sign desktop and Core Service executables
-        shell: pwsh
-        env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
-        run: |
-          $desktop = Join-Path (Get-Location) "src-tauri/target/release/webdynamite.exe"
-          $service = Join-Path (Get-Location) "target/release/webdynamite-core.exe"
-          ./scripts/windows/sign-release-artifacts.ps1 -Mode Sign -Paths @($desktop, $service)
-      - name: Build NSIS installer from signed executables
-        run: npm run tauri -- build --bundles nsis
-      - name: Locate and sign final NSIS installer
-        id: sign-installer
-        shell: pwsh
-        env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
-        run: |
-          $installers = @(Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' })
-          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
-          ./scripts/windows/sign-release-artifacts.ps1 -Mode Sign -Paths @($installers[0].FullName)
-          "installer=$($installers[0].FullName)" >> $env:GITHUB_OUTPUT
-      - name: Verify every release executable and publisher pin
-        shell: pwsh
-        env:
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
-        run: |
-          $desktop = Join-Path (Get-Location) "src-tauri/target/release/webdynamite.exe"
-          $service = Join-Path (Get-Location) "target/release/webdynamite-core.exe"
-          $installer = "\${{ steps.sign-installer.outputs.installer }}"
-          ./scripts/windows/sign-release-artifacts.ps1 -Mode Verify -Paths @($desktop, $service, $installer)
-      - name: Generate release checksums
-        shell: pwsh
-        env:
-          INSTALLER_PATH: \${{ steps.sign-installer.outputs.installer }}
-        run: |
-          $hash = (Get-FileHash -LiteralPath $env:INSTALLER_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $(Split-Path -Leaf $env:INSTALLER_PATH)" | Set-Content -LiteralPath SHA256SUMS.txt -Encoding ascii
-      - name: Publish verified GitHub Release
-        shell: pwsh
-        env:
-          GH_TOKEN: \${{ github.token }}
-          INSTALLER_PATH: \${{ steps.sign-installer.outputs.installer }}
-        run: |
-          gh release create "$env:GITHUB_REF_NAME" "$env:INSTALLER_PATH" "SHA256SUMS.txt" --verify-tag --generate-notes
-) {
+          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\\.[0-9]+\\.[0-9]+([-.][0-9A-Za-z.-]+)?$') {
             throw "Release tags must use semantic version form vMAJOR.MINOR.PATCH."
           }
           git merge-base --is-ancestor $env:GITHUB_SHA origin/main
@@ -190,32 +107,32 @@ jobs:
       - name: Require protected signing inputs
         shell: pwsh
         env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: |
           foreach ($name in @("WEBDYNAMITE_SIGNING_PFX_BASE64", "WEBDYNAMITE_SIGNING_PFX_PASSWORD", "WEBDYNAMITE_PUBLISHER_SHA256")) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
               throw "Protected production signing input $name is not configured. No release artifact will be built or published."
             }
           }
-          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
+          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\\s]', '').ToLowerInvariant()
           if ($pin -notmatch '^[0-9a-f]{64}$' -or $pin -eq ('0' * 64)) {
             throw "WEBDYNAMITE_PUBLISHER_SHA256 must be a nonzero 64-character SHA-256 certificate pin."
           }
       - name: Validate protected publisher certificate and chain
         shell: pwsh
         env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: ./scripts/windows/validate-signing-certificate.ps1
       - name: Provision the verified publisher pin for this build
         shell: pwsh
         env:
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: |
-          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
+          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\\s]', '').ToLowerInvariant()
           Set-Content -LiteralPath "src-tauri/resources/publisher.sha256" -Value $pin -NoNewline -Encoding ascii
       - name: Install frontend dependencies
         run: npm install
@@ -226,9 +143,9 @@ jobs:
       - name: Sign desktop and Core Service executables
         shell: pwsh
         env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: |
           $desktop = Join-Path (Get-Location) "src-tauri/target/release/webdynamite.exe"
           $service = Join-Path (Get-Location) "target/release/webdynamite-core.exe"
@@ -239,9 +156,9 @@ jobs:
         id: sign-installer
         shell: pwsh
         env:
-          WEBDYNAMITE_SIGNING_PFX_BASE64: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
-          WEBDYNAMITE_SIGNING_PFX_PASSWORD: \${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: |
           $installers = @(Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' })
           if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
@@ -250,23 +167,23 @@ jobs:
       - name: Verify every release executable and publisher pin
         shell: pwsh
         env:
-          WEBDYNAMITE_PUBLISHER_SHA256: \${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: |
           $desktop = Join-Path (Get-Location) "src-tauri/target/release/webdynamite.exe"
           $service = Join-Path (Get-Location) "target/release/webdynamite-core.exe"
-          $installer = "\${{ steps.sign-installer.outputs.installer }}"
+          $installer = "${{ steps.sign-installer.outputs.installer }}"
           ./scripts/windows/sign-release-artifacts.ps1 -Mode Verify -Paths @($desktop, $service, $installer)
       - name: Generate release checksums
         shell: pwsh
         env:
-          INSTALLER_PATH: \${{ steps.sign-installer.outputs.installer }}
+          INSTALLER_PATH: ${{ steps.sign-installer.outputs.installer }}
         run: |
           $hash = (Get-FileHash -LiteralPath $env:INSTALLER_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $(Split-Path -Leaf $env:INSTALLER_PATH)" | Set-Content -LiteralPath SHA256SUMS.txt -Encoding ascii
       - name: Publish verified GitHub Release
         shell: pwsh
         env:
-          GH_TOKEN: \${{ github.token }}
-          INSTALLER_PATH: \${{ steps.sign-installer.outputs.installer }}
+          GH_TOKEN: ${{ github.token }}
+          INSTALLER_PATH: ${{ steps.sign-installer.outputs.installer }}
         run: |
           gh release create "$env:GITHUB_REF_NAME" "$env:INSTALLER_PATH" "SHA256SUMS.txt" --verify-tag --generate-notes
