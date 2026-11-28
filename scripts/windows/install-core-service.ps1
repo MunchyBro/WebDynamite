@@ -81,18 +81,19 @@ function Resolve-InstallPaths([string]$Root) {
     if ([string]::IsNullOrWhiteSpace($Root) -or -not [IO.Path]::IsPathRooted($Root)) {
         throw "A fully qualified per-machine installation root is required."
     }
-    $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
-    $programFiles = [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\'
-    if (-not $fullRoot.StartsWith($programFiles, [StringComparison]::OrdinalIgnoreCase)) {
+    $trimChars = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd($trimChars)
+    $programFiles = [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd($trimChars)
+    $requiredPrefix = $programFiles + [IO.Path]::DirectorySeparatorChar
+    if (-not $fullRoot.StartsWith($requiredPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw "The Core Service must be installed beneath Program Files."
     }
     return [pscustomobject]@{
-        Root = $fullRoot.TrimEnd('\')
+        Root = $fullRoot
         Desktop = Join-Path $fullRoot $DesktopExecutableName
         Service = Join-Path $fullRoot $ServiceRelativePath
     }
 }
-
 function Start-And-VerifyService {
     $start = & sc.exe start $ServiceName 2>&1
     if ($LASTEXITCODE -ne 0 -and ($start | Out-String) -notmatch "1056") {
