@@ -77,10 +77,8 @@ fn has_exe_extension(path: &std::path::Path) -> bool {
 }
 
 fn has_dot_path_components(path: &std::path::Path) -> bool {
-    path.components().any(|component| matches!(
-        component,
-        std::path::Component::CurDir | std::path::Component::ParentDir
-    ))
+    // Inspect both Windows separators explicitly for consistent validation.
+    path.to_string_lossy().split(['\\', '/']).any(|part| matches!(part, "." | ".."))
 }
 
 /// Windows paths are case-insensitive. Treat either root containing the other
@@ -88,13 +86,13 @@ fn has_dot_path_components(path: &std::path::Path) -> bool {
 fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
     let normalize = |path: &std::path::Path| {
         path.to_string_lossy().replace('/', "\\")
-            .trim_end_matches('\\\\').to_ascii_lowercase()
+            .trim_end_matches('\\').to_ascii_lowercase()
     };
     let left = normalize(left);
     let right = normalize(right);
     left == right
-        || left.strip_prefix(&right).is_some_and(|tail| tail.starts_with('\\\\'))
-        || right.strip_prefix(&left).is_some_and(|tail| tail.starts_with('\\\\'))
+        || left.strip_prefix(&right).is_some_and(|tail| tail.starts_with('\\')
+        || right.strip_prefix(&left).is_some_and(|tail| tail.starts_with('\\')
 }
 
 fn valid_service_sid(value: &str) -> bool {
