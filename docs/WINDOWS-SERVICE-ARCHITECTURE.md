@@ -1,12 +1,12 @@
 # Windows Core Service architecture
 
-**Status:** Proposed design; implementation not yet enabled  
+**Status:** SCM service mode is implemented for trusted signed per-machine installations; clean-machine lifecycle acceptance remains outstanding  
 **Target:** Windows 10/11 x64  
 **Scope:** Machine-startup hosting, service recovery, desktop attachment, and safe installer lifecycle
 
 ## Current behavior
 
-The desktop application starts `webdynamite-core.exe` as a detached child process. The process survives closing the desktop window and can be reused by a later desktop launch after it proves possession of the API token. It is still tied to the interactive logon session: it does not start before sign-in and does not provide Service Control Manager (SCM) recovery after a crash or reboot.
+A trusted signed per-machine installation registers the Core Service with Windows Service Control Manager (SCM) under the dedicated `NT SERVICE\\WebDynamiteCore` virtual account. The service is configured for automatic machine startup and bounded restart recovery (5 seconds, 15 seconds, then 60 seconds; the failure counter resets after 24 hours). The desktop attaches through the authenticated local bootstrap channel and does not own the service lifetime. Unsigned engineering builds remain desktop-only and can use the interactive child-process mode.
 
 The desktop stores the Core Service API token in the signed-in user's Windows Credential Manager. The Core Service also uses Windows Credential Manager for protected website environment secrets. This is not directly compatible with moving the Core Service to a different Windows service identity.
 
@@ -122,3 +122,20 @@ SCM mode is not production-ready until all gates pass on Windows 10 and Windows 
 - No ordinary upgrade or uninstall removes user data.
 - A failed migration never silently discards a secret or changes a website's runtime identity.
 - The detached-process mode remains available until SCM install, migration, upgrade, and recovery tests pass.
+
+
+## SCM startup and recovery policy
+
+The installer applies and verifies the following policy whenever it installs or repairs the signed Core Service:
+
+- **Startup:** Automatic (machine boot), not demand-start or delayed-start.
+- **Identity:** `NT SERVICE\\WebDynamiteCore` with the service SID enabled.
+- **Failure actions:** restart after 5 seconds, 15 seconds, and 60 seconds.
+- **Reset window:** 24 hours, preventing an unlimited rapid-restart loop.
+- **Non-crash failures:** SCM recovery actions are enabled for non-zero service process exits.
+- **Upgrade:** the installer stops the identity- and path-verified service before replacing binaries, then re-applies and verifies the policy before starting it.
+- **Uninstall:** unregisters the service but preserves ProgramData databases, configuration, and protected secrets.
+
+The installer lifecycle self-test validates the exact policy arguments and rejects mismatched `sc.exe qfailure` output. The Windows Installer workflow also builds the NSIS bundle with this contract enabled.
+
+These checks validate the policy contract and installer build; they do not replace a real Windows VM acceptance run. Before claiming production readiness, test first boot after installation, recovery after an induced service crash, upgrade with existing data and secrets, interrupted upgrade recovery, uninstall, and reinstall on a disposable Windows machine.

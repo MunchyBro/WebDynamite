@@ -20,6 +20,42 @@ function Get-ServiceSidType {
     if (($output | Out-String) -notmatch '(?im)SERVICE_SID_TYPE:\s*UNRESTRICTED') { throw "$ServiceName must have an unrestricted service SID." }
     return "UNRESTRICTED"
 }
+function Get-ServiceRecoveryPolicy {
+    return [pscustomobject]@{ ResetPeriodSeconds = 86400; RestartDelaysMilliseconds = @(5000, 15000, 60000) }
+}
+function Get-ServiceRecoveryScArguments {
+    $policy = Get-ServiceRecoveryPolicy
+    $actions = @($policy.RestartDelaysMilliseconds | ForEach-Object { "restart/$_" }) -join "/"
+    return @("reset= $($policy.ResetPeriodSeconds)", "actions= $actions")
+}
+function Test-ServiceRecoveryConfiguration([string]$Output) {
+    if ([string]::IsNullOrWhiteSpace($Output)) { return $false }
+    $policy = Get-ServiceRecoveryPolicy
+    $reset = [regex]::Match($Output, '(?im)RESET_PERIOD\s*\(in seconds\)\s*:\s*(\d+)')
+    if (-not $reset.Success -or [int]$reset.Groups[1].Value -ne $policy.ResetPeriodSeconds) { return $false }
+    $delays = @([regex]::Matches($Output, '(?i)RESTART\s*--\s*Delay\s*=\s*(\d+)\s*milliseconds') | ForEach-Object { [int]$_.Groups[1].Value })
+    if ($delays.Count -ne $policy.RestartDelaysMilliseconds.Count) { return $false }
+    for ($i = 0; $i -lt $delays.Count; $i++) { if ($delays[$i] -ne $policy.RestartDelaysMilliseconds[$i]) { return $false } }
+    return $true
+}
+function Set-ServiceRecoveryPolicy {
+    $start = & sc.exe config $ServiceName "start= auto" 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not configure automatic startup for ${ServiceName}: $start" }
+    $arguments = Get-ServiceRecoveryScArguments
+    $failure = & sc.exe failure $ServiceName @arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not configure bounded SCM recovery for ${ServiceName}: $failure" }
+    $flag = & sc.exe failureflag $ServiceName 1 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not enable recovery actions for non-zero service exits: $flag" }
+}
+function Assert-ServiceRecoveryPolicy {
+    $service = Get-RegisteredService
+    if (-not $service -or -not [string]::Equals([string]$service.StartMode, "Auto", [StringComparison]::OrdinalIgnoreCase)) { throw "$ServiceName must be configured for automatic machine startup." }
+    $output = & sc.exe qfailure $ServiceName 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-ServiceRecoveryConfiguration ($output | Out-String))) { throw "$ServiceName does not have the required bounded restart policy (5s, 15s, 60s; reset after 24 hours)." }
+    $flagOutput = & sc.exe qfailureflag $ServiceName 2>&1
+    if ($LASTEXITCODE -ne 0 -or ($flagOutput | Out-String) -notmatch '(?im)FAILURE_ACTIONS_ON_NONCRASH_FAILURES\s*:\s*1') { throw "$ServiceName must restart after non-zero service process exits." }
+    return $service
+}
 function Get-RegisteredService { return Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" }
 function Get-NormalizedBinaryPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { throw "A service binary path is required." }
@@ -59,7 +95,23 @@ if ($Mode -eq "SelfTest") {
         try { $null = Get-NormalizedBinaryPath $invalid } catch { $rejected = $true }
         if (-not $rejected) { throw "Invalid service binary path was accepted: $invalid" }
     }
-    Write-Output "Windows Core Service registration self-test passed."
+    $expectedArguments = Get-ServiceRecoveryScArguments
+    if ($expectedArguments.Count -ne 2 -or $expectedArguments[0] -ne "reset= 86400" -or $expectedArguments[1] -ne "actions= restart/5000/restart/15000/restart/60000") { throw "SCM recovery action arguments do not match the bounded policy." }
+$validRecovery = @"
+[SC] QueryServiceConfig2 SUCCESS
+
+SERVICE_NAME: WebDynamiteCore
+        RESET_PERIOD (in seconds)    : 86400
+        REBOOT_MESSAGE               :
+        COMMAND_LINE                 :
+        FAILURE_ACTIONS              : RESTART -- Delay = 5000 milliseconds
+                                       RESTART -- Delay = 15000 milliseconds
+                                       RESTART -- Delay = 60000 milliseconds
+"@
+    if (-not (Test-ServiceRecoveryConfiguration $validRecovery)) { throw "Valid SCM recovery output was rejected." }
+    $invalidRecovery = $validRecovery.Replace("Delay = 15000", "Delay = 90000")
+    if (Test-ServiceRecoveryConfiguration $invalidRecovery) { throw "Invalid SCM recovery delay was accepted." }
+    Write-Output "Windows Core Service registration, automatic startup, and bounded recovery self-tests passed."
     exit 0
 }
 Assert-Administrator
@@ -72,7 +124,9 @@ switch ($Mode) {
             $verified = Assert-RegisteredService
             $expectedPath = '"' + $binary + '"'
             if (-not [string]::Equals([string]$verified.PathName, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) { throw "$ServiceName is already registered with a different executable path; refusing to overwrite it." }
-            Write-Output "$ServiceName is already registered with the expected service identity and executable."
+            Set-ServiceRecoveryPolicy
+            $null = Assert-ServiceRecoveryPolicy
+            Write-Output "$ServiceName is registered with the expected identity, executable, automatic startup, and bounded recovery policy."
             exit 0
         }
         $binaryPath = '"' + $binary + '"'
@@ -83,18 +137,21 @@ switch ($Mode) {
             if ($LASTEXITCODE -ne 0) { throw "Could not enable the WebDynamite service SID: $sidResult" }
             $description = & sc.exe description $ServiceName "WebDynamite Core Service (managed by the WebDynamite installer)." 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Could not set the service description: $description" }
+            Set-ServiceRecoveryPolicy
             $null = Assert-RegisteredService
+            $null = Assert-ServiceRecoveryPolicy
         } catch {
             $failure = $_
             & sc.exe delete $ServiceName | Out-Null
             throw $failure
         }
-        Write-Output "$ServiceName registered as $ServiceAccount with an unrestricted service SID and demand-start mode."
+        Write-Output "$ServiceName registered as $ServiceAccount with an unrestricted service SID, automatic machine startup, and bounded SCM recovery."
         Write-Output "The service was not started; installer provisioning must finish first."
     }
     "Verify" {
         $service = Assert-RegisteredService
-        Write-Output ("{0}: account={1}; state={2}; startMode={3}; SID=UNRESTRICTED" -f $service.Name,$service.StartName,$service.State,$service.StartMode)
+        $service = Assert-ServiceRecoveryPolicy
+        Write-Output ("{0}: account={1}; state={2}; startMode={3}; recovery=5s/15s/60s; reset=24h; SID=UNRESTRICTED" -f $service.Name,$service.StartName,$service.State,$service.StartMode)
     }
     "Stop" {
         if (Stop-RegisteredService) { Write-Output "$ServiceName is stopped and safe for installer file replacement." }
