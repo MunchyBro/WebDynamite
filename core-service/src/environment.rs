@@ -4,20 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use crate::AppState;
-use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-fn secret_storage_key(id: &str, name: &str) -> String {
- let mut digest = Sha256::new();
- digest.update(b"WebDynamite.SecretStore.Key.v1\\0");
- digest.update(id.as_bytes());
- digest.update([0]);
- digest.update(name.as_bytes());
- format!("{:x}", digest.finalize())
-}
 fn read_secret_value(state: &AppState, id: &str, name: &str) -> Result<String, String> {
  if let Some(root) = &state.secret_store_root {
-  let mut bytes = crate::secret_store::read_secret(root, &secret_storage_key(id, name))?;
+  let mut bytes = crate::secret_store::read_secret(root, &crate::secret_ipc::storage_key(id, name))?;
   let value = String::from_utf8(std::mem::take(&mut bytes)).map_err(|_| "Protected environment secret is not valid UTF-8.".to_string());
   bytes.zeroize();
   value
@@ -124,9 +115,17 @@ async fn save(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<Sa
 
 fn save_with_service_store(state: &AppState, id: &str, input: SaveEnvironmentVariable) -> Result<EnvironmentVariable, EnvironmentError> {
  validate_variable(&input)?;
+ {
+  let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[id],|row|row.get(0)).map_err(db_error)?;
+  if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}
+ }
  let previous = read_secret_snapshot(state, id, &input.name).map_err(|error| EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_read_failed",error))?;
  if input.is_secret {
-  write_secret_value(state,id,&input.name,&input.value).map_err(|error| EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_save_failed",error))?;
+  if let Err(error)=write_secret_value(state,id,&input.name,&input.value) {
+   let _=restore_secret_snapshot(state,id,&input.name,previous.as_deref());
+   return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_save_failed",error));
+  }
  }
  let result = {
   let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
