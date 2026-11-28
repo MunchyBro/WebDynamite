@@ -71,6 +71,13 @@ pub fn authorize_request(operation: &str, data: &Value) -> Result<(), &'static s
             }
             Ok(())
         }
+        "secret.verify" => {
+            if !has_exact_fields(data, &["website_id", "name"]) { return Err("invalid_payload"); }
+            let website_id = string_field(data, "website_id").ok_or("invalid_payload")?;
+            let name = string_field(data, "name").ok_or("invalid_payload")?;
+            if !valid_identifier(website_id) || !valid_environment_name(name) { return Err("invalid_payload"); }
+            Ok(())
+        }
         "secret.status" | "service.auth-token" => {
             if has_exact_fields(data, &[]) { Ok(()) } else { Err("invalid_payload") }
         }
@@ -95,6 +102,7 @@ mod tests {
             "name": "DATABASE_URL"
         })).is_ok());
         assert!(authorize_request("secret.status", &json!({})).is_ok());
+        assert!(authorize_request("secret.verify", &json!({"website_id":"site-1","name":"DATABASE_URL"})).is_ok());
         assert!(authorize_request("service.auth-token", &json!({})).is_ok());
     }
 
