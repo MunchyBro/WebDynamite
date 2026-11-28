@@ -144,23 +144,23 @@ mod tests {
 
     #[test]
     fn rejects_dot_segments_and_overlapping_secret_data_roots() {
-        assert!(has_dot_path_components(std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite\\\\..\\\\Secrets")));
-        assert!(has_dot_path_components(std::path::Path::new("C:\\\\Program Files\\\\.\\\\WebDynamite.exe")));
+        assert!(has_dot_path_components(std::path::Path::new("C:\\ProgramData\\WebDynamite\\..\\Secrets")));
+        assert!(has_dot_path_components(std::path::Path::new("C:\\Program Files\\.\\WebDynamite.exe")));
         assert!(paths_overlap(
-            std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite\\\\Secrets"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Secrets"),
             std::path::Path::new("c:/programdata/webdynamite/secrets/nested")
         ));
         assert!(paths_overlap(
-            std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite"),
-            std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite\\\\Data")
+            std::path::Path::new("C:\\ProgramData\\WebDynamite"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data")
         ));
         assert!(!paths_overlap(
-            std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite\\\\Secrets"),
-            std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite\\\\Data")
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Secrets"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data")
         ));
         assert!(!paths_overlap(
-            std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite\\\\Data"),
-            std::path::Path::new("C:\\\\ProgramData\\\\WebDynamite\\\\Database")
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Database")
         ));
     }
 
