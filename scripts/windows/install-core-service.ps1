@@ -11,7 +11,7 @@ $ServiceScript = Join-Path $PSScriptRoot "manage-core-service.ps1"
 $LayoutScript = Join-Path $PSScriptRoot "provision-service-layout.ps1"
 $TrustedConfigScript = Join-Path $PSScriptRoot "provision-trusted-service-config.ps1"
 $ServiceRelativePath = "resources\webdynamite-core.exe"
-$DesktopExecutableName = "WebDynamite.exe"
+$DesktopExecutableName = "webdynamite.exe"
 $ApiTokenFileName = "api-token.wds"
 $ApiPort = 47821
 
@@ -30,10 +30,10 @@ function Get-SignatureDisposition([string]$DesktopPath, [string]$ServicePath) {
     $desktop = Get-AuthenticodeSignature -LiteralPath $DesktopPath
     $service = Get-AuthenticodeSignature -LiteralPath $ServicePath
     $statuses = @([string]$desktop.Status, [string]$service.Status)
-    if ($statuses -contains "NotSigned") { return "UnsignedEngineering" }
-    if ($desktop.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $service.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-        throw "Desktop and Core Service must both have valid trusted Authenticode signatures; refusing service activation."
+    if (@($statuses | Where-Object { $_ -notin @("Valid", "NotSigned") }).Count -gt 0) {
+        throw "Desktop or Core Service has an invalid/untrusted Authenticode signature; refusing service activation."
     }
+    if ($statuses -contains "NotSigned") { return "UnsignedEngineering" }
     if (-not $desktop.SignerCertificate -or -not $service.SignerCertificate) { throw "Signed desktop and Core Service binaries must both expose signer certificates." }
     return "Signed"
 }
@@ -100,13 +100,14 @@ function Invoke-Uninstall {
 
 if ($Mode -eq "SelfTest") {
     function Resolve-SignatureStatus([string]$DesktopStatus, [string]$ServiceStatus) {
-        if ($DesktopStatus -eq "NotSigned" -or $ServiceStatus -eq "NotSigned") { return "UnsignedEngineering" }
-        if ($DesktopStatus -ne "Valid" -or $ServiceStatus -ne "Valid") { throw "Invalid signature state." }
+        $statuses = @($DesktopStatus, $ServiceStatus)
+        if (@($statuses | Where-Object { $_ -notin @("Valid", "NotSigned") }).Count -gt 0) { throw "Invalid signature state." }
+        if ($statuses -contains "NotSigned") { return "UnsignedEngineering" }
         return "Signed"
     }
     if ((Resolve-SignatureStatus "NotSigned" "NotSigned") -ne "UnsignedEngineering") { throw "Unsigned engineering policy failed." }
     if ((Resolve-SignatureStatus "Valid" "Valid") -ne "Signed") { throw "Signed activation policy failed." }
-    foreach ($pair in @(@("HashMismatch", "Valid"), @("NotTrusted", "Valid"), @("Valid", "UnknownError"))) {
+    foreach ($pair in @(@("HashMismatch", "Valid"), @("NotTrusted", "Valid"), @("Valid", "UnknownError"), @("NotSigned", "HashMismatch"))) {
         $rejected = $false
         try { $null = Resolve-SignatureStatus $pair[0] $pair[1] } catch { $rejected = $true }
         if (-not $rejected) { throw "Invalid Authenticode status was accepted: $($pair -join ', ')" }
@@ -118,6 +119,14 @@ switch ($Mode) {
     "Install" { Invoke-Install }
     "StopForUpgrade" {
         Assert-Administrator
+        $paths = Resolve-InstallPaths $InstallRoot
+        $existing = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'"
+        if ($existing) {
+            $expectedPath = '"' + $paths.Service + '"'
+            if (-not [string]::Equals([string]$existing.PathName, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "The installed service points to a different installation directory; refusing to stop or replace it."
+            }
+        }
         Invoke-PowerShellScript $ServiceScript @("-Mode", "Stop")
         Write-Output "Existing Core Service stopped before installer file replacement."
     }
