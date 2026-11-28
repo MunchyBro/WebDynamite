@@ -10,6 +10,7 @@ on:
       - "core-service/**"
       - "src-tauri/**"
       - "scripts/windows/**"
+      - "docs/WINDOWS-SERVICE-INSTALL-PROVISIONING.md"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/windows-installer.yml"
@@ -46,6 +47,10 @@ jobs:
       - name: Validate Core Service registration contract
         shell: pwsh
         run: ./scripts/windows/manage-core-service.ps1 -Mode SelfTest
+
+      - name: Validate Core Service installer lifecycle contract
+        shell: pwsh
+        run: ./scripts/windows/install-core-service.ps1 -Mode SelfTest
 
       - name: Validate trusted service configuration provisioning contract
         shell: pwsh
