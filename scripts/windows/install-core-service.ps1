@@ -7,6 +7,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$LifecycleLogPath = Join-Path $env:TEMP ("WebDynamite-CoreService-" + $Mode + "-" + [guid]::NewGuid().ToString("N") + ".log")
+try {
+    Start-Transcript -LiteralPath $LifecycleLogPath -Force | Out-Null
+} catch {
+    Write-Warning "Could not start Core Service lifecycle transcript: $_"
+}
+Write-Output "Core Service lifecycle mode '$Mode' started. Diagnostic log: $LifecycleLogPath"
+
 $ServiceName = "WebDynamiteCore"
 $ServiceScript = Join-Path $PSScriptRoot "manage-core-service.ps1"
 $LayoutScript = Join-Path $PSScriptRoot "provision-service-layout.ps1"
@@ -124,6 +132,7 @@ function Start-And-VerifyService {
 }
 
 function Invoke-Install {
+    Write-Output "Install: checking elevation and install paths."
     Assert-Administrator
     $paths = Resolve-InstallPaths $InstallRoot
     foreach ($path in @($paths.Desktop, $paths.Service)) {
@@ -138,12 +147,15 @@ function Invoke-Install {
     } else {
         ""
     }
+    Write-Output "Install: checking Authenticode status for desktop and service binaries."
     $signature = Get-SignatureDisposition $paths.Desktop $paths.Service $publisherPin
+    Write-Output "Install: signature disposition is $signature."
     if ($signature -eq "UnsignedEngineering") {
         Write-Warning "Unsigned engineering build: installing the desktop application only. The privileged Core Service remains unregistered and inactive until both binaries are signed by the trusted production publisher."
         return
     }
 
+    Write-Output "Install: preparing signed production Core Service."
     # Register first so Windows can resolve the exact virtual service SID used by protected ProgramData ACLs.
     Invoke-PowerShellScript $ServiceScript @("-Mode", "Install", "-ServiceBinaryPath", $paths.Service)
     Invoke-PowerShellScript $LayoutScript @("-Mode", "Prepare")
@@ -171,6 +183,7 @@ function Invoke-Install {
 }
 
 function Invoke-Uninstall {
+    Write-Output "Uninstall: checking elevation."
     Assert-Administrator
     Invoke-PowerShellScript $ServiceScript @("-Mode", "Remove")
     Write-Output "WebDynamite Core Service removed. User data, database, configuration, and machine secrets under ProgramData were preserved."
@@ -215,6 +228,7 @@ switch ($Mode) {
         Invoke-Install
     }
     "StopForUpgrade" {
+        Write-Output "StopForUpgrade: checking elevation and existing service."
         Assert-Administrator
         $paths = Resolve-InstallPaths $InstallRoot
         $existing = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'"
@@ -224,10 +238,16 @@ switch ($Mode) {
                 throw "The installed service points to a different installation directory; refusing to stop or replace it."
             }
         }
-        Invoke-PowerShellScript $ServiceScript @("-Mode", "Stop")
-        Write-Output "Existing Core Service stopped before installer file replacement."
+        if (-not $existing) {
+            Write-Output "No existing WebDynamiteCore service is registered; no stop action is required."
+        } else {
+            Invoke-PowerShellScript $ServiceScript @("-Mode", "Stop")
+            Write-Output "Existing Core Service stopped before installer file replacement."
+        }
     }
     "Uninstall" {
         Invoke-Uninstall
     }
 }
+
+try { Stop-Transcript | Out-Null } catch { }
