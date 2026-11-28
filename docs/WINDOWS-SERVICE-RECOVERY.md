@@ -27,6 +27,6 @@ Unsigned engineering installers remain desktop-only and do not register or activ
 
 ## Validation and production gate
 
-The Windows Installer workflow runs deterministic PowerShell self-tests for policy generation and output verification, then builds the NSIS installer. A passing CI run proves the script contract and bundle build; it does not prove that a real machine starts after reboot or recovers from an actual crash.
+The Windows Installer workflow runs deterministic PowerShell self-tests for policy generation and output verification. It also creates a uniquely named disposable Windows service on the hosted Windows runner, applies the real SCM startup/recovery configuration, queries it back, and removes the test service before building the NSIS installer. A passing CI run proves the script contract, real SCM configuration/query round-trip, and bundle build; it does not prove that a real machine starts after reboot or recovers from an actual crash.
 
 Before production readiness, run disposable-VM tests for first install and reboot, induced service crash and recovery, upgrade with existing data/secrets, interrupted upgrade, uninstall, and reinstall. Verify that websites and backups remain available while the desktop is closed, and that no user data is removed by default.
