@@ -142,12 +142,23 @@ fn database_credential_entry(engine:&str,profile_id:&str)->Result<Entry,String>{
  if id.is_empty()||id.len()>128||!id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'){return Err("Invalid database profile identifier.".into());}
  Entry::new(service,id).map_err(|e|api_error("Could not access Windows Credential Manager",e))
 }
+fn require_database_credential_ack(data:&Value,field:&str)->Result<(),String>{
+ if data.get(field).and_then(Value::as_bool)!=Some(true) {
+  return Err("Authenticated Core Service did not confirm the database credential operation.".into());
+ }
+ if field=="stored" && data.get("verified").and_then(Value::as_bool)!=Some(true) {
+  return Err("Authenticated Core Service did not verify the protected database credential.".into());
+ }
+ Ok(())
+}
+
 #[tauri::command]
 fn save_database_credential(app:tauri::AppHandle,engine:String,profileId:String,password:String)->Result<(),String>{
  let password=Zeroizing::new(password);
  if password.is_empty()||password.len()>4096{return Err("Password must contain between 1 and 4096 bytes.".into());}
  if trusted_ipc_configuration_present()? {
-  authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":password.as_str()}))?;
+  let stored=authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":password.as_str()}))?;
+  require_database_credential_ack(&stored,"stored")?;
   if let Ok(entry)=database_credential_entry(&engine,&profileId){let _=entry.delete_credential();}
   Ok(())
  } else {
@@ -171,7 +182,8 @@ fn get_database_credential(app:tauri::AppHandle,engine:String,profileId:String)-
    let entry=database_credential_entry(&engine,&profileId)?;
    let legacy=Zeroizing::new(entry.get_password()
     .map_err(|e|api_error("No saved database password is available in Windows Credential Manager",e))?);
-   authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":legacy.as_str()}))?;
+   let stored=authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":legacy.as_str()}))?;
+   require_database_credential_ack(&stored,"stored")?;
    let mut verified=authenticated_secret_ipc(&app,"database-credential.get",serde_json::json!({"engine":engine,"profile_id":profileId}))?;
    let recovered=Zeroizing::new(extract_database_password(&mut verified)?);
    if recovered.as_str()!=legacy.as_str(){
@@ -186,7 +198,8 @@ fn get_database_credential(app:tauri::AppHandle,engine:String,profileId:String)-
 #[tauri::command]
 fn delete_database_credential(app:tauri::AppHandle,engine:String,profileId:String)->Result<(),String>{
  if trusted_ipc_configuration_present()? {
-  authenticated_secret_ipc(&app,"database-credential.delete",serde_json::json!({"engine":engine,"profile_id":profileId}))?;
+  let deleted=authenticated_secret_ipc(&app,"database-credential.delete",serde_json::json!({"engine":engine,"profile_id":profileId}))?;
+  require_database_credential_ack(&deleted,"deleted")?;
   if let Ok(entry)=database_credential_entry(&engine,&profileId){let _=entry.delete_credential();}
   Ok(())
  } else {
