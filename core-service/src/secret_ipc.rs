@@ -76,6 +76,7 @@ fn store_database_credential(root: &Path, key: &str, password: &[u8]) -> Result<
             Some(bytes) => secret_store::write_secret_verified(root, key, bytes),
             None => secret_store::delete_secret(root, key),
         };
+        if let Some(bytes) = previous.as_mut() { bytes.zeroize(); }
         if rollback.is_err() { return Err("database_credential_rollback_failed"); }
         return Err("secret_store_unavailable");
     }
