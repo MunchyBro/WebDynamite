@@ -61,6 +61,27 @@ fn database_credential_key(engine: &str, profile_id: &str) -> String {
     format!("{:x}", digest.finalize())
 }
 
+fn read_database_credential(root: &Path, key: &str) -> Result<String, &'static str> {
+    match secret_store::read_secret(root, key) {
+        Ok(mut bytes) => {
+            let password = std::str::from_utf8(&bytes).ok()
+                .filter(|value| !value.is_empty() && value.len() <= 4096)
+                .map(str::to_owned);
+            bytes.zeroize();
+            password.ok_or("database_credential_unavailable")
+        }
+        Err(_) => {
+            // Only a genuinely absent file permits legacy migration. A corrupt,
+            // unreadable, or undecryptable existing file must never be replaced
+            // by an older Credential Manager value.
+            match std::fs::symlink_metadata(root.join(format!("{key}.wds"))) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err("database_credential_not_found"),
+                _ => Err("database_credential_unavailable"),
+            }
+        }
+    }
+}
+
 /// Handles only the narrowly allowlisted operations admitted by ipc_authorization.
 ///
 /// Website secret values are written directly to the protected DPAPI store
@@ -69,10 +90,13 @@ fn database_credential_key(engine: &str, profile_id: &str) -> String {
 /// The store root must already have its installer-set restrictive DACL.
 pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResponse {
     if let Err(code) = authorize_request(&request.operation, &request.data) {
-        if request.operation == "secret.put" {
-            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
-                value.zeroize();
-            }
+        let field = match request.operation.as_str() {
+            "secret.put" => Some("value"),
+            "database-credential.put" => Some("password"),
+            _ => None,
+        };
+        if let Some(field) = field {
+            if let Some(serde_json::Value::String(value)) = request.data.get_mut(field) { value.zeroize(); }
         }
         return response(request, Err(code));
     }
@@ -132,15 +156,9 @@ pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResp
             let engine = request.data.get("engine").and_then(serde_json::Value::as_str);
             let profile_id = request.data.get("profile_id").and_then(serde_json::Value::as_str);
             match (engine, profile_id) {
-                (Some(engine), Some(profile_id)) => match secret_store::read_secret(root, &database_credential_key(engine, profile_id)) {
-                    Ok(mut bytes) => {
-                        let password = std::str::from_utf8(&bytes).ok()
-                            .filter(|value| !value.is_empty() && value.len() <= 4096).map(str::to_owned);
-                        bytes.zeroize();
-                        password.map(|value| serde_json::json!({"password":value})).ok_or("database_credential_unavailable")
-                    }
-                    Err(_) => Err("database_credential_not_found"),
-                },
+                (Some(engine), Some(profile_id)) => read_database_credential(
+                    root, &database_credential_key(engine, profile_id)
+                ).map(|value| serde_json::json!({"password":value})),
                 _ => Err("invalid_payload"),
             }
         }
@@ -210,6 +228,17 @@ mod tests {
         assert_ne!(first, super::database_credential_key("postgres", "profile-a"));
         assert_ne!(first, super::database_credential_key("mysql", "profile-b"));
         assert_ne!(first, storage_key("mysql", "profile-a"));
+    }
+
+    #[test]
+    fn missing_database_credential_is_distinguished_from_corrupt_existing_data() {
+        let root = std::env::temp_dir().join(format!("webdynamite-dbcred-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let key = super::database_credential_key("mysql", "profile-a");
+        assert_eq!(super::read_database_credential(&root, &key), Err("database_credential_not_found"));
+        std::fs::write(root.join(format!("{key}.wds")), b"corrupt").unwrap();
+        assert_eq!(super::read_database_credential(&root, &key), Err("database_credential_unavailable"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
