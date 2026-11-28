@@ -4,58 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use crate::AppState;
-use sha2::{Digest, Sha256};
-use zeroize::Zeroize;
-
-fn secret_storage_key(id: &str, name: &str) -> String {
- let mut digest = Sha256::new();
- digest.update(b"WebDynamite.SecretStore.Key.v1\\0");
- digest.update(id.as_bytes());
- digest.update([0]);
- digest.update(name.as_bytes());
- format!("{:x}", digest.finalize())
-}
-fn read_secret_value(state: &AppState, id: &str, name: &str) -> Result<String, String> {
- if let Some(root) = &state.secret_store_root {
-  let mut bytes = crate::secret_store::read_secret(root, &secret_storage_key(id, name))?;
-  let value = String::from_utf8(std::mem::take(&mut bytes)).map_err(|_| "Protected environment secret is not valid UTF-8.".to_string());
-  bytes.zeroize();
-  value
- } else {
-  credential_entry(id, name).map_err(|error| error.2)?.get_password().map_err(|error| format!("Secret environment variable {name} is unavailable in Windows Credential Manager: {error}"))
- }
-}
-fn read_secret_snapshot(state: &AppState, id: &str, name: &str) -> Result<Option<String>, String> {
- if let Some(root) = &state.secret_store_root {
-  let path = root.join(format!("{}.wds", secret_storage_key(id, name)));
-  match std::fs::symlink_metadata(&path) {
-   Ok(_) => read_secret_value(state, id, name).map(Some),
-   Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-   Err(error) => Err(error.to_string()),
-  }
- } else {
-  let entry = credential_entry(id, name).map_err(|error| error.2)?;
-  match entry.get_password() { Ok(value) => Ok(Some(value)), Err(keyring::Error::NoEntry) => Ok(None), Err(error) => Err(error.to_string()) }
- }
-}
-fn restore_secret_snapshot(state: &AppState, id: &str, name: &str, previous: Option<&str>) -> Result<(), String> {
- match previous { Some(value) => write_secret_value(state, id, name, value), None => delete_secret_value(state, id, name) }
-}
-fn write_secret_value(state: &AppState, id: &str, name: &str, value: &str) -> Result<(), String> {
- if let Some(root) = &state.secret_store_root {
-  crate::secret_store::write_secret_verified(root, &secret_storage_key(id, name), value.as_bytes())
- } else {
-  credential_entry(id, name).map_err(|error| error.2)?.set_password(value).map_err(|error| error.to_string())
- }
-}
-fn delete_secret_value(state: &AppState, id: &str, name: &str) -> Result<(), String> {
- if let Some(root) = &state.secret_store_root {
-  crate::secret_store::delete_secret(root, &secret_storage_key(id, name))
- } else {
-  let entry = credential_entry(id, name).map_err(|error| error.2)?;
-  match entry.delete_credential() { Ok(()) | Err(keyring::Error::NoEntry) => Ok(()), Err(error) => Err(error.to_string()) }
- }
-}
 #[derive(Debug)]
 struct EnvironmentError(StatusCode, &'static str, String);
 impl axum::response::IntoResponse for EnvironmentError {
@@ -108,10 +56,6 @@ async fn list(State(s):State<AppState>,Path(id):Path<String>)->Result<Json<Vec<E
  Ok(Json(rows.collect::<Result<Vec<_>,_>>().map_err(db_error)?))
 }
 async fn save(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<SaveEnvironmentVariable>)->Result<Json<EnvironmentVariable>,EnvironmentError>{
- if s.secret_store_root.is_some() {
-  return save_with_service_store(&s, &id, input).map(Json);
- }
-
  validate_variable(&input)?;
  {let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|r|r.get(0)).map_err(db_error)?;if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}}
  let entry=credential_entry(&id,&input.name)?;
@@ -121,64 +65,7 @@ async fn save(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<Sa
  if !input.is_secret{let _=entry.delete_credential();}
  Ok(Json(EnvironmentVariable{name:input.name,value:if input.is_secret{None}else{Some(input.value)},is_secret:input.is_secret}))
 }
-
-fn save_with_service_store(state: &AppState, id: &str, input: SaveEnvironmentVariable) -> Result<EnvironmentVariable, EnvironmentError> {
- validate_variable(&input)?;
- let previous = read_secret_snapshot(state, id, &input.name).map_err(|error| EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_read_failed",error))?;
- if input.is_secret {
-  write_secret_value(state,id,&input.name,&input.value).map_err(|error| EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_save_failed",error))?;
- }
- let result = {
-  let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-  db.execute("INSERT INTO website_environment(website_id,name,value,is_secret,updated_at) VALUES(?1,?2,?3,?4,CURRENT_TIMESTAMP) ON CONFLICT(website_id,name) DO UPDATE SET value=excluded.value,is_secret=excluded.is_secret,updated_at=CURRENT_TIMESTAMP",params![id,input.name,if input.is_secret{String::new()}else{input.value.clone()},if input.is_secret{1}else{0}]).map_err(db_error)
- };
- if let Err(error)=result {
-  if input.is_secret { let _=restore_secret_snapshot(state,id,&input.name,previous.as_deref()); }
-  return Err(error);
- }
- if !input.is_secret { let _=delete_secret_value(state,id,&input.name); }
- Ok(EnvironmentVariable{name:input.name,value:if input.is_secret{None}else{Some(input.value)},is_secret:input.is_secret})
-}
-fn save_batch_with_service_store(state: &AppState, id: &str, input: SaveEnvironmentBatch) -> Result<Vec<EnvironmentVariable>, EnvironmentError> {
- validate_batch(&input.variables)?;
- {
-  let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-  let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[id],|row|row.get(0)).map_err(db_error)?;
-  if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}
- }
- let mut snapshots:Vec<(String,Option<String>)>=Vec::with_capacity(input.variables.len());
- for variable in &input.variables {
-  let previous=read_secret_snapshot(state,id,&variable.name).map_err(|error|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_read_failed",error))?;
-  snapshots.push((variable.name.clone(),previous));
- }
- for variable in input.variables.iter().filter(|value|value.is_secret) {
-  if let Err(error)=write_secret_value(state,id,&variable.name,&variable.value) {
-   for (name,previous) in snapshots.iter().rev() { let _=restore_secret_snapshot(state,id,name,previous.as_deref()); }
-   return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_save_failed",error));
-  }
- }
- let database_result:Result<(),EnvironmentError>=(||{
-  let mut db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-  let tx=db.transaction().map_err(db_error)?;
-  for variable in &input.variables {
-   tx.execute("INSERT INTO website_environment(website_id,name,value,is_secret,updated_at) VALUES(?1,?2,?3,?4,CURRENT_TIMESTAMP) ON CONFLICT(website_id,name) DO UPDATE SET value=excluded.value,is_secret=excluded.is_secret,updated_at=CURRENT_TIMESTAMP",params![id,variable.name,if variable.is_secret{String::new()}else{variable.value.clone()},if variable.is_secret{1}else{0}]).map_err(db_error)?;
-  }
-  tx.commit().map_err(db_error)
- })();
- if let Err(error)=database_result {
-  let mut restored=true;
-  for (name,previous) in snapshots.iter().rev() { if restore_secret_snapshot(state,id,name,previous.as_deref()).is_err(){restored=false;} }
-  return Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Protected secret rollback was incomplete; retain the original values and review this website.",error.2)}));
- }
- for variable in input.variables.iter().filter(|value|!value.is_secret) { let _=delete_secret_value(state,id,&variable.name); }
- Ok(input.variables.into_iter().map(|variable|EnvironmentVariable{name:variable.name,value:if variable.is_secret{None}else{Some(variable.value)},is_secret:variable.is_secret}).collect())
-}
-
 async fn save_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<SaveEnvironmentBatch>)->Result<Json<Vec<EnvironmentVariable>>,EnvironmentError>{
- if s.secret_store_root.is_some() {
-  return save_batch_with_service_store(&s, &id, input).map(Json);
- }
-
  validate_batch(&input.variables)?;
  {let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[&id],|r|r.get(0)).map_err(db_error)?;if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}}
  // Stage protected values first and remember the previous credential contents so a
@@ -223,49 +110,7 @@ async fn save_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):J
 }
 
 
-
-fn remove_batch_with_service_store(state:&AppState,id:&str,input:DeleteEnvironmentBatch)->Result<serde_json::Value,EnvironmentError>{
- {
-  let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-  let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[id],|row|row.get(0)).map_err(db_error)?;
-  if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}
- }
- let mut snapshots=Vec::with_capacity(input.names.len());
- for name in &input.names {
-  let previous=read_secret_snapshot(state,id,name).map_err(|error|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_read_failed",error))?;
-  snapshots.push((name.clone(),previous));
- }
- for name in &input.names {
-  if let Err(error)=delete_secret_value(state,id,name) {
-   let mut restored=true;
-   for (restore_name,previous) in snapshots.iter().rev(){if restore_secret_snapshot(state,id,restore_name,previous.as_deref()).is_err(){restored=false;}}
-   return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_delete_failed",if restored{error}else{format!("{error} Protected secret rollback was incomplete.")}));
-  }
- }
- let result:Result<usize,EnvironmentError>=(||{
-  let mut db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
-  let tx=db.transaction().map_err(db_error)?;
-  let mut removed=0usize;
-  for name in &input.names{removed+=tx.execute("DELETE FROM website_environment WHERE website_id=?1 AND name=?2",params![id,name]).map_err(db_error)?;}
-  tx.commit().map_err(db_error)?;
-  Ok(removed)
- })();
- match result {
-  Ok(removed)=>Ok(json!({"removed":removed,"requested":input.names.len()})),
-  Err(error)=>{
-   let mut restored=true;
-   for (name,previous) in snapshots.iter().rev(){if restore_secret_snapshot(state,id,name,previous.as_deref()).is_err(){restored=false;}}
-   Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Protected secret rollback was incomplete.",error.2)}))
-  }
- }
-}
-
 async fn remove_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<DeleteEnvironmentBatch>)->Result<Json<serde_json::Value>,EnvironmentError>{
- if s.secret_store_root.is_some() {
-  validate_delete_batch(&input.names)?;
-  return remove_batch_with_service_store(&s,&id,input).map(Json);
- }
-
  validate_delete_batch(&input.names)?;
  {
   let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -322,11 +167,11 @@ async fn remove(State(s):State<AppState>,Path((id,name)):Path<(String,String)>)-
  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let n=db.execute("DELETE FROM website_environment WHERE website_id=?1 AND name=?2",params![id,name]).map_err(db_error)?;
  if n==0{return Err(EnvironmentError(StatusCode::NOT_FOUND,"environment_variable_not_found","Environment variable was not found.".into()));}drop(db);
- if s.secret_store_root.is_some(){let _=delete_secret_value(&s,&id,&name);}else if let Ok(entry)=credential_entry(&id,&name){let _=entry.delete_credential();}Ok(StatusCode::NO_CONTENT)
+ if let Ok(entry)=credential_entry(&id,&name){let _=entry.delete_credential();}Ok(StatusCode::NO_CONTENT)
 }
 pub fn apply_to_command(s:&AppState,id:&str,c:&mut std::process::Command)->Result<(),String>{
  let rows={let db=s.db.lock().map_err(|_|"Database lock is unavailable.".to_string())?;let mut q=db.prepare("SELECT name,value,is_secret FROM website_environment WHERE website_id=?1 ORDER BY name").map_err(|e|e.to_string())?;let mapped=q.query_map([id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).map_err(|e|e.to_string())?;mapped.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?};
- for(name,value,secret)in rows{let value=if secret==1{read_secret_value(s,id,&name)?}else{value};c.env(name,value);}Ok(())
+ for(name,value,secret)in rows{let value=if secret==1{credential_entry(id,&name).map_err(|e|e.2)?.get_password().map_err(|e|format!("Secret environment variable {name} is unavailable in Windows Credential Manager: {e}"))?}else{value};c.env(name,value);}Ok(())
 }
 pub fn delete_all_for_website(state:&AppState,id:&str){
  let names=state.db.lock().ok().and_then(|db|{
@@ -334,7 +179,7 @@ pub fn delete_all_for_website(state:&AppState,id:&str){
   let rows=q.query_map([id],|r|r.get::<_,String>(0)).ok()?;
   rows.collect::<Result<Vec<_>,_>>().ok()
  }).unwrap_or_default();
- for name in names{if state.secret_store_root.is_some(){let _=delete_secret_value(state,id,&name);}else if let Ok(entry)=credential_entry(id,&name){let _=entry.delete_credential();}}
+ for name in names{if let Ok(entry)=credential_entry(id,&name){let _=entry.delete_credential();}}
 }
 #[cfg(test)]
 mod tests{
