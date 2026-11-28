@@ -1,9 +1,9 @@
 //! Authenticated, bounded desktop client for the Core Service named pipe.
 //!
-//! This transport is deliberately not wired into Tauri commands yet. The installer
-//! must first provide protected executable-path and publisher-pin values. Callers
-//! must pass those trusted values; this module never reads them from UI input or
-//! ordinary user-writable settings.
+//! Tauri uses this transport for the signed desktop's API-token bootstrap and
+//! narrowly allowlisted secret operations. Callers must pass trusted executable,
+//! publisher-pin and service-SID values; this module never reads them from webview
+//! input, runtime environment variables, or ordinary user-writable settings.
 use crate::ipc_protocol::{read_response_for_request, write_request, IpcRequest, IpcResponse, PROTOCOL_VERSION};
 use serde_json::Value;
 use std::{path::Path, time::{Duration, Instant}};

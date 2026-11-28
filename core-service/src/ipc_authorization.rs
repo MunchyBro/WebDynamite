@@ -36,9 +36,11 @@ fn string_field<'a>(data: &'a Value, field: &str) -> Option<&'a str> {
 /// - `secret.put`: { website_id, name, value }
 /// - `secret.delete`: { website_id, name }
 /// - `secret.status`: {}
+/// - `service.auth-token`: {} — returns only the provisioned Core Service API
+///   token to the already-authenticated, publisher-pinned desktop process.
 ///
-/// There is intentionally no `secret.read`, arbitrary filesystem, process,
-/// command, or generic RPC operation.
+/// There is intentionally no website-secret read, arbitrary filesystem,
+/// process, command, or generic RPC operation.
 pub fn authorize_request(operation: &str, data: &Value) -> Result<(), &'static str> {
     match operation {
         "secret.put" => {
@@ -69,7 +71,7 @@ pub fn authorize_request(operation: &str, data: &Value) -> Result<(), &'static s
             }
             Ok(())
         }
-        "secret.status" => {
+        "secret.status" | "service.auth-token" => {
             if has_exact_fields(data, &[]) { Ok(()) } else { Err("invalid_payload") }
         }
         _ => Err("operation_not_authorized"),
@@ -93,11 +95,13 @@ mod tests {
             "name": "DATABASE_URL"
         })).is_ok());
         assert!(authorize_request("secret.status", &json!({})).is_ok());
+        assert!(authorize_request("service.auth-token", &json!({})).is_ok());
     }
 
     #[test]
     fn rejects_secret_reads_and_unknown_operations() {
         assert_eq!(authorize_request("secret.read", &json!({"name":"DATABASE_URL"})), Err("operation_not_authorized"));
+        assert_eq!(authorize_request("service.auth-token", &json!({"debug":true})), Err("invalid_payload"));
         assert_eq!(authorize_request("process.spawn", &json!({})), Err("operation_not_authorized"));
         assert_eq!(authorize_request("filesystem.read", &json!({})), Err("operation_not_authorized"));
     }

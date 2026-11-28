@@ -1,6 +1,7 @@
 //! Narrow dispatcher connecting authorized desktop IPC requests to the
-//! machine-DPAPI secret store. This module does not create or secure the store
-//! root; the elevated installer must provision its protected directory first.
+//! machine-DPAPI secret store. Website secrets are write/delete-only; the
+//! provisioned API token is handed only to an authenticated desktop peer.
+//! The elevated installer must provision the protected store root first.
 
 use std::path::Path;
 
@@ -12,6 +13,15 @@ use crate::{
     ipc_protocol::{IpcRequest, IpcResponse, PROTOCOL_VERSION},
     secret_store,
 };
+
+fn take_service_token(bytes: &mut Vec<u8>) -> Result<String, &'static str> {
+    let token = std::str::from_utf8(bytes)
+        .ok()
+        .filter(|value| value.trim().len() >= 32)
+        .map(str::to_owned);
+    bytes.zeroize();
+    token.ok_or("service_token_unavailable")
+}
 
 fn response(request: &IpcRequest, result: Result<serde_json::Value, &'static str>) -> IpcResponse {
     match result {
@@ -47,9 +57,10 @@ fn storage_key(website_id: &str, name: &str) -> String {
 
 /// Handles only the three operations admitted by ipc_authorization.
 ///
-/// Secret values are written directly to the protected DPAPI store and are
-/// never returned over IPC. The store root must already have its installer-set
-/// restrictive DACL; this dispatcher deliberately does not create it.
+/// Website secret values are written directly to the protected DPAPI store
+/// and are never returned over IPC. The API bootstrap token is the sole
+/// sensitive read operation and is gated by authenticated peer identity.
+/// The store root must already have its installer-set restrictive DACL.
 pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResponse {
     if let Err(code) = authorize_request(&request.operation, &request.data) {
         if request.operation == "secret.put" {
@@ -98,6 +109,14 @@ pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResp
                 _ => Err("secret_store_unavailable"),
             }
         }
+        "service.auth-token" => {
+            let mut bytes = match secret_store::read_secret(root, "api-token") {
+                Ok(value) => value,
+                Err(_) => return response(request, Err("service_token_unavailable")),
+            };
+            take_service_token(&mut bytes)
+                .map(|value| serde_json::json!({"token": value}))
+        }
         _ => Err("operation_not_authorized"),
     };
     response(request, result)
@@ -117,6 +136,18 @@ mod tests {
             operation: operation.into(),
             data,
         }
+    }
+
+    #[test]
+    fn service_token_bytes_are_wiped_after_validation() {
+        let mut valid = b"abcdefghijklmnopqrstuvwxyz0123456789abcdef".to_vec();
+        let token = super::take_service_token(&mut valid).unwrap();
+        assert_eq!(token, "abcdefghijklmnopqrstuvwxyz0123456789abcdef");
+        assert!(valid.iter().all(|byte| *byte == 0));
+
+        let mut invalid = b"short".to_vec();
+        assert_eq!(super::take_service_token(&mut invalid), Err("service_token_unavailable"));
+        assert!(invalid.iter().all(|byte| *byte == 0));
     }
 
     #[test]

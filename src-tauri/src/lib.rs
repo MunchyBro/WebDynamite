@@ -5,6 +5,7 @@ use serde_json::Value;
 use keyring::Entry;
 use std::{io::{self, BufRead, BufReader, Write}, net::{SocketAddr, TcpStream}, process::{Command, Stdio}, thread, time::{Duration, Instant}};
 use tauri::Manager;
+use zeroize::{Zeroize, Zeroizing};
 const CORE_URL: &str = "http://127.0.0.1:47821";
 #[derive(Debug, Serialize, Deserialize)]
 struct Website { id:String, name:String, project_path:String, runtime:String, status:String, created_at:String, updated_at:String }
@@ -25,7 +26,7 @@ fn core_service_token_entry() -> Result<Entry, String> {
         .map_err(|e| api_error("Could not access the WebDynamite Core Service credential", e))
 }
 
-fn load_or_create_core_service_token() -> Result<String, String> {
+fn load_or_create_legacy_core_service_token() -> Result<String, String> {
     let entry = core_service_token_entry()?;
     if let Ok(token) = entry.get_password() {
         if token.len() >= 32 { return Ok(token); }
@@ -37,8 +38,8 @@ fn load_or_create_core_service_token() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn core_service_token() -> Result<String, String> {
-    load_or_create_core_service_token()
+fn core_service_token(app: tauri::AppHandle) -> Result<String, String> {
+    load_or_create_core_service_token(&app)
 }
 
 fn bundled_core_service_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -72,12 +73,13 @@ fn existing_core_service_matches_token(address: &SocketAddr, token: &str) -> io:
 }
 
 fn start_core_service(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let token = load_or_create_core_service_token().map_err(io::Error::other)?;
+    let trusted_ipc = trusted_ipc_configuration_present().map_err(io::Error::other)?;
+    let token = Zeroizing::new(load_or_create_core_service_token(app).map_err(io::Error::other)?);
     let address: SocketAddr = "127.0.0.1:47821".parse().map_err(io::Error::other)?;
 
     // Reuse the background service only when it proves possession of our protected token.
     // A different process on the management port must never be treated as WebDynamite.
-    if existing_core_service_matches_token(&address, &token)? {
+    if existing_core_service_matches_token(&address, token.as_str())? {
         return Ok(());
     }
     if TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
@@ -86,10 +88,16 @@ fn start_core_service(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::
             "Another process is already listening on the WebDynamite Core Service port 47821, and it did not authenticate as this installation.",
         ).into());
     }
+    if trusted_ipc {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "The installed Windows Core Service is not listening. Refusing to launch an interactive copy because this build is configured for authenticated service IPC.",
+        ).into());
+    }
 
     let executable = bundled_core_service_path(app).map_err(io::Error::other)?;
     let mut command = Command::new(executable);
-    command.env("WEBDYNAMITE_API_TOKEN", &token)
+    command.env("WEBDYNAMITE_API_TOKEN", token.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -520,8 +528,10 @@ async fn delete_runtime_profile(token:String,website_id:String)->Result<(),Strin
 /// not accepted from the webview, user settings, environment variables, or CLI.
 fn trusted_core_publisher_pin() -> Result<&'static str, String> {
     option_env!("WEBDYNAMITE_PUBLISHER_SHA256")
-        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| "Authenticated IPC is disabled: this build has no trusted Core Service publisher pin.".into())
+        .filter(|value| value.len() == 64
+            && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && !value.bytes().all(|byte| byte == b'0'))
+        .ok_or_else(|| "Authenticated IPC is disabled: this build has no valid trusted Core Service publisher pin.".into())
 }
 
 /// Resolve the service SID injected by the trusted Windows release build.
@@ -549,6 +559,69 @@ fn authenticated_secret_ipc(app: &tauri::AppHandle, operation: &str, data: Value
         ));
     }
     response.data.ok_or_else(|| "Authenticated Core Service returned no operation data.".into())
+}
+
+fn trusted_ipc_configuration_state(pin: Option<&str>, service_sid: Option<&str>) -> Result<bool, String> {
+    match (pin, service_sid) {
+        (None, None) => Ok(false),
+        (Some(pin), Some(service_sid)) => {
+            if pin.len() != 64 || !pin.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || pin.bytes().all(|byte| byte == b'0')
+            {
+                return Err("The trusted Core Service publisher pin must be a nonzero 64-character SHA-256 hex value.".into());
+            }
+            let parts = service_sid.trim().split('-').collect::<Vec<_>>();
+            if parts.len() != 9 || parts[0] != "S" || parts[1] != "1"
+                || parts[2] != "5" || parts[3] != "80"
+                || parts[4..].iter().any(|part| part.is_empty() || part.parse::<u32>().is_err())
+            {
+                return Err("The trusted Core Service service SID is invalid.".into());
+            }
+            Ok(true)
+        }
+        _ => Err("Trusted Core Service IPC requires both WEBDYNAMITE_PUBLISHER_SHA256 and WEBDYNAMITE_SERVICE_SID at build time.".into()),
+    }
+}
+
+/// A release build is explicitly configured for both trusted IPC pins, or is
+/// an engineering build with neither. Partial/invalid configuration fails closed.
+fn trusted_ipc_configuration_present() -> Result<bool, String> {
+    let present = trusted_ipc_configuration_state(
+        option_env!("WEBDYNAMITE_PUBLISHER_SHA256"),
+        option_env!("WEBDYNAMITE_SERVICE_SID"),
+    )?;
+    if present {
+        trusted_core_publisher_pin()?;
+        trusted_core_service_sid()?;
+    }
+    Ok(present)
+}
+
+fn extract_service_token(data: &mut Value) -> Result<String, String> {
+    let Some(Value::String(stored_token)) = data.get_mut("token") else {
+        return Err("Authenticated Core Service returned no API token.".into());
+    };
+    let mut token = stored_token.clone();
+    stored_token.zeroize();
+    if token.trim().len() < 32 {
+        token.zeroize();
+        return Err("Authenticated Core Service returned an invalid API token.".into());
+    }
+    Ok(token)
+}
+
+fn load_or_create_core_service_token(app: &tauri::AppHandle) -> Result<String, String> {
+    if !trusted_ipc_configuration_present()? {
+        return load_or_create_legacy_core_service_token();
+    }
+
+    let mut response = authenticated_secret_ipc(app, "service.auth-token", serde_json::json!({}))?;
+    let token = extract_service_token(&mut response)?;
+    // Refresh the existing desktop credential cache only after the service
+    // proves its identity and returns the provisioned machine-DPAPI token.
+    core_service_token_entry()?.set_password(&token)
+        .map_err(|error| api_error("Could not cache the authenticated Core Service API token", error))?;
+    Ok(token)
 }
 
 #[tauri::command]
@@ -601,6 +674,31 @@ mod core_service_lifecycle_tests {
         assert!(is_success_status_line("HTTP/1.0 200 OK"));
         assert!(!is_success_status_line("HTTP/1.1 401 Unauthorized"));
         assert!(!is_success_status_line("HTTP/1.1 404 Not Found"));
+    }
+
+    #[test]
+    fn trusted_ipc_requires_both_valid_pins_or_neither() {
+        let pin = "ab".repeat(32);
+        let sid = "S-1-5-80-1-2-3-4-5";
+        assert!(!trusted_ipc_configuration_state(None, None).unwrap());
+        assert!(trusted_ipc_configuration_state(Some(&pin), Some(sid)).unwrap());
+        assert!(trusted_ipc_configuration_state(Some(&pin), None).is_err());
+        assert!(trusted_ipc_configuration_state(None, Some(sid)).is_err());
+        assert!(trusted_ipc_configuration_state(Some(&"0".repeat(64)), Some(sid)).is_err());
+        assert!(trusted_ipc_configuration_state(Some("bad-pin"), Some(sid)).is_err());
+        assert!(trusted_ipc_configuration_state(Some(&pin), Some("S-1-5-21-1-2-3-4")).is_err());
+    }
+
+    #[test]
+    fn service_token_extraction_wipes_response_copy_and_rejects_short_tokens() {
+        let mut response = serde_json::json!({"token": "a".repeat(64)});
+        assert_eq!(extract_service_token(&mut response).unwrap(), "a".repeat(64));
+        assert_eq!(response["token"], "");
+        let mut invalid = serde_json::json!({"token": "short"});
+        assert!(extract_service_token(&mut invalid).is_err());
+        assert_eq!(invalid["token"], "");
+        let mut missing = serde_json::json!({"other": true});
+        assert!(extract_service_token(&mut missing).is_err());
     }
 }
 

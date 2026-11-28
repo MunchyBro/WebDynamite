@@ -11,6 +11,7 @@ on:
       - "src-tauri/**"
       - "scripts/windows/**"
       - "docs/WINDOWS-SERVICE-INSTALL-PROVISIONING.md"
+      - "docs/WINDOWS-DESKTOP-SERVICE-IPC.md"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/windows-installer.yml"

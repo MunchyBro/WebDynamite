@@ -1,9 +1,9 @@
 //! Authenticated one-connection named-pipe host primitive.
 //!
-//! The caller supplies trusted installer/service configuration. The peer is
-//! authenticated before the first byte is read, and its retained process handle
-//! is revalidated immediately before dispatch. A service loop and SCM shutdown
-//! integration are intentionally separate follow-up work.
+//! The SCM-owned runtime supplies trusted installer/service configuration.
+//! The peer is authenticated before the first byte is read, and its retained
+//! process handle is revalidated immediately before dispatch. Each accepted
+//! connection is bounded and the service runtime owns cancellation/shutdown.
 
 #[cfg(windows)]
 mod windows_impl {
@@ -24,6 +24,16 @@ mod windows_impl {
         named_pipe_accept::connect_with_timeout,
         named_pipe_io::OverlappedPipeIo,
     };
+
+    fn wipe_auth_token_response(response: &mut IpcResponse) {
+        if let Some(serde_json::Value::String(token)) = response
+            .data
+            .as_mut()
+            .and_then(|data| data.get_mut("token"))
+        {
+            token.zeroize();
+        }
+    }
 
     fn rejected_request_response(mut request: IpcRequest, code: impl ToString) -> IpcResponse {
         if request.operation == "secret.put" {
@@ -113,14 +123,20 @@ mod windows_impl {
             // handing the decoded request to application authorization/dispatch.
             verified.verify_still_connected(handle)?;
             let request_id = request.request_id.clone();
-            let response = match authorize_request(&request.operation, &request.data) {
+            let operation = request.operation.clone();
+            let mut response = match authorize_request(&request.operation, &request.data) {
                 Ok(()) => handler(request),
                 Err(code) => rejected_request_response(request, code),
             };
             if response.request_id != request_id {
+                wipe_auth_token_response(&mut response);
                 return Err("IPC handler returned a response for a different request.".into());
             }
-            write_response(&mut io, &response)
+            let write_result = write_response(&mut io, &response);
+            if operation == "service.auth-token" {
+                wipe_auth_token_response(&mut response);
+            }
+            write_result
         })();
 
         unsafe { DisconnectNamedPipe(handle); }
@@ -157,14 +173,20 @@ mod windows_impl {
             // Revalidate the same retained process and pipe peer before dispatch.
             verified.verify_still_connected(handle)?;
             let request_id = request.request_id.clone();
-            let response = match authorize_request(&request.operation, &request.data) {
+            let operation = request.operation.clone();
+            let mut response = match authorize_request(&request.operation, &request.data) {
                 Ok(()) => handler(request),
                 Err(code) => rejected_request_response(request, code),
             };
             if response.request_id != request_id {
+                wipe_auth_token_response(&mut response);
                 return Err("IPC handler returned a response for a different request.".into());
             }
-            write_response(&mut io, &response)
+            let write_result = write_response(&mut io, &response);
+            if operation == "service.auth-token" {
+                wipe_auth_token_response(&mut response);
+            }
+            write_result
         })();
 
         unsafe { DisconnectNamedPipe(handle); }
