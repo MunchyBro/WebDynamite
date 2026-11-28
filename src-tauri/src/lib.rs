@@ -144,13 +144,14 @@ fn database_credential_entry(engine:&str,profile_id:&str)->Result<Entry,String>{
 }
 #[tauri::command]
 fn save_database_credential(app:tauri::AppHandle,engine:String,profileId:String,password:String)->Result<(),String>{
+ let password=Zeroizing::new(password);
  if password.is_empty()||password.len()>4096{return Err("Password must contain between 1 and 4096 bytes.".into());}
  if trusted_ipc_configuration_present()? {
-  authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":password}))?;
+  authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":password.as_str()}))?;
   if let Ok(entry)=database_credential_entry(&engine,&profileId){let _=entry.delete_credential();}
   Ok(())
  } else {
-  database_credential_entry(&engine,&profileId)?.set_password(&password)
+  database_credential_entry(&engine,&profileId)?.set_password(password.as_str())
    .map_err(|e|api_error("Could not save database credential in Windows Credential Manager",e))
  }
 }
