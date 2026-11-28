@@ -36,14 +36,13 @@ CI exercises the script's deterministic contract self-test:
 
 ## Safety boundary
 
-This is a provisioning primitive, not the complete installer lifecycle. It
-does not register, start, stop, upgrade, repair, or uninstall a Windows
-service; it does not delete existing data; and it does not change the current
-interactive Core Service startup. Prepare only creates missing managed
-directories and updates their DACLs. It does not recursively rewrite ACLs on
-existing files or descendants. It must not be wired into a production release
-until the SCM dispatcher, service identity, signed binaries, rollback policy,
-and end-to-end Windows installer tests are complete.
+This script remains a directory/ACL provisioning primitive: it does not itself
+register, start, stop, upgrade, repair, or uninstall a Windows service. The
+integrated NSIS lifecycle orchestrator calls it only after registering the
+exact virtual service identity. Prepare creates missing managed directories
+and applies the protected DACL to those directories; it does not recursively
+rewrite ACLs on existing files or descendants. The orchestrator preserves
+existing data and machine secrets during repair, upgrade, and uninstall.
 
 The service SID must resolve as \`NT SERVICE\\WebDynamiteCore\`. If the service
 identity is not provisioned on the target machine, the script fails closed
@@ -62,10 +61,11 @@ service SID type as `UNRESTRICTED`. It fails closed for missing services,
 LocalSystem, another logon account, or a disabled/restricted service SID.
 The command does not create, start, stop, reconfigure, or delete the service.
 
-This is an installer acceptance/preflight primitive only. The current NSIS
-bundle does not yet register or activate the SCM service, and the check must
-not be added as a release gate until a future installer actually provisions
-the service. The interactive Core Service runtime remains unchanged.
+This remains a read-only identity acceptance check. The integrated NSIS
+installer now registers the service, provisions the protected directory
+layout, and verifies that layout before trusted config creation and service
+startup. The check does not itself mutate SCM state. The interactive Core
+Service runtime remains unchanged.
 
 
 ## NSIS lifecycle integration (Phase 150)
