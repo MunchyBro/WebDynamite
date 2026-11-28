@@ -12,6 +12,8 @@ on:
       - "scripts/windows/**"
       - "docs/WINDOWS-SERVICE-INSTALL-PROVISIONING.md"
       - "docs/WINDOWS-DESKTOP-SERVICE-IPC.md"
+      - "docs/WINDOWS-CODE-SIGNING.md"
+      - "README.md"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/windows-installer.yml"
@@ -21,67 +23,168 @@ permissions:
 
 jobs:
   build-installer:
-    name: Build Windows NSIS installer
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    name: Build Windows NSIS engineering installer
     runs-on: windows-latest
     steps:
-      - name: Reject unsigned tagged releases
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
-          throw "WebDynamite release publication is blocked: the production signing pipeline is not implemented. Do not distribute this unsigned installer. Use a reviewed signing-enabled release workflow only after desktop, Core Service, and final NSIS signatures are verified against the protected publisher pin."
-
       - name: Check out source
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Validate service provisioning contract
         shell: pwsh
         run: ./scripts/windows/provision-service-layout.ps1 -Mode SelfTest
-
       - name: Validate Core Service registration contract
         shell: pwsh
         run: ./scripts/windows/manage-core-service.ps1 -Mode SelfTest
-
       - name: Validate Core Service installer lifecycle contract
         shell: pwsh
         run: ./scripts/windows/install-core-service.ps1 -Mode SelfTest
-
       - name: Validate trusted service configuration provisioning contract
         shell: pwsh
         run: ./scripts/windows/provision-trusted-service-config.ps1 -Mode SelfTest
-
       - name: Validate signing certificate preflight contract
         shell: pwsh
         run: ./scripts/windows/validate-signing-certificate.ps1 -SelfTest
-
+      - name: Validate signed release artifact contract
+        shell: pwsh
+        run: ./scripts/windows/sign-release-artifacts.ps1 -Mode SelfTest
       - name: Validate service binary signature preflight contract
         shell: pwsh
         run: ./scripts/windows/verify-service-binary.ps1 -SelfTest
-
       - name: Validate native branding assets
         shell: pwsh
         run: ./scripts/windows/validate-brand-assets.ps1
-
       - name: Install frontend dependencies
         run: npm install
-
       - name: Build bundled Core Service
         run: cargo build --release --manifest-path core-service/Cargo.toml
-
       - name: Build WebDynamite NSIS installer
         run: npm run tauri -- build --bundles nsis
-
-      - name: Upload installer artifact
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' }
+          if (-not $installer) { throw "NSIS installer was not produced in any bundle/nsis directory" }
+          $installer | ForEach-Object { Write-Host $_.FullName }
+      - name: Upload engineering installer
         uses: actions/upload-artifact@v4
         with:
-          name: WebDynamite-Windows-Installer
+          name: WebDynamite-Windows-Engineering-Installer
           path: "**/bundle/nsis/*.exe"
           if-no-files-found: error
           retention-days: 30
+
+  publish-release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    name: Sign, verify, and publish Windows release
+    runs-on: windows-latest
+    environment: production-release
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Require a semantic version tag on main
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$') {
+            throw "Release tags must use semantic version form vMAJOR.MINOR.PATCH."
+          }
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "Refusing to release a tag that is not reachable from main." }
+      - name: Require protected signing inputs
+        shell: pwsh
+        env:
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+        run: |
+          foreach ($name in @("WEBDYNAMITE_SIGNING_PFX_BASE64", "WEBDYNAMITE_SIGNING_PFX_PASSWORD", "WEBDYNAMITE_PUBLISHER_SHA256")) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Protected production signing input $name is not configured. No release artifact will be built or published."
+            }
+          }
+          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
+          if ($pin -notmatch '^[0-9a-f]{64}$' -or $pin -eq ('0' * 64)) {
+            throw "WEBDYNAMITE_PUBLISHER_SHA256 must be a nonzero 64-character SHA-256 certificate pin."
+          }
+      - name: Validate protected publisher certificate and chain
+        shell: pwsh
+        env:
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+        run: ./scripts/windows/validate-signing-certificate.ps1
+      - name: Provision the verified publisher pin for this build
+        shell: pwsh
+        env:
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+        run: |
+          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
+          Set-Content -LiteralPath "src-tauri/resources/publisher.sha256" -Value $pin -NoNewline -Encoding ascii
+      - name: Install frontend dependencies
+        run: npm install
+      - name: Build Core Service
+        run: cargo build --release --manifest-path core-service/Cargo.toml
+      - name: Build desktop executable without bundling
+        run: npm run tauri -- build --no-bundle
+      - name: Sign desktop and Core Service executables
+        shell: pwsh
+        env:
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+        run: |
+          $desktop = Join-Path (Get-Location) "src-tauri/target/release/webdynamite.exe"
+          $service = Join-Path (Get-Location) "target/release/webdynamite-core.exe"
+          ./scripts/windows/sign-release-artifacts.ps1 -Mode Sign -Paths @($desktop, $service)
+      - name: Build NSIS installer from signed executables
+        run: npm run tauri -- build --bundles nsis
+      - name: Locate and sign final NSIS installer
+        id: sign-installer
+        shell: pwsh
+        env:
+          WEBDYNAMITE_SIGNING_PFX_BASE64: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_BASE64 }}
+          WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+        run: |
+          $installers = @(Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' })
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
+          ./scripts/windows/sign-release-artifacts.ps1 -Mode Sign -Paths @($installers[0].FullName)
+          "installer=$($installers[0].FullName)" >> $env:GITHUB_OUTPUT
+      - name: Verify every release executable and publisher pin
+        shell: pwsh
+        env:
+          WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
+        run: |
+          $desktop = Join-Path (Get-Location) "src-tauri/target/release/webdynamite.exe"
+          $service = Join-Path (Get-Location) "target/release/webdynamite-core.exe"
+          $installer = "${{ steps.sign-installer.outputs.installer }}"
+          ./scripts/windows/sign-release-artifacts.ps1 -Mode Verify -Paths @($desktop, $service, $installer)
+      - name: Generate release checksums
+        shell: pwsh
+        env:
+          INSTALLER_PATH: ${{ steps.sign-installer.outputs.installer }}
+        run: |
+          $hash = (Get-FileHash -LiteralPath $env:INSTALLER_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $env:INSTALLER_PATH)" | Set-Content -LiteralPath SHA256SUMS.txt -Encoding ascii
+      - name: Publish verified GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INSTALLER_PATH: ${{ steps.sign-installer.outputs.installer }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" "$env:INSTALLER_PATH" "SHA256SUMS.txt" --verify-tag --generate-notes

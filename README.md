@@ -148,24 +148,16 @@ Pull requests run the repository's Windows CI workflows, including Rust tests, f
 
 ## Release process
 
-The repository's Windows installer workflow is currently an **engineering build and validation workflow**, not a release publisher.
+The Windows installer workflow now has separate engineering and production-release paths.
 
-- Pull requests that touch the installer inputs build an unsigned NSIS installer and upload it as a temporary GitHub Actions artifact.
-- A manually dispatched `Windows Installer` workflow also builds an unsigned installer artifact for engineering validation.
-- A push of a `v*` tag is intentionally rejected at the start of the workflow. It does not build or publish a GitHub Release.
-- The workflow has read-only repository permissions and contains no GitHub Release publishing step.
+- Pull requests build an unsigned NSIS installer and upload it as a temporary GitHub Actions artifact.
+- A manually dispatched `Windows Installer` workflow also builds an unsigned engineering artifact.
+- A semantic version tag (`vMAJOR.MINOR.PATCH`) reachable from `main` enters the protected `production-release` GitHub environment.
+- The release job requires a CA-issued signing PFX, its password, and the exact publisher certificate SHA-256 pin as protected environment secrets. It validates the certificate chain and revocation status, signs the desktop executable and Core Service before packaging, signs the final NSIS installer with a trusted timestamp, verifies all three signatures against the pinned publisher, generates a SHA-256 checksum, and only then publishes a GitHub Release.
 
-**Do not create a version tag expecting a downloadable release.** The tagged-release path remains blocked until a production signing and release pipeline is implemented and verified.
+**The production release path remains inactive until the owner configures the protected `production-release` environment and its three documented secrets.** Missing or invalid signing inputs fail closed before publishing. Never use an unsigned engineering artifact as a production release.
 
-Before enabling public releases, the project still needs all of the following:
-
-1. A real, CA-issued code-signing PFX and protected password supplied through an approved secret store.
-2. A protected publisher certificate SHA-256 pin, with certificate-chain, revocation, EKU, Key Usage, validity, and private-key checks.
-3. A signing workflow that signs the Core Service, desktop executable, and final NSIS installer, then verifies every signature against the protected publisher pin.
-4. Trusted timestamping and a release process that publishes only after all signature checks and required CI jobs pass.
-5. Clean-machine install, upgrade, rollback, uninstall, and recovery validation for the resulting signed installer.
-
-Until those prerequisites are complete, use pull-request or manually dispatched installer artifacts only for controlled engineering tests. They are unsigned, temporary artifacts—not supported public releases or production distribution candidates. Do not distribute them as trusted installers.
+Even after signing is configured, clean-machine install, upgrade, rollback, uninstall, and recovery validation remain required before claiming production readiness. See [Windows code-signing identity and release pipeline](docs/WINDOWS-CODE-SIGNING.md) for setup and security details.
 
 ## Security and deployment cautions
 
