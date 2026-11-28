@@ -358,11 +358,13 @@ pub fn delete_all_for_website(state:&AppState,id:&str){
 /// the desktop user's Credential Manager is a different security principal.
 pub fn migrate_legacy_secrets(state: &AppState) -> (usize, Vec<String>) {
  if state.secret_store_root.is_none() { return (0, Vec::new()); }
- let rows = match state.db.lock().and_then(|db| {
-  let mut query = db.prepare("SELECT website_id,name FROM website_environment WHERE is_secret=1 ORDER BY website_id,name")?;
-  let mapped = query.query_map([], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?)))?;
-  mapped.collect::<Result<Vec<_>,_>>()
- }) {
+ let rows_result: Result<Vec<(String,String)>, String> = (|| {
+  let db=state.db.lock().map_err(|_|"Database lock is unavailable.".to_string())?;
+  let mut query=db.prepare("SELECT website_id,name FROM website_environment WHERE is_secret=1 ORDER BY website_id,name").map_err(|error|error.to_string())?;
+  let mapped=query.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).map_err(|error|error.to_string())?;
+  mapped.collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())
+ })();
+ let rows = match rows_result {
   Ok(rows) => rows,
   Err(error) => return (0, vec![format!("Could not enumerate legacy website secrets: {error}")]),
  };
