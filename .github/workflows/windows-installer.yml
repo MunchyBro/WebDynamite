@@ -13,6 +13,7 @@ on:
       - "docs/WINDOWS-SERVICE-INSTALL-PROVISIONING.md"
       - "docs/WINDOWS-DESKTOP-SERVICE-IPC.md"
       - "docs/WINDOWS-CODE-SIGNING.md"
+      - "README.md"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/windows-installer.yml"
