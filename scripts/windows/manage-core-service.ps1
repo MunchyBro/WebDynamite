@@ -58,7 +58,7 @@ function Assert-ServiceRecoveryPolicy {
     $output = & sc.exe qfailure $ServiceName 2>&1
     if ($LASTEXITCODE -ne 0 -or -not (Test-ServiceRecoveryConfiguration ($output | Out-String))) { throw "$ServiceName does not have the required bounded restart policy (5s, 15s, 60s; reset after 24 hours)." }
     $flagOutput = & sc.exe qfailureflag $ServiceName 2>&1
-    if ($LASTEXITCODE -ne 0 -or ($flagOutput | Out-String) -notmatch '(?im)FAILURE_ACTIONS_ON_NONCRASH_FAILURES\s*:\s*1') { throw "$ServiceName must restart after non-zero service process exits." }
+    if ($LASTEXITCODE -ne 0 -or ($flagOutput | Out-String) -notmatch '(?im)NONCRASH_FAILURES\s*:\s*(?:0x)?0*1\b') { throw "$ServiceName must restart after non-zero service process exits. SCM query output: $($flagOutput | Out-String)" }
     return $service
 }
 function Get-RegisteredService { return Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" }
