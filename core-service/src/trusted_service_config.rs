@@ -85,14 +85,21 @@ fn has_dot_path_components(path: &std::path::Path) -> bool {
 /// as overlap so secrets cannot be placed inside the general data tree (or vice versa).
 fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
     let normalize = |path: &std::path::Path| {
-        path.to_string_lossy().replace('/', "\\")
-            .trim_end_matches('\\').to_ascii_lowercase()
+        let value = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+        // Keep a drive root's trailing separator: "c:\" is the parent of
+        // every path on that volume, and trimming it would turn it into "c:".
+        if value.len() == 3 && value.as_bytes()[1] == b':' && value.ends_with('\\') {
+            value
+        } else {
+            value.trim_end_matches('\\').to_string()
+        }
     };
     let left = normalize(left);
     let right = normalize(right);
-    left == right
-        || left.strip_prefix(&right).is_some_and(|tail| tail.starts_with('\\'))
-        || right.strip_prefix(&left).is_some_and(|tail| tail.starts_with('\\'))
+    let contains = |parent: &str, child: &str| {
+        child.strip_prefix(parent).is_some_and(|tail| parent.ends_with('\\') || tail.starts_with('\\'))
+    };
+    left == right || contains(&left, &right) || contains(&right, &left)
 }
 
 fn valid_service_sid(value: &str) -> bool {
@@ -161,6 +168,14 @@ mod tests {
         assert!(!paths_overlap(
             std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data"),
             std::path::Path::new("C:\\ProgramData\\WebDynamite\\Database")
+        ));
+        assert!(paths_overlap(
+            std::path::Path::new("C:\\"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data")
+        ));
+        assert!(!paths_overlap(
+            std::path::Path::new("D:\\"),
+            std::path::Path::new("C:\\ProgramData\\WebDynamite\\Data")
         ));
     }
 
