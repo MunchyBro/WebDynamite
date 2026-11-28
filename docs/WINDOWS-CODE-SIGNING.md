@@ -1,119 +1,64 @@
-# Windows code-signing identity
+# Windows code-signing identity and release pipeline
 
-## Purpose and current boundary
+## Production release status
 
-The desktop and Core Service authenticate each other using an Authenticode
-publisher SHA-256 pin. The pin must be derived from the real certificate that
-will sign both executables; never invent a pin or use a development/self-signed
-certificate as a production publisher identity.
+Production release signing is implemented as a protected GitHub Actions workflow, but it remains **inactive until the owner configures a real CA-issued Code Signing PFX and its matching publisher pin**. The repository does not contain a certificate, private key, password, or production publisher pin. Never invent or commit any of them.
 
-This phase adds certificate preflight validation. It does **not** sign binaries,
-make an unsigned installer trusted, or enable Windows Service mode. The release
-workflow remains unsigned until the signing pipeline is implemented and tested.
+Pull-request and manual engineering builds remain unsigned and are not production release candidates. A tag beginning with \`v\` enters the protected \`production-release\` environment. The job fails closed before building or publishing unless all three protected secrets are present and valid:
 
-## Current release safety gate
+- \`WEBDYNAMITE_SIGNING_PFX_BASE64\`: base64-encoded CA-issued PFX containing the private key.
+- \`WEBDYNAMITE_SIGNING_PFX_PASSWORD\`: PFX password.
+- \`WEBDYNAMITE_PUBLISHER_SHA256\`: SHA-256 of the signing certificate's DER bytes (64 hexadecimal characters).
 
-**Tagged Windows releases are deliberately blocked.** The Windows Installer
-workflow fails immediately for a `v*` tag because it cannot yet prove that the
-desktop executable, Core Service, and final NSIS installer are signed by the
-trusted production publisher. Pull-request and manual builds remain available
-for engineering validation, but their installer artifacts are not production
-release candidates.
+Configure these as **environment secrets** on a GitHub environment named \`production-release\`. Protect that environment with required reviewers and restrict deployment branches/tags to reviewed release tags. Do not expose these secrets to pull-request jobs.
 
-Do not bypass this gate or distribute an unsigned artifact. Re-enable release
-publication only in a reviewed change that:
-1. Retrieves the production PFX and password from protected GitHub Actions
-   secrets in a protected release environment.
-2. Signs the desktop executable and Core Service before packaging.
-3. Signs the final NSIS installer and applies a trusted timestamp.
-4. Verifies every signature with Windows Authenticode and checks the exact
-   publisher certificate DER SHA-256 pin.
-5. Publishes only after all verification steps succeed.
+## Release sequence
 
-The workflow has read-only repository permissions because it no longer
-publishes GitHub Releases. The PFX must never be exposed to pull-request builds.
+For a version tag, the workflow:
 
-## Required publisher identity
+1. Requires all protected signing inputs and validates the PFX, private key, validity interval, explicit Code Signing EKU, Digital Signature Key Usage, trusted certificate chain, online revocation status, and exact publisher pin.
+2. Replaces the build-time publisher resource with the validated pin; the committed \`UNCONFIGURED\` sentinel is never accepted for a signed release.
+3. Builds the Core Service and desktop executable without bundling.
+4. Authenticode-signs the desktop and Core Service executables with SHA-256 and a trusted RFC 3161 timestamp.
+5. Builds the NSIS installer from those signed executables, signs the final installer, then verifies Windows Authenticode trust and the exact pinned publisher on all three executables.
+6. Generates a SHA-256 checksum file and publishes a GitHub Release only after every signature check succeeds.
 
-Obtain a Windows code-signing certificate from a certificate authority trusted
-by the Windows machines that will install WebDynamite. The certificate must:
-- be currently valid and include its private key in the PFX bundle;
-- explicitly permit Digital Signature in the Key Usage extension;
-- explicitly include the Code Signing EKU (1.3.6.1.5.5.7.3.3);
-- be suitable for Authenticode signing and timestamped releases;
-- be protected as a high-value signing credential.
+The release job has \`contents: write\` permission only for the tagged release. The engineering build job retains read-only permissions and does not receive production secrets. A missing secret, invalid chain, revocation failure, timestamp/signing error, unsigned file, or publisher mismatch stops publication.
 
-Do not generate a self-signed certificate and describe it as a trusted publisher.
-A self-signed certificate is suitable only for isolated development experiments.
+## Temporary signing key handling
 
-## Calculate the publisher pin
+The signing script decodes the PFX into a temporary file on the ephemeral GitHub-hosted Windows runner, restricts its ACL to the current runner identity, uses it only for Authenticode signing, clears the decoded byte array, and deletes the temporary file in a \`finally\` block. Never print the PFX, password, or decoded bytes. The runner must be treated as disposable.
 
-The application expects SHA-256 of the signer's certificate DER bytes (not the
-usual SHA-1 certificate thumbprint). On a machine with the certificate, run:
+## Obtain and configure the publisher identity
 
-    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new("publisher.pfx", $password)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    [Convert]::ToHexString($sha.ComputeHash($cert.RawData)).ToLowerInvariant()
+Obtain a Windows code-signing certificate from a certificate authority trusted by target Windows machines. It must be currently valid, contain its private key, explicitly permit Digital Signature in Key Usage, and include Code Signing EKU \`1.3.6.1.5.5.7.3.3\`.
 
-Compare this 64-character value with the pin passed to the desktop and service
-identity verifiers. Keep the same publisher identity for both signed binaries.
+Calculate SHA-256 over the certificate DER bytes:
 
-## Preflight validation
+\`\`\`powershell
+$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new("publisher.pfx", $password)
+$sha = [System.Security.Cryptography.SHA256]::Create()
+[Convert]::ToHexString($sha.ComputeHash($cert.RawData)).ToLowerInvariant()
+\`\`\`
 
-Run the repository script from PowerShell:
+Store the resulting pin only in the protected \`WEBDYNAMITE_PUBLISHER_SHA256\` environment secret. Do not commit it to the repository. The installer build receives the validated pin as a generated resource so desktop/service mutual publisher verification can be enforced.
 
-    $env:WEBDYNAMITE_SIGNING_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("publisher.pfx"))
-    $env:WEBDYNAMITE_SIGNING_PFX_PASSWORD = "<retrieve securely; do not save in shell history>"
-    $env:WEBDYNAMITE_PUBLISHER_SHA256 = "<64-character SHA-256 certificate pin>"
-    ./scripts/windows/validate-signing-certificate.ps1
+## Local validation
 
-The script loads the PFX using an ephemeral key-storage context, checks the
-private key, validity interval, explicit Code Signing EKU, explicit Digital
-Signature Key Usage, a trusted Windows Code Signing chain with online
-revocation checking, and the expected SHA-256 pin. Chain construction fails
-closed when Windows cannot establish trust or verify revocation; it is not
-silently skipped when offline. The script does not write the certificate or
-private key to disk. Its -SelfTest mode checks strict pin parsing and positive,
-negative, and missing Key Usage cases without requiring a real certificate.
-The self-test also verifies PFX input handling: malformed base64 and empty
-bundles are rejected, and decoded bundles larger than 10 MiB are rejected.
-Decoded bundle bytes are cleared when size validation fails and after the
-certificate validation attempt. It also verifies strict 64-character hexadecimal
-pin parsing and normalization of uppercase, colon-separated pins with surrounding
-whitespace.
-It creates ephemeral certificates to verify that a certificate's matching DER
-SHA-256 publisher pin is accepted and a mismatched pin is rejected; a certificate with a private key is accepted and a public-only
-certificate is rejected. It verifies that currently valid validity dates are
-accepted, expired and not-yet-valid certificates are rejected, the Code Signing EKU is accepted,
-a different EKU is rejected, and a missing EKU is rejected. It similarly
-checks positive, negative, and missing Key Usage cases.
-These deterministic tests do not replace an integration check with a real
-CA-issued PFX; the full certificate-chain and online-revocation check runs only
-when protected signing inputs are supplied to the non-self-test invocation.
+Run deterministic contract checks without a production certificate:
 
-## CI secret names for the later signing-pipeline phase
+\`\`\`powershell
+./scripts/windows/validate-signing-certificate.ps1 -SelfTest
+./scripts/windows/sign-release-artifacts.ps1 -Mode SelfTest
+./scripts/windows/verify-service-binary.ps1 -SelfTest
+\`\`\`
 
-When the signing workflow is implemented, store these as protected GitHub
-Actions secrets (not repository files or variables):
-- WEBDYNAMITE_SIGNING_PFX_BASE64
-- WEBDYNAMITE_SIGNING_PFX_PASSWORD
-- WEBDYNAMITE_PUBLISHER_SHA256
+A real release run additionally performs full certificate-chain/revocation validation and signature verification. The self-tests do not prove that a production certificate is configured.
 
-Restrict access to release workflows/environments. Prefer environment
-protection and required reviewers for production signing. Never print secret
-values, upload PFX files as artifacts, or expose them to untrusted pull-request
-workflows. The later pipeline must sign the desktop executable and Core Service
-before packaging, sign the final NSIS installer, timestamp all signatures, and
-verify every signature and publisher pin before publishing a release.
+## Safety rules
 
-## Fail-closed requirements before service activation
-
-- The desktop executable and Core Service must both have valid trusted
-  Authenticode signatures from the pinned publisher.
-- The configured pin must be provisioned from a protected installer/service
-  configuration source, not user-writable settings or environment variables.
-- The installer must protect executable paths and publisher configuration.
-- Rotation must support a planned overlap or coordinated upgrade; never silently
-  accept an arbitrary new signer.
-- Missing, malformed, expired, untrusted, or mismatched signing identity must
-  prevent authenticated IPC and Windows Service activation.
+- Never use a self-signed certificate as a production publisher.
+- Never bypass the tag workflow's protected environment or signature verification.
+- Never publish unsigned engineering artifacts as production releases.
+- Never accept a certificate merely because its display name matches; compare the exact DER SHA-256 pin.
+- Rotate publisher identity only through a coordinated, reviewed desktop/service trust-pin migration.
