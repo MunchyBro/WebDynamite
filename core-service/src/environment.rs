@@ -223,7 +223,49 @@ async fn save_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):J
 }
 
 
+
+fn remove_batch_with_service_store(state:&AppState,id:&str,input:DeleteEnvironmentBatch)->Result<serde_json::Value,EnvironmentError>{
+ {
+  let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM websites WHERE id=?1)",[id],|row|row.get(0)).map_err(db_error)?;
+  if !exists{return Err(EnvironmentError(StatusCode::NOT_FOUND,"website_not_found","Website was not found.".into()));}
+ }
+ let mut snapshots=Vec::with_capacity(input.names.len());
+ for name in &input.names {
+  let previous=read_secret_snapshot(state,id,name).map_err(|error|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_read_failed",error))?;
+  snapshots.push((name.clone(),previous));
+ }
+ for name in &input.names {
+  if let Err(error)=delete_secret_value(state,id,name) {
+   let mut restored=true;
+   for (restore_name,previous) in snapshots.iter().rev(){if restore_secret_snapshot(state,id,restore_name,previous.as_deref()).is_err(){restored=false;}}
+   return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_delete_failed",if restored{error}else{format!("{error} Protected secret rollback was incomplete.")}));
+  }
+ }
+ let result:Result<usize,EnvironmentError>=(||{
+  let mut db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  let tx=db.transaction().map_err(db_error)?;
+  let mut removed=0usize;
+  for name in &input.names{removed+=tx.execute("DELETE FROM website_environment WHERE website_id=?1 AND name=?2",params![id,name]).map_err(db_error)?;}
+  tx.commit().map_err(db_error)?;
+  Ok(removed)
+ })();
+ match result {
+  Ok(removed)=>Ok(json!({"removed":removed,"requested":input.names.len()})),
+  Err(error)=>{
+   let mut restored=true;
+   for (name,previous) in snapshots.iter().rev(){if restore_secret_snapshot(state,id,name,previous.as_deref()).is_err(){restored=false;}}
+   Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Protected secret rollback was incomplete.",error.2)}))
+  }
+ }
+}
+
 async fn remove_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input):Json<DeleteEnvironmentBatch>)->Result<Json<serde_json::Value>,EnvironmentError>{
+ if s.secret_store_root.is_some() {
+  validate_delete_batch(&input.names)?;
+  return remove_batch_with_service_store(&s,&id,input).map(Json);
+ }
+
  validate_delete_batch(&input.names)?;
  {
   let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
@@ -280,7 +322,7 @@ async fn remove(State(s):State<AppState>,Path((id,name)):Path<(String,String)>)-
  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let n=db.execute("DELETE FROM website_environment WHERE website_id=?1 AND name=?2",params![id,name]).map_err(db_error)?;
  if n==0{return Err(EnvironmentError(StatusCode::NOT_FOUND,"environment_variable_not_found","Environment variable was not found.".into()));}drop(db);
- if let Ok(entry)=credential_entry(&id,&name){let _=entry.delete_credential();}Ok(StatusCode::NO_CONTENT)
+ if s.secret_store_root.is_some(){let _=delete_secret_value(&s,&id,&name);}else if let Ok(entry)=credential_entry(&id,&name){let _=entry.delete_credential();}Ok(StatusCode::NO_CONTENT)
 }
 pub fn apply_to_command(s:&AppState,id:&str,c:&mut std::process::Command)->Result<(),String>{
  let rows={let db=s.db.lock().map_err(|_|"Database lock is unavailable.".to_string())?;let mut q=db.prepare("SELECT name,value,is_secret FROM website_environment WHERE website_id=?1 ORDER BY name").map_err(|e|e.to_string())?;let mapped=q.query_map([id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).map_err(|e|e.to_string())?;mapped.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?};
@@ -292,7 +334,7 @@ pub fn delete_all_for_website(state:&AppState,id:&str){
   let rows=q.query_map([id],|r|r.get::<_,String>(0)).ok()?;
   rows.collect::<Result<Vec<_>,_>>().ok()
  }).unwrap_or_default();
- for name in names{if let Ok(entry)=credential_entry(id,&name){let _=entry.delete_credential();}}
+ for name in names{if state.secret_store_root.is_some(){let _=delete_secret_value(state,id,&name);}else if let Ok(entry)=credential_entry(id,&name){let _=entry.delete_credential();}}
 }
 #[cfg(test)]
 mod tests{
