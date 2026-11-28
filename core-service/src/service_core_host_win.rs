@@ -45,7 +45,6 @@ mod windows_impl {
                 // Start the authenticated desktop secret channel under the same
                 // SCM lifecycle. The worker validates the desktop process identity
                 // from trusted installer configuration before reading any request.
-                let runtime_secret_store_root = config.secret_store_root.clone();
                 let mut pipe_worker = crate::service_pipe_runtime::start_authenticated_secret_pipe_worker(
                     config.clone(),
                     Arc::clone(&lifecycle),
@@ -91,7 +90,7 @@ mod windows_impl {
                             .build()
                             .map_err(|_| "Could not create the Core Service Tokio runtime.".to_string())?;
                         let runtime_token = std::mem::take(&mut *token);
-                        let result = runtime.block_on(crate::run_core_service_at(runtime_token, data_root, Some(runtime_secret_store_root), async {
+                        let result = runtime.block_on(crate::run_core_service_at(runtime_token, data_root, async {
                             let _ = shutdown_rx.await;
                         })).map_err(|error| error.to_string());
                         runtime_lifecycle.request_stop();

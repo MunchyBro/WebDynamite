@@ -4,6 +4,42 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use crate::AppState;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
+
+fn secret_storage_key(id: &str, name: &str) -> String {
+ let mut digest = Sha256::new();
+ digest.update(b"WebDynamite.SecretStore.Key.v1\\0");
+ digest.update(id.as_bytes());
+ digest.update([0]);
+ digest.update(name.as_bytes());
+ format!("{:x}", digest.finalize())
+}
+fn read_secret_value(state: &AppState, id: &str, name: &str) -> Result<String, String> {
+ if let Some(root) = &state.secret_store_root {
+  let mut bytes = crate::secret_store::read_secret(root, &secret_storage_key(id, name))?;
+  let value = String::from_utf8(bytes.clone()).map_err(|_| "Protected environment secret is not valid UTF-8.".to_string());
+  bytes.zeroize();
+  value
+ } else {
+  credential_entry(id, name).map_err(|error| error.2)?.get_password().map_err(|error| format!("Secret environment variable {name} is unavailable in Windows Credential Manager: {error}"))
+ }
+}
+fn write_secret_value(state: &AppState, id: &str, name: &str, value: &str) -> Result<(), String> {
+ if let Some(root) = &state.secret_store_root {
+  crate::secret_store::write_secret_verified(root, &secret_storage_key(id, name), value.as_bytes())
+ } else {
+  credential_entry(id, name).map_err(|error| error.2)?.set_password(value).map_err(|error| error.to_string())
+ }
+}
+fn delete_secret_value(state: &AppState, id: &str, name: &str) -> Result<(), String> {
+ if let Some(root) = &state.secret_store_root {
+  crate::secret_store::delete_secret(root, &secret_storage_key(id, name))
+ } else {
+  let entry = credential_entry(id, name).map_err(|error| error.2)?;
+  match entry.delete_credential() { Ok(()) | Err(keyring::Error::NoEntry) => Ok(()), Err(error) => Err(error.to_string()) }
+ }
+}
 #[derive(Debug)]
 struct EnvironmentError(StatusCode, &'static str, String);
 impl axum::response::IntoResponse for EnvironmentError {
@@ -171,7 +207,7 @@ async fn remove(State(s):State<AppState>,Path((id,name)):Path<(String,String)>)-
 }
 pub fn apply_to_command(s:&AppState,id:&str,c:&mut std::process::Command)->Result<(),String>{
  let rows={let db=s.db.lock().map_err(|_|"Database lock is unavailable.".to_string())?;let mut q=db.prepare("SELECT name,value,is_secret FROM website_environment WHERE website_id=?1 ORDER BY name").map_err(|e|e.to_string())?;let mapped=q.query_map([id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).map_err(|e|e.to_string())?;mapped.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?};
- for(name,value,secret)in rows{let value=if secret==1{credential_entry(id,&name).map_err(|e|e.2)?.get_password().map_err(|e|format!("Secret environment variable {name} is unavailable in Windows Credential Manager: {e}"))?}else{value};c.env(name,value);}Ok(())
+ for(name,value,secret)in rows{let value=if secret==1{read_secret_value(s,id,&name)?}else{value};c.env(name,value);}Ok(())
 }
 pub fn delete_all_for_website(state:&AppState,id:&str){
  let names=state.db.lock().ok().and_then(|db|{
