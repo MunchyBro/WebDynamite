@@ -104,3 +104,17 @@ release, exercise first install, upgrade with an existing token, repair,
 service startup failure, uninstall, and reinstall while verifying that user
 data and secrets survive. The local TCP listener check confirms startup only;
 it is not an authenticated API end-to-end test.
+
+
+### Publisher pin requirement
+
+A valid Authenticode chain alone is not sufficient to activate the privileged
+service. The installed resource file
+`resources/webdynamite-publisher.sha256` must contain the exact nonzero
+64-hex SHA-256 hash of the expected publisher certificate's DER bytes. The
+repository ships only an `UNCONFIGURED` sentinel. Engineering builds remain
+unsigned and skip service activation; a future protected signing workflow must
+replace the sentinel with the value from the protected
+`WEBDYNAMITE_PUBLISHER_SHA256` secret before packaging. Signed binaries with
+a missing, malformed, or mismatched pin fail closed. Never commit or guess a
+production publisher pin.

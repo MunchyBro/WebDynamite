@@ -38,7 +38,8 @@
       "../scripts/windows/install-core-service.ps1": "install-core-service.ps1",
       "../scripts/windows/manage-core-service.ps1": "manage-core-service.ps1",
       "../scripts/windows/provision-service-layout.ps1": "provision-service-layout.ps1",
-      "../scripts/windows/provision-trusted-service-config.ps1": "provision-trusted-service-config.ps1"
+      "../scripts/windows/provision-trusted-service-config.ps1": "provision-trusted-service-config.ps1",
+      "resources/publisher.sha256": "webdynamite-publisher.sha256"
     },
     "windows": {
       "nsis": {
