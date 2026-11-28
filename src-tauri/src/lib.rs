@@ -662,51 +662,6 @@ fn ipc_secret_delete(app: tauri::AppHandle, website_id: String, name: String) ->
 }
 
 
-#[tauri::command]
-async fn migrate_website_environment_secrets(app: tauri::AppHandle, token: String, id: String) -> Result<Value, String> {
-    if !trusted_ipc_configuration_present()? {
-        return Ok(serde_json::json!({"supported": false, "migrated": 0, "already_migrated": 0}));
-    }
-    let path = format!("/api/v1/websites/{id}/environment");
-    let rows: Vec<Value> = authorized_request(&token, reqwest::Method::GET, &path, None)
-        .await?.json().await.map_err(|error| api_error("Could not inspect website environment metadata", error))?;
-    let mut migrated = 0usize;
-    let mut already_migrated = 0usize;
-    for row in rows.into_iter().filter(|row| row.get("is_secret").and_then(Value::as_bool) == Some(true)) {
-        let name = row.get("name").and_then(Value::as_str)
-            .ok_or_else(|| "Website environment metadata contained an invalid secret name.".to_string())?.to_string();
-        let status = authenticated_secret_ipc(&app, "secret.verify", serde_json::json!({"website_id": id, "name": name}))?;
-        let entry = Entry::new("WebDynamite", &format!("website-env:{id}:{name}"))
-            .map_err(|error| api_error("Could not open the legacy website credential", error))?;
-        if status.get("exists").and_then(Value::as_bool) == Some(true) {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => already_migrated += 1,
-                Err(error) => return Err(api_error("The protected secret already exists, but the stale legacy credential could not be removed", error)),
-            }
-            continue;
-        }
-        let mut value = entry.get_password()
-            .map_err(|error| match error {
-                keyring::Error::NoEntry => format!("Secret {name} is missing from both the legacy credential store and the protected service store; no source was deleted."),
-                other => api_error("Could not read the legacy website credential", other),
-            })?;
-        let mut payload = serde_json::json!({"website_id": id, "name": name, "value": value});
-        let stored = authenticated_secret_ipc(&app, "secret.put", payload.clone());
-        if let Some(Value::String(secret)) = payload.get_mut("value") { secret.zeroize(); }
-        value.zeroize();
-        let stored = stored?;
-        if stored.get("stored").and_then(Value::as_bool) != Some(true)
-            || stored.get("verified").and_then(Value::as_bool) != Some(true) {
-            return Err(format!("Protected-store verification did not succeed for {name}; the legacy credential was retained."));
-        }
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => migrated += 1,
-            Err(error) => return Err(api_error("The protected copy was verified, but the legacy credential could not be removed", error)),
-        }
-    }
-    Ok(serde_json::json!({"supported": true, "migrated": migrated, "already_migrated": already_migrated}))
-}
-
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
  let app = tauri::Builder::default()
@@ -714,7 +669,7 @@ pub fn run(){
   start_core_service(app.handle())?;
   Ok(())
  })
- .invoke_handler(tauri::generate_handler![core_service_token,save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,runtime_preflight,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_tls_details,proxy_tls_history,proxy_tls_monitoring,save_proxy_tls_monitoring,proxy_tls_alerts,acknowledge_proxy_tls_alert,hosting_recovery_events,proxy_action,networking_status,monitoring_metrics,website_health_check,website_health_history,health_report,website_health_alerts,acknowledge_website_health_alert,set_lan_access,list_databases,create_database,delete_database,test_database,sqlite_database_connection_url,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,provision_mysql_database,provision_mysql_user,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,provision_postgres_database,provision_postgres_role,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,preview_website_folder_delete,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_website_environment,save_website_environment,save_website_environment_batch,delete_website_environment,delete_website_environment_batch,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,delete_deployment_release,list_tunnels,tunnel_action,backup_storage_summary,preview_backup_retention,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states,ipc_secret_status,ipc_secret_put,ipc_secret_delete,migrate_website_environment_secrets])
+ .invoke_handler(tauri::generate_handler![core_service_token,save_database_credential,get_database_credential,delete_database_credential,core_health,list_websites,create_website,website_action,runtime_preflight,website_logs,delete_website,list_domains,create_domain,delete_domain,diagnose_domain,list_public_domains,create_public_domain,delete_public_domain,export_caddyfile,proxy_status,proxy_tls_check,proxy_tls_details,proxy_tls_history,proxy_tls_monitoring,save_proxy_tls_monitoring,proxy_tls_alerts,acknowledge_proxy_tls_alert,hosting_recovery_events,proxy_action,networking_status,monitoring_metrics,website_health_check,website_health_history,health_report,website_health_alerts,acknowledge_website_health_alert,set_lan_access,list_databases,create_database,delete_database,test_database,sqlite_database_connection_url,query_database,list_mysql_connections,create_mysql_connection,delete_mysql_connection,test_mysql_connection,provision_mysql_database,provision_mysql_user,query_mysql_connection,list_postgres_connections,create_postgres_connection,delete_postgres_connection,test_postgres_connection,provision_postgres_database,provision_postgres_role,query_postgres_connection,export_database,import_database,website_storage_usage,list_website_files,read_website_file,write_website_file,upload_website_file,download_website_file,download_website_archive,extract_website_archive,create_website_directory,rename_website_file,preview_website_folder_delete,delete_website_file,list_runtime_profiles,save_runtime_profile,delete_runtime_profile,list_website_environment,save_website_environment,save_website_environment_batch,delete_website_environment,delete_website_environment_batch,list_build_profiles,save_build_profile,run_build,deploy_website,list_build_runs,git_repository_status,git_fetch,git_pull,list_deployment_releases,create_deployment_release,rollback_deployment_release,delete_deployment_release,list_tunnels,tunnel_action,backup_storage_summary,preview_backup_retention,get_backup_schedule,save_backup_schedule,list_backups,create_backup,verify_backup,preview_backup_restore,restore_backup,delete_backup,get_app_settings,save_app_settings,diagnostics_report,recover_website_states,ipc_secret_status,ipc_secret_put,ipc_secret_delete])
  .build(tauri::generate_context!())
  .expect("error while building WebDynamite");
  app.run(|_, _| {});

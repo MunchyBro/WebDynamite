@@ -27,9 +27,8 @@ requests.
 
 The protocol does not expose website secret reads, arbitrary commands,
 filesystem access, or generic RPC. The narrowly scoped `secret.put`,
-`secret.delete`, `secret.status`, and `secret.verify` operations are separately
-allowlisted. `secret.verify` returns only whether a website-scoped secret can
-be read from the protected store; it never returns secret bytes.
+`secret.delete` and `secret.status` operations are separately
+allowlisted.
 
 ## Fail-closed behavior
 

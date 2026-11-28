@@ -101,20 +101,6 @@ pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResp
                 _ => Err("invalid_payload"),
             }
         }
-        "secret.verify" => {
-            let website_id = request.data.get("website_id").and_then(serde_json::Value::as_str);
-            let name = request.data.get("name").and_then(serde_json::Value::as_str);
-            match (website_id, name) {
-                (Some(website_id), Some(name)) => {
-                    let key = storage_key(website_id, name);
-                    match secret_store::read_secret(root, &key) {
-                        Ok(mut bytes) => { bytes.zeroize(); Ok(serde_json::json!({"exists": true})) }
-                        Err(_) => Ok(serde_json::json!({"exists": false})),
-                    }
-                }
-                _ => Err("invalid_payload"),
-            }
-        }
         "secret.status" => {
             match std::fs::symlink_metadata(root) {
                 Ok(metadata) if metadata.file_type().is_dir() => {

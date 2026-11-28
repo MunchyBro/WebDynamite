@@ -24,32 +24,28 @@ the legacy per-user Windows Credential Manager path.
 
 ## Legacy migration
 
-On startup, the signed desktop enumerates website environment metadata through
-the authenticated loopback API and migrates each secret from the current
-desktop user's `WebDynamite / website-env:<website-id>:<name>` Credential
-Manager entry.
+On startup, the SCM Core Service migrates legacy entries from its own
+Windows Credential Manager logon identity into the machine-DPAPI store. This
+runs inside the service process because the service account's Credential
+Manager is not accessible to the interactive desktop user's logon.
 
 For each secret:
 
-1. The desktop asks the authenticated service whether the DPAPI copy already
-   exists. This check returns a boolean only, never the secret value.
-2. If the protected copy exists, it is authoritative; the desktop removes any
+1. The service checks whether a DPAPI copy already exists and can be decrypted.
+2. If the protected copy exists, it is authoritative; the service removes any
    stale legacy credential without overwriting the newer protected value.
-3. Otherwise, the desktop reads the legacy credential and sends it over the
-   authenticated, publisher-pinned named pipe using `secret.put`.
-4. The service writes the value to the machine-DPAPI store and verifies a
-   read-back before acknowledging success.
-5. Only after the verified acknowledgement does the desktop delete the legacy
-   Credential Manager entry.
+3. Otherwise, the service reads its own legacy Credential Manager entry and
+   writes the value to the machine-DPAPI store.
+4. The service verifies a read-back before deleting the legacy entry.
 
 The operation is idempotent. If migration stops partway through, completed
-entries remain in the DPAPI store and the next startup resumes safely. If a
-legacy value is missing and no protected copy exists, migration reports the
-specific website secret as requiring attention; it does not invent a value or
-delete any source credential. A failure to remove a legacy entry leaves the
+entries remain in the DPAPI store and the next service startup resumes safely.
+If a legacy value is missing and no protected copy exists, the service reports
+the specific website secret as requiring attention; it does not invent a value
+or delete any source credential. A failure to remove a legacy entry leaves the
 verified DPAPI copy intact and is reported for follow-up.
 
-Engineering builds without trusted IPC pins do not run this migration and
-continue using the legacy interactive Credential Manager path. The SCM
-runtime's protected store is used only after trusted installer configuration
-has been validated by the service host.
+Engineering builds without trusted SCM configuration do not run this migration
+and continue using the interactive Credential Manager path. The SCM runtime's
+protected store is used only after trusted installer configuration has been
+validated by the service host.

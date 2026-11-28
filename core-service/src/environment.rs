@@ -353,6 +353,60 @@ pub fn delete_all_for_website(state:&AppState,id:&str){
  }).unwrap_or_default();
  for name in names{if state.secret_store_root.is_some(){let _=delete_secret_value(state,id,&name);}else if let Ok(entry)=credential_entry(id,&name){let _=entry.delete_credential();}}
 }
+/// Migrates legacy Credential Manager entries from the Core Service's own logon
+/// identity into the machine-DPAPI store. This must run in the service process:
+/// the desktop user's Credential Manager is a different security principal.
+pub fn migrate_legacy_secrets(state: &AppState) -> (usize, Vec<String>) {
+ if state.secret_store_root.is_none() { return (0, Vec::new()); }
+ let rows = match state.db.lock().and_then(|db| {
+  let mut query = db.prepare("SELECT website_id,name FROM website_environment WHERE is_secret=1 ORDER BY website_id,name")?;
+  let mapped = query.query_map([], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?)))?;
+  mapped.collect::<Result<Vec<_>,_>>()
+ }) {
+  Ok(rows) => rows,
+  Err(error) => return (0, vec![format!("Could not enumerate legacy website secrets: {error}")]),
+ };
+ let mut migrated = 0usize;
+ let mut failures = Vec::new();
+ for (id, name) in rows {
+  let existing = match read_secret_snapshot(state, &id, &name) {
+   Ok(value) => value,
+   Err(_) => { failures.push(format!("Could not verify the protected copy for {name} on website {id}; the legacy credential was retained.")); continue; }
+  };
+  if let Some(mut protected_value) = existing {
+   protected_value.zeroize();
+   match credential_entry(&id, &name).and_then(|entry| match entry.delete_credential() {
+    Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+    Err(error) => Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"credential_delete_failed",error.to_string())),
+   }) {
+    Ok(()) => {},
+    Err(error) => failures.push(format!("Protected copy exists for {name} on website {id}, but its legacy credential could not be removed: {}",error.2)),
+   }
+   continue;
+  }
+  let entry = match credential_entry(&id, &name) {
+   Ok(entry) => entry,
+   Err(error) => { failures.push(format!("Could not open the legacy credential for {name} on website {id}: {}",error.2)); continue; }
+  };
+  let mut value = match entry.get_password() {
+   Ok(value) => value,
+   Err(keyring::Error::NoEntry) => { failures.push(format!("Secret {name} on website {id} is missing from both stores; no source was deleted.")); continue; }
+   Err(error) => { failures.push(format!("Could not read the legacy credential for {name} on website {id}: {error}")); continue; }
+  };
+  let write = write_secret_value(state, &id, &name, &value);
+  value.zeroize();
+  if let Err(error) = write {
+   failures.push(format!("Could not verify the DPAPI copy for {name} on website {id}: {error}; the legacy credential was retained."));
+   continue;
+  }
+  match entry.delete_credential() {
+   Ok(()) | Err(keyring::Error::NoEntry) => migrated += 1,
+   Err(error) => failures.push(format!("The DPAPI copy for {name} on website {id} was verified, but the legacy credential could not be removed: {error}")),
+  }
+ }
+ (migrated, failures)
+}
+
 #[cfg(test)]
 mod tests{
  use super::{validate_batch,validate_delete_batch,valid_name,SaveEnvironmentVariable};

@@ -282,6 +282,9 @@ where
         cloudflared_bin: env::var_os("CLOUDFLARED_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cloudflared")),
         started_at: std::time::Instant::now(),
     };
+    let (migrated_secrets, migration_failures) = environment::migrate_legacy_secrets(&state);
+    if migrated_secrets > 0 { println!("Migrated {migrated_secrets} website environment secret(s) into the protected service store."); }
+    for failure in migration_failures { eprintln!("Website environment secret migration: {failure}"); }
     supervise_processes(state.clone());
     hosting_supervisor::start(state.clone());
     backup::start_scheduler(state.clone());
