@@ -301,7 +301,7 @@ fn normalize_thumbprint(value: &str) -> Result<String, String> {
         verified.verify_still_connected(pipe.0)?;
 
         let request_id = uuid::Uuid::new_v4().simple().to_string();
-        let request = SensitiveRequestGuard {
+        let mut request = SensitiveRequestGuard {
             operation: operation.to_string(),
             request: IpcRequest {
                 version: PROTOCOL_VERSION,
