@@ -47,6 +47,10 @@ jobs:
         shell: pwsh
         run: ./scripts/windows/manage-core-service.ps1 -Mode SelfTest
 
+      - name: Validate trusted service configuration provisioning contract
+        shell: pwsh
+        run: ./scripts/windows/provision-trusted-service-config.ps1 -Mode SelfTest
+
       - name: Validate signing certificate preflight contract
         shell: pwsh
         run: ./scripts/windows/validate-signing-certificate.ps1 -SelfTest
