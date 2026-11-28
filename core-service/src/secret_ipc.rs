@@ -61,6 +61,28 @@ fn database_credential_key(engine: &str, profile_id: &str) -> String {
     format!("{:x}", digest.finalize())
 }
 
+fn store_database_credential(root: &Path, key: &str, password: &[u8]) -> Result<(), &'static str> {
+    let mut previous = match secret_store::read_secret(root, key) {
+        Ok(bytes) => Some(bytes),
+        Err(_) => match std::fs::symlink_metadata(root.join(format!("{key}.wds"))) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            _ => return Err("database_credential_unavailable"),
+        },
+    };
+    let stored = secret_store::write_secret_verified(root, key, password);
+    if stored.is_err() {
+        // Preserve the previous DPAPI value if replacement verification fails.
+        let rollback = match previous.as_ref() {
+            Some(bytes) => secret_store::write_secret_verified(root, key, bytes),
+            None => secret_store::delete_secret(root, key),
+        };
+        if rollback.is_err() { return Err("database_credential_rollback_failed"); }
+        return Err("secret_store_unavailable");
+    }
+    if let Some(bytes) = previous.as_mut() { bytes.zeroize(); }
+    Ok(())
+}
+
 fn read_database_credential(root: &Path, key: &str) -> Result<String, &'static str> {
     match secret_store::read_secret(root, key) {
         Ok(mut bytes) => {
@@ -145,9 +167,9 @@ pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResp
             match (engine, profile_id, request.data.get_mut("password")) {
                 (Some(engine), Some(profile_id), Some(serde_json::Value::String(password))) => {
                     let key = database_credential_key(&engine, &profile_id);
-                    let stored = secret_store::write_secret_verified(root, &key, password.as_bytes());
+                    let stored = store_database_credential(root, &key, password.as_bytes());
                     password.zeroize();
-                    stored.map(|_| serde_json::json!({"stored":true,"verified":true})).map_err(|_| "secret_store_unavailable")
+                    stored.map(|_| serde_json::json!({"stored":true,"verified":true}))
                 }
                 _ => Err("invalid_payload"),
             }

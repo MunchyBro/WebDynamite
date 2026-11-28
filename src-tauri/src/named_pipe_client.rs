@@ -311,7 +311,11 @@ fn normalize_thumbprint(value: &str) -> Result<String, String> {
             },
         };
         let mut io = PipeIo::new(pipe.0, super::WRITE_TIMEOUT);
-        write_request(&mut io, &request.request)?;
+        let write_result = write_request(&mut io, &request.request);
+        // The frame writer has already wiped its serialized copy; wipe the
+        // in-memory request value immediately, even when the write failed.
+        wipe_sensitive_data(operation, &mut request.request.data);
+        write_result?;
         verified.verify_still_connected(pipe.0)?;
         io.set_deadline(super::READ_TIMEOUT);
         read_response_for_request(&mut io, &request_id)
