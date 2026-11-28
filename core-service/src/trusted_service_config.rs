@@ -16,6 +16,8 @@ pub struct TrustedServiceConfig {
     pub version: u32,
     pub service_sid: String,
     pub interactive_user_sid: String,
+    /// Expected desktop session. Zero permits any nonzero session for the
+    /// configured user, because Windows session IDs are ephemeral across logons.
     pub interactive_session_id: u32,
     pub desktop_executable: PathBuf,
     /// SHA-256 Authenticode publisher certificate thumbprint, 64 hex characters.
@@ -45,9 +47,9 @@ impl TrustedServiceConfig {
         if !valid_user_sid(&self.interactive_user_sid) {
             return Err("Trusted service configuration contains an invalid interactive user SID.".into());
         }
-        if self.interactive_session_id == 0 {
-            return Err("An interactive Windows session ID is required.".into());
-        }
+        // Session IDs are assigned per logon and can change after sign-out/reboot.
+        // Zero binds to the configured user SID and the live pipe peer's
+        // nonzero session, rather than pinning an installer-time session number.
         if !self.desktop_executable.is_absolute() || !has_exe_extension(&self.desktop_executable)
             || has_dot_path_components(&self.desktop_executable)
         {
@@ -149,13 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_publisher_thumbprints_and_session_ids() {
+    fn rejects_bad_publisher_thumbprints_and_accepts_dynamic_sessions() {
         let thumb = VALID.replace("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "not-a-thumbprint");
         assert!(TrustedServiceConfig::parse_and_validate(thumb.as_bytes()).unwrap_err().contains("thumbprint"));
         let placeholder = VALID.replace("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "0000000000000000000000000000000000000000000000000000000000000000");
         assert!(TrustedServiceConfig::parse_and_validate(placeholder.as_bytes()).unwrap_err().contains("placeholder"));
-        let session = VALID.replace("\"interactive_session_id\":1", "\"interactive_session_id\":0");
-        assert!(TrustedServiceConfig::parse_and_validate(session.as_bytes()).unwrap_err().contains("session ID"));
+        let dynamic = VALID.replace("\"interactive_session_id\":1", "\"interactive_session_id\":0");
+        let parsed = TrustedServiceConfig::parse_and_validate(dynamic.as_bytes()).unwrap();
+        assert_eq!(parsed.interactive_session_id, 0);
     }
 
     #[test]

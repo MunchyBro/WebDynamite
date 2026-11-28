@@ -132,7 +132,10 @@ function Assert-ConfigDocument($Config, [string]$ExpectedServiceSid) {
         throw "Trusted service configuration does not identify the installed WebDynamiteCore service."
     }
     if (-not (Test-UserSid ([string]$Config.interactive_user_sid))) { throw "Trusted service configuration contains an invalid interactive user SID." }
-    if ([uint32]$Config.interactive_session_id -eq 0) { throw "An interactive Windows session ID is required." }
+    $sessionId = [uint32]0
+    if (-not [uint32]::TryParse([string]$Config.interactive_session_id, [ref]$sessionId)) {
+        throw "Trusted service configuration contains an invalid interactive session policy."
+    }
     $desktop = Get-NormalizedExecutablePath ([string]$Config.desktop_executable)
     $pin = Normalize-Thumbprint ([string]$Config.publisher_sha256)
     if ($pin -ne ([string]$Config.publisher_sha256).ToLowerInvariant()) { throw "Trusted service configuration publisher thumbprint is not normalized." }
@@ -149,7 +152,10 @@ function Get-CurrentInteractiveIdentity {
     $sid = $identity.User.Value
     $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
     if (-not (Test-UserSid $sid) -or $session -eq 0) { throw "Trusted service provisioning must run in the installing interactive user's Windows session." }
-    return [pscustomobject]@{ UserSid = $sid; SessionId = [uint32]$session }
+    # Persist a dynamic-session policy. The service verifies that each live
+    # pipe peer has a nonzero token session matching the pipe's reported session.
+    # Persisting the installer session would break after sign-out or reboot.
+    return [pscustomobject]@{ UserSid = $sid; SessionId = [uint32]0 }
 }
 function Read-TrustedConfig {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw "Trusted service configuration is missing: $ConfigPath" }
@@ -245,6 +251,9 @@ if ($Mode -eq "SelfTest") {
         data_root="C:\ProgramData\WebDynamite\Data"
     }
     Assert-ConfigDocument $sample "S-1-5-80-1-2-3-4-5"
+    $dynamic = $sample | Select-Object *
+    $dynamic.interactive_session_id = 0
+    Assert-ConfigDocument $dynamic "S-1-5-80-1-2-3-4-5"
     $bad = $sample | Select-Object *
     $bad.service_sid = "S-1-5-80-9-8-7-6-5"
     $rejected = $false

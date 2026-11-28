@@ -1,6 +1,15 @@
 //! Windows named-pipe peer verification. This module deliberately fails closed:
-//! callers must supply the expected interactive SID, session, exact installed
+//! callers must supply the expected interactive SID, session policy, exact installed
 //! desktop executable path, and pinned Authenticode signer SHA-256 thumbprint.
+
+// A configured session ID of zero is a deliberate dynamic-session policy.
+// Windows assigns new session IDs across logons, so the service binds the pipe
+// peer to its own token session rather than an installer-time session.
+fn session_matches(expected_session_id: u32, actual_session_id: u32, pipe_session_id: u32) -> bool {
+    actual_session_id != 0
+        && pipe_session_id == actual_session_id
+        && (expected_session_id == 0 || expected_session_id == actual_session_id)
+}
 
 #[cfg(windows)]
 mod windows_impl {
@@ -169,7 +178,7 @@ mod windows_impl {
         let actual_session = token_session(token.0)?;
         let mut pipe_session = 0u32;
         if unsafe { GetNamedPipeClientSessionId(pipe, &mut pipe_session) } == 0
-            || actual_session != expected_session_id || pipe_session != expected_session_id
+            || !super::session_matches(expected_session_id, actual_session, pipe_session)
         {
             return Err("The named-pipe client is running in an unexpected Windows session.".into());
         }
@@ -226,6 +235,15 @@ pub fn verify_connected_client(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dynamic_session_binding_rejects_session_zero_and_mismatched_pipe_peers() {
+        assert!(super::session_matches(0, 3, 3));
+        assert!(super::session_matches(7, 7, 7));
+        assert!(!super::session_matches(7, 8, 8));
+        assert!(!super::session_matches(0, 0, 0));
+        assert!(!super::session_matches(0, 3, 4));
+    }
+
     #[test]
     fn publisher_thumbprints_must_be_sha256_hex() {
         #[cfg(windows)]
