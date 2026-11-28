@@ -30,6 +30,29 @@ filesystem access, or generic RPC. The narrowly scoped `secret.put`,
 `secret.delete` and `secret.status` operations are separately
 allowlisted.
 
+## Database profile credentials
+
+Trusted desktop builds use the installer-protected machine-DPAPI store for
+MySQL/MariaDB and PostgreSQL profile passwords. The authenticated pipe allows
+only profile-scoped `database-credential.put`, `database-credential.get`,
+and `database-credential.delete` operations. Engines are restricted to
+`mysql` or `postgres`; profile identifiers are validated and included in a
+domain-separated SHA-256 storage-key derivation.
+
+On first access to an existing profile, the desktop reads its legacy per-user
+Windows Credential Manager entry, transfers it over the authenticated pipe,
+and performs a fresh service-side DPAPI read-back. The old credential is
+retired only after the read-back matches. If transfer, decryption, or
+verification fails, the original credential remains available for retry.
+Subsequent saves and deletes target the service-owned store. Engineering builds
+without trusted IPC pins retain their existing per-user Credential Manager
+behavior.
+
+The get operation returns a profile password only to the already authenticated,
+publisher-pinned desktop process. Serialized IPC request and response copies
+are zeroized after use; the existing desktop UI/API flow continues to receive
+the password as before.
+
 ## Fail-closed behavior
 
 A build with neither trusted compile-time pin uses the existing interactive

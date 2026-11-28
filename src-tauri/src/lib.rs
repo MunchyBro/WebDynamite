@@ -143,17 +143,55 @@ fn database_credential_entry(engine:&str,profile_id:&str)->Result<Entry,String>{
  Entry::new(service,id).map_err(|e|api_error("Could not access Windows Credential Manager",e))
 }
 #[tauri::command]
-fn save_database_credential(engine:String,profileId:String,password:String)->Result<(),String>{
+fn save_database_credential(app:tauri::AppHandle,engine:String,profileId:String,password:String)->Result<(),String>{
  if password.is_empty()||password.len()>4096{return Err("Password must contain between 1 and 4096 bytes.".into());}
- database_credential_entry(&engine,&profileId)?.set_password(&password).map_err(|e|api_error("Could not save database credential in Windows Credential Manager",e))
+ if trusted_ipc_configuration_present()? {
+  authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":password}))?;
+  if let Ok(entry)=database_credential_entry(&engine,&profileId){let _=entry.delete_credential();}
+  Ok(())
+ } else {
+  database_credential_entry(&engine,&profileId)?.set_password(&password)
+   .map_err(|e|api_error("Could not save database credential in Windows Credential Manager",e))
+ }
 }
 #[tauri::command]
-fn get_database_credential(engine:String,profileId:String)->Result<String,String>{
- database_credential_entry(&engine,&profileId)?.get_password().map_err(|e|api_error("No saved password is available in Windows Credential Manager",e))
+fn get_database_credential(app:tauri::AppHandle,engine:String,profileId:String)->Result<String,String>{
+ if !trusted_ipc_configuration_present()? {
+  return database_credential_entry(&engine,&profileId)?.get_password()
+   .map_err(|e|api_error("No saved password is available in Windows Credential Manager",e));
+ }
+ match authenticated_secret_ipc(&app,"database-credential.get",serde_json::json!({"engine":engine,"profile_id":profileId})) {
+  Ok(mut data)=>{
+   let password=extract_database_password(&mut data)?;
+   if let Ok(entry)=database_credential_entry(&engine,&profileId){let _=entry.delete_credential();}
+   Ok(password)
+  }
+  Err(error) if error.ends_with(": database_credential_not_found")=>{
+   let entry=database_credential_entry(&engine,&profileId)?;
+   let legacy=Zeroizing::new(entry.get_password()
+    .map_err(|e|api_error("No saved database password is available in Windows Credential Manager",e))?);
+   authenticated_secret_ipc(&app,"database-credential.put",serde_json::json!({"engine":engine,"profile_id":profileId,"password":legacy.as_str()}))?;
+   let mut verified=authenticated_secret_ipc(&app,"database-credential.get",serde_json::json!({"engine":engine,"profile_id":profileId}))?;
+   let recovered=Zeroizing::new(extract_database_password(&mut verified)?);
+   if recovered.as_str()!=legacy.as_str(){
+    return Err("Database credential migration verification failed; the original Windows Credential Manager value was retained.".into());
+   }
+   let _=entry.delete_credential();
+   Ok(legacy.to_string())
+  }
+  Err(error)=>Err(error)
+ }
 }
 #[tauri::command]
-fn delete_database_credential(engine:String,profileId:String)->Result<(),String>{
- database_credential_entry(&engine,&profileId)?.delete_credential().map_err(|e|api_error("Could not delete database credential from Windows Credential Manager",e))
+fn delete_database_credential(app:tauri::AppHandle,engine:String,profileId:String)->Result<(),String>{
+ if trusted_ipc_configuration_present()? {
+  authenticated_secret_ipc(&app,"database-credential.delete",serde_json::json!({"engine":engine,"profile_id":profileId}))?;
+  if let Ok(entry)=database_credential_entry(&engine,&profileId){let _=entry.delete_credential();}
+  Ok(())
+ } else {
+  database_credential_entry(&engine,&profileId)?.delete_credential()
+   .map_err(|e|api_error("Could not delete database credential from Windows Credential Manager",e))
+ }
 }
 #[tauri::command]
 async fn core_health()->Result<Value,String>{
@@ -619,6 +657,14 @@ fn extract_service_token(data: &mut Value) -> Result<String, String> {
         return Err("Authenticated Core Service returned an invalid API token.".into());
     }
     Ok(token)
+}
+
+fn extract_database_password(data:&mut Value)->Result<String,String>{
+ let Some(Value::String(stored))=data.get_mut("password") else {return Err("Authenticated Core Service returned no database password.".into());};
+ let mut password=stored.clone();
+ stored.zeroize();
+ if password.is_empty()||password.len()>4096 {password.zeroize();return Err("Authenticated Core Service returned an invalid database password.".into());}
+ Ok(password)
 }
 
 fn load_or_create_core_service_token(app: &tauri::AppHandle) -> Result<String, String> {

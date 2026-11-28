@@ -46,12 +46,18 @@ fn response(request: &IpcRequest, result: Result<serde_json::Value, &'static str
 /// or environment variable names in the protected store directory listing.
 pub(crate) fn storage_key(website_id: &str, name: &str) -> String {
     let mut digest = Sha256::new();
-    // Domain-separate this digest from every other SHA-256 use in the product
-    // and version the derivation so future storage formats can migrate safely.
     digest.update(b"WebDynamite.SecretStore.Key.v1\0");
     digest.update(website_id.as_bytes());
     digest.update([0]);
     digest.update(name.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+fn database_credential_key(engine: &str, profile_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"WebDynamite.DatabaseCredential.v1\0");
+    digest.update(engine.as_bytes());
+    digest.update([0]);
+    digest.update(profile_id.as_bytes());
     format!("{:x}", digest.finalize())
 }
 
@@ -109,13 +115,50 @@ pub fn dispatch_secret_request(root: &Path, request: &mut IpcRequest) -> IpcResp
                 _ => Err("secret_store_unavailable"),
             }
         }
+        "database-credential.put" => {
+            let engine = request.data.get("engine").and_then(serde_json::Value::as_str).map(str::to_owned);
+            let profile_id = request.data.get("profile_id").and_then(serde_json::Value::as_str).map(str::to_owned);
+            match (engine, profile_id, request.data.get_mut("password")) {
+                (Some(engine), Some(profile_id), Some(serde_json::Value::String(password))) => {
+                    let key = database_credential_key(&engine, &profile_id);
+                    let stored = secret_store::write_secret_verified(root, &key, password.as_bytes());
+                    password.zeroize();
+                    stored.map(|_| serde_json::json!({"stored":true,"verified":true})).map_err(|_| "secret_store_unavailable")
+                }
+                _ => Err("invalid_payload"),
+            }
+        }
+        "database-credential.get" => {
+            let engine = request.data.get("engine").and_then(serde_json::Value::as_str);
+            let profile_id = request.data.get("profile_id").and_then(serde_json::Value::as_str);
+            match (engine, profile_id) {
+                (Some(engine), Some(profile_id)) => match secret_store::read_secret(root, &database_credential_key(engine, profile_id)) {
+                    Ok(mut bytes) => {
+                        let password = std::str::from_utf8(&bytes).ok()
+                            .filter(|value| !value.is_empty() && value.len() <= 4096).map(str::to_owned);
+                        bytes.zeroize();
+                        password.map(|value| serde_json::json!({"password":value})).ok_or("database_credential_unavailable")
+                    }
+                    Err(_) => Err("database_credential_not_found"),
+                },
+                _ => Err("invalid_payload"),
+            }
+        }
+        "database-credential.delete" => {
+            let engine = request.data.get("engine").and_then(serde_json::Value::as_str);
+            let profile_id = request.data.get("profile_id").and_then(serde_json::Value::as_str);
+            match (engine, profile_id) {
+                (Some(engine), Some(profile_id)) => secret_store::delete_secret(root, &database_credential_key(engine, profile_id))
+                    .map(|_| serde_json::json!({"deleted":true})).map_err(|_| "secret_store_unavailable"),
+                _ => Err("invalid_payload"),
+            }
+        }
         "service.auth-token" => {
             let mut bytes = match secret_store::read_secret(root, "api-token") {
                 Ok(value) => value,
                 Err(_) => return response(request, Err("service_token_unavailable")),
             };
-            take_service_token(&mut bytes)
-                .map(|value| serde_json::json!({"token": value}))
+            take_service_token(&mut bytes).map(|value| serde_json::json!({"token": value}))
         }
         _ => Err("operation_not_authorized"),
     };
@@ -157,6 +200,16 @@ mod tests {
         assert_eq!(first, storage_key("site-a", "DATABASE_URL"));
         assert_ne!(first, storage_key("site-b", "DATABASE_URL"));
         assert_ne!(first, storage_key("site-a", "REDIS_URL"));
+    }
+
+    #[test]
+    fn database_credential_key_is_domain_separated_and_profile_scoped() {
+        let first = super::database_credential_key("mysql", "profile-a");
+        assert_eq!(first.len(), 64);
+        assert_eq!(first, super::database_credential_key("mysql", "profile-a"));
+        assert_ne!(first, super::database_credential_key("postgres", "profile-a"));
+        assert_ne!(first, super::database_credential_key("mysql", "profile-b"));
+        assert_ne!(first, storage_key("mysql", "profile-a"));
     }
 
     #[test]

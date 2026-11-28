@@ -272,10 +272,13 @@ fn normalize_thumbprint(value: &str) -> Result<String, String> {
         };
         let mut io = PipeIo::new(pipe.0, super::WRITE_TIMEOUT);
         let write_result = write_request(&mut io, &request);
-        if operation == "secret.put" {
-            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
-                value.zeroize();
-            }
+        let field = match operation {
+            "secret.put" => Some("value"),
+            "database-credential.put" => Some("password"),
+            _ => None,
+        };
+        if let Some(field) = field {
+            if let Some(serde_json::Value::String(value)) = request.data.get_mut(field) { value.zeroize(); }
         }
         write_result?;
         verified.verify_still_connected(pipe.0)?;
