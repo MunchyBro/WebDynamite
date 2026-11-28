@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Install", "Verify", "Stop", "Remove", "SelfTest")]
+    [ValidateSet("Install", "Verify", "Stop", "Remove", "SelfTest", "IntegrationSelfTest")]
     [string]$Mode = "Verify",
     [string]$ServiceBinaryPath
 )
@@ -23,10 +23,14 @@ function Get-ServiceSidType {
 function Get-ServiceRecoveryPolicy {
     return [pscustomobject]@{ ResetPeriodSeconds = 86400; RestartDelaysMilliseconds = @(5000, 15000, 60000) }
 }
+function Get-ServiceStartupScArguments { return @("start=", "auto") }
+function Get-ServiceCreateScArguments([string]$BinaryPath) {
+    return @("binPath=", $BinaryPath, "start=", "auto", "obj=", $ServiceAccount)
+}
 function Get-ServiceRecoveryScArguments {
     $policy = Get-ServiceRecoveryPolicy
     $actions = @($policy.RestartDelaysMilliseconds | ForEach-Object { "restart/$_" }) -join "/"
-    return @("reset= $($policy.ResetPeriodSeconds)", "actions= $actions")
+    return @("reset=", [string]$policy.ResetPeriodSeconds, "actions=", $actions)
 }
 function Test-ServiceRecoveryConfiguration([string]$Output) {
     if ([string]::IsNullOrWhiteSpace($Output)) { return $false }
@@ -39,7 +43,8 @@ function Test-ServiceRecoveryConfiguration([string]$Output) {
     return $true
 }
 function Set-ServiceRecoveryPolicy {
-    $start = & sc.exe config $ServiceName "start= auto" 2>&1
+    $startupArguments = Get-ServiceStartupScArguments
+    $start = & sc.exe config $ServiceName @startupArguments 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not configure automatic startup for ${ServiceName}: $start" }
     $arguments = Get-ServiceRecoveryScArguments
     $failure = & sc.exe failure $ServiceName @arguments 2>&1
@@ -53,7 +58,7 @@ function Assert-ServiceRecoveryPolicy {
     $output = & sc.exe qfailure $ServiceName 2>&1
     if ($LASTEXITCODE -ne 0 -or -not (Test-ServiceRecoveryConfiguration ($output | Out-String))) { throw "$ServiceName does not have the required bounded restart policy (5s, 15s, 60s; reset after 24 hours)." }
     $flagOutput = & sc.exe qfailureflag $ServiceName 2>&1
-    if ($LASTEXITCODE -ne 0 -or ($flagOutput | Out-String) -notmatch '(?im)FAILURE_ACTIONS_ON_NONCRASH_FAILURES\s*:\s*1') { throw "$ServiceName must restart after non-zero service process exits." }
+    if ($LASTEXITCODE -ne 0 -or ($flagOutput | Out-String) -notmatch '(?im)FAILURE_ACTIONS_ON_NONCRASH_FAILURES\s*:\s*(?:TRUE|1)\b') { throw "$ServiceName must restart after non-zero service process exits. SCM query output: $($flagOutput | Out-String)" }
     return $service
 }
 function Get-RegisteredService { return Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" }
@@ -87,6 +92,36 @@ function Stop-RegisteredService {
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "$ServiceName did not stop within 45 seconds; refusing further lifecycle changes."
 }
+function Invoke-ScmIntegrationSelfTest {
+    Assert-Administrator
+    $originalName = $script:ServiceName
+    $originalAccount = $script:ServiceAccount
+    $testName = "WDSvcTest" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
+    $testAccount = "NT SERVICE\$testName"
+    $created = $false
+    try {
+        $testBinary = Join-Path $env:WINDIR "System32\cmd.exe"
+        $script:ServiceName = $testName
+        $script:ServiceAccount = $testAccount
+        $createArguments = Get-ServiceCreateScArguments $testBinary
+        $create = & sc.exe create $testName @createArguments 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Could not create disposable SCM integration-test service: $create" }
+        $created = $true
+        $sid = & sc.exe sidtype $testName unrestricted 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Could not set disposable service SID type: $sid" }
+        Set-ServiceRecoveryPolicy
+        $null = Assert-RegisteredService
+        $null = Assert-ServiceRecoveryPolicy
+        Write-Output "Disposable SCM integration test passed: automatic startup, service SID, bounded recovery, and non-crash failure flag verified."
+    } finally {
+        if ($created) {
+            $delete = & sc.exe delete $testName 2>&1
+            if ($LASTEXITCODE -ne 0) { Write-Warning "Could not delete disposable SCM integration-test service ${testName}: $delete" }
+        }
+        $script:ServiceName = $originalName
+        $script:ServiceAccount = $originalAccount
+    }
+}
 if ($Mode -eq "SelfTest") {
     $valid = Get-NormalizedBinaryPath (Join-Path $env:TEMP "webdynamite-core.exe")
     if ([IO.Path]::GetFileName($valid) -ine "webdynamite-core.exe") { throw "Binary path normalization failed." }
@@ -96,7 +131,11 @@ if ($Mode -eq "SelfTest") {
         if (-not $rejected) { throw "Invalid service binary path was accepted: $invalid" }
     }
     $expectedArguments = Get-ServiceRecoveryScArguments
-    if ($expectedArguments.Count -ne 2 -or $expectedArguments[0] -ne "reset= 86400" -or $expectedArguments[1] -ne "actions= restart/5000/restart/15000/restart/60000") { throw "SCM recovery action arguments do not match the bounded policy." }
+    if ($expectedArguments.Count -ne 4 -or $expectedArguments[0] -ne "reset=" -or $expectedArguments[1] -ne "86400" -or $expectedArguments[2] -ne "actions=" -or $expectedArguments[3] -ne "restart/5000/restart/15000/restart/60000") { throw "SCM recovery action arguments must be separate sc.exe tokens." }
+    $startupArguments = Get-ServiceStartupScArguments
+    if ($startupArguments.Count -ne 2 -or $startupArguments[0] -ne "start=" -or $startupArguments[1] -ne "auto") { throw "SCM automatic-start arguments must be separate sc.exe tokens." }
+    $createArguments = Get-ServiceCreateScArguments "C:\Program Files\WebDynamite\resources\webdynamite-core.exe"
+    if ($createArguments.Count -ne 6 -or $createArguments[0] -ne "binPath=" -or $createArguments[1] -notmatch "Program Files" -or $createArguments[2] -ne "start=" -or $createArguments[3] -ne "auto" -or $createArguments[4] -ne "obj=" -or $createArguments[5] -ne $ServiceAccount) { throw "SCM service creation arguments are not correctly tokenized." }
 $validRecovery = @"
 [SC] QueryServiceConfig2 SUCCESS
 
@@ -114,6 +153,7 @@ SERVICE_NAME: WebDynamiteCore
     Write-Output "Windows Core Service registration, automatic startup, and bounded recovery self-tests passed."
     exit 0
 }
+if ($Mode -eq "IntegrationSelfTest") { Invoke-ScmIntegrationSelfTest; exit 0 }
 Assert-Administrator
 switch ($Mode) {
     "Install" {
@@ -129,8 +169,8 @@ switch ($Mode) {
             Write-Output "$ServiceName is registered with the expected identity, executable, automatic startup, and bounded recovery policy."
             exit 0
         }
-        $binaryPath = '"' + $binary + '"'
-        $created = & sc.exe create $ServiceName "binPath= $binaryPath" "start= demand" "obj= $ServiceAccount" 'password= ""' 2>&1
+        $createArguments = Get-ServiceCreateScArguments $binary
+        $created = & sc.exe create $ServiceName @createArguments 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Could not register ${ServiceName}: $created" }
         try {
             $sidResult = & sc.exe sidtype $ServiceName unrestricted 2>&1

@@ -41,6 +41,9 @@ jobs:
       - name: Validate Core Service registration contract
         shell: pwsh
         run: ./scripts/windows/manage-core-service.ps1 -Mode SelfTest
+      - name: Exercise real Windows Service Control Manager recovery configuration
+        shell: pwsh
+        run: ./scripts/windows/manage-core-service.ps1 -Mode IntegrationSelfTest
       - name: Validate Core Service installer lifecycle contract
         shell: pwsh
         run: ./scripts/windows/install-core-service.ps1 -Mode SelfTest
