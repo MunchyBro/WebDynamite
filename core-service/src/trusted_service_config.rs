@@ -87,7 +87,7 @@ fn has_dot_path_components(path: &std::path::Path) -> bool {
 /// as overlap so secrets cannot be placed inside the general data tree (or vice versa).
 fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
     let normalize = |path: &std::path::Path| {
-        path.to_string_lossy().replace('/', "\\\\")
+        path.to_string_lossy().replace('/', "\\")
             .trim_end_matches('\\\\').to_ascii_lowercase()
     };
     let left = normalize(left);
