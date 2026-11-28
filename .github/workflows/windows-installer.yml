@@ -72,13 +72,13 @@ jobs:
       - name: Exercise clean install, repair, and data-preserving uninstall
         shell: pwsh
         run: |
-          $installers = @(Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\\', '/') -like '*/bundle/nsis/*.exe' })
+          $installers = @(Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' })
           if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
           ./scripts/windows/test-installer-lifecycle.ps1 -InstallerPath $installers[0].FullName
       - name: Verify installer artifact
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\\', '/') -like '*/bundle/nsis/*.exe' }
+          $installer = Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' }
           if (-not $installer) { throw "NSIS installer was not produced in any bundle/nsis directory" }
           $installer | ForEach-Object { Write-Host $_.FullName }
       - name: Upload engineering installer
@@ -110,7 +110,7 @@ jobs:
       - name: Require a semantic version tag on main
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\\.[0-9]+\\.[0-9]+([-.][0-9A-Za-z.-]+)?$') {
+          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$') {
             throw "Release tags must use semantic version form vMAJOR.MINOR.PATCH."
           }
           git merge-base --is-ancestor $env:GITHUB_SHA origin/main
@@ -127,7 +127,7 @@ jobs:
               throw "Protected production signing input $name is not configured. No release artifact will be built or published."
             }
           }
-          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\\s]', '').ToLowerInvariant()
+          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
           if ($pin -notmatch '^[0-9a-f]{64}$' -or $pin -eq ('0' * 64)) {
             throw "WEBDYNAMITE_PUBLISHER_SHA256 must be a nonzero 64-character SHA-256 certificate pin."
           }
@@ -143,7 +143,7 @@ jobs:
         env:
           WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: |
-          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\\s]', '').ToLowerInvariant()
+          $pin = ($env:WEBDYNAMITE_PUBLISHER_SHA256 -replace '[:\s]', '').ToLowerInvariant()
           Set-Content -LiteralPath "src-tauri/resources/publisher.sha256" -Value $pin -NoNewline -Encoding ascii
       - name: Install frontend dependencies
         run: npm install
@@ -171,7 +171,7 @@ jobs:
           WEBDYNAMITE_SIGNING_PFX_PASSWORD: ${{ secrets.WEBDYNAMITE_SIGNING_PFX_PASSWORD }}
           WEBDYNAMITE_PUBLISHER_SHA256: ${{ secrets.WEBDYNAMITE_PUBLISHER_SHA256 }}
         run: |
-          $installers = @(Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\\', '/') -like '*/bundle/nsis/*.exe' })
+          $installers = @(Get-ChildItem -Path . -Recurse -File -Filter *.exe | Where-Object { $_.FullName.Replace('\', '/') -like '*/bundle/nsis/*.exe' })
           if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
           ./scripts/windows/sign-release-artifacts.ps1 -Mode Sign -Paths @($installers[0].FullName)
           "installer=$($installers[0].FullName)" >> $env:GITHUB_OUTPUT
