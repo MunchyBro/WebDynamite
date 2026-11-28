@@ -2,7 +2,7 @@
 
 The signed Windows desktop build attaches to the installed `WebDynamiteCore`
 SCM service through the authenticated named pipe
-`\\\\.\\pipe\\WebDynamite.Core.v1` before it makes authenticated API
+ `\\.\pipe\WebDynamite.Core.v1` before it makes authenticated API
 requests.
 
 ## Startup contract
