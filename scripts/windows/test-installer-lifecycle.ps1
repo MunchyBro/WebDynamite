@@ -14,10 +14,31 @@ function Assert-Administrator {
         throw "Installer lifecycle acceptance requires an elevated Windows runner."
     }
 }
-function Invoke-Installer([string]$Path, [string]$Arguments, [string]$Operation) {
-    Write-Host "Running $Operation..."
-    $process = Start-Process -FilePath $Path -ArgumentList $Arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw "$Operation failed with exit code $($process.ExitCode)." }
+function Invoke-Installer([string]$Path, [string]$Arguments, [string]$Operation, [string]$LogPath, [int]$TimeoutSeconds = 180) {
+    Write-Host "Running $Operation (timeout: $TimeoutSeconds seconds)..."
+    $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        Write-Warning "$Operation exceeded its $TimeoutSeconds-second timeout. Terminating its process tree."
+        & taskkill.exe /PID $process.Id /T /F 2>&1 | ForEach-Object { Write-Host $_ }
+        try { $process.WaitForExit(15000) | Out-Null } catch { }
+        if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+            Write-Host "Last installer log lines ($LogPath):"
+            Get-Content -LiteralPath $LogPath -Tail 80 | ForEach-Object { Write-Host $_ }
+        }
+        throw "$Operation timed out after $TimeoutSeconds seconds. Installer log: $LogPath"
+    }
+    $process.Refresh()
+    if ($process.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+            Write-Host "Last installer log lines ($LogPath):"
+            Get-Content -LiteralPath $LogPath -Tail 80 | ForEach-Object { Write-Host $_ }
+        }
+        throw "$Operation failed with exit code $($process.ExitCode). Installer log: $LogPath"
+    }
+    Write-Host "$Operation completed with exit code 0."
+    if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+        Get-Content -LiteralPath $LogPath -Tail 30 | ForEach-Object { Write-Host $_ }
+    }
 }
 function Wait-ForPath([string]$Path, [bool]$ShouldExist, [int]$TimeoutSeconds = 60) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -39,6 +60,7 @@ $installRoot = Join-Path $env:ProgramFiles "WebDynamite-Lifecycle-$testId"
 $dataRoot = Join-Path (Join-Path $env:ProgramData "WebDynamite\LifecycleAcceptance") $testId
 $markerPath = Join-Path $dataRoot "user-data-preservation.marker"
 $desktopPath = Join-Path $installRoot "WebDynamite.exe"
+$logRoot = Join-Path $env:TEMP "WebDynamite-LifecycleAcceptance-$testId"
 $uninstallVerified = $false
 
 try {
@@ -47,11 +69,12 @@ try {
     if ($service) { throw "A WebDynamiteCore service already exists on this runner; refusing to touch an existing installation." }
 
     New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
     Set-Content -LiteralPath $markerPath -Value "preserve-$testId" -NoNewline -Encoding ascii
 
-    # NSIS requires /D= to be the final argument. The destination must remain under Program Files
-    # because the production service installer enforces that trust boundary.
-    Invoke-Installer -Path $installer -Arguments "/S /D=$installRoot" -Operation "Clean silent install"
+    # NSIS requires /D= to be the final argument. Keep it last so paths containing spaces are parsed correctly.
+    $installLog = Join-Path $logRoot "clean-install.log"
+    Invoke-Installer -Path $installer -Arguments "/S /LOG=`"$installLog`" /D=$installRoot" -Operation "Clean silent install" -LogPath $installLog
     Wait-ForPath -Path $desktopPath -ShouldExist $true
     if (-not (Test-Path -LiteralPath (Join-Path $installRoot "resources\install-core-service.ps1") -PathType Leaf)) {
         throw "The installed service lifecycle resource is missing."
@@ -61,7 +84,8 @@ try {
     }
 
     # Re-run the same artifact in place to exercise NSIS preinstall/postinstall repair-upgrade hooks.
-    Invoke-Installer -Path $installer -Arguments "/S /D=$installRoot" -Operation "In-place repair/upgrade"
+    $repairLog = Join-Path $logRoot "repair-upgrade.log"
+    Invoke-Installer -Path $installer -Arguments "/S /LOG=`"$repairLog`" /D=$installRoot" -Operation "In-place repair/upgrade" -LogPath $repairLog
     Wait-ForPath -Path $desktopPath -ShouldExist $true
     if ((Get-Content -LiteralPath $markerPath -Raw) -ne "preserve-$testId") {
         throw "The repair/upgrade modified unrelated ProgramData user data."
@@ -73,7 +97,8 @@ try {
         if ($candidates.Count -ne 1) { throw "Expected exactly one installed NSIS uninstaller; found $($candidates.Count)." }
         $uninstaller = $candidates[0].FullName
     }
-    Invoke-Installer -Path $uninstaller -Arguments "/S" -Operation "Silent uninstall"
+    $uninstallLog = Join-Path $logRoot "uninstall.log"
+    Invoke-Installer -Path $uninstaller -Arguments "/S /LOG=`"$uninstallLog`"" -Operation "Silent uninstall" -LogPath $uninstallLog
     Wait-ForPath -Path $desktopPath -ShouldExist $false
     if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
         throw "Uninstall deleted user data under ProgramData; preservation contract failed."
@@ -94,5 +119,9 @@ finally {
     }
     if (-not $uninstallVerified -and (Test-Path -LiteralPath $installRoot)) {
         Write-Warning "Acceptance test did not complete. The isolated test installation remains at $installRoot for runner diagnostics."
+        Write-Warning "Installer logs are retained at $logRoot."
+    }
+    elseif (Test-Path -LiteralPath $logRoot) {
+        Remove-Item -LiteralPath $logRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
