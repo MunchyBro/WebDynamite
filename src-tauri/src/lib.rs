@@ -79,6 +79,23 @@ fn start_core_service(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::
 
     // Reuse the background service only when it proves possession of our protected token.
     // A different process on the management port must never be treated as WebDynamite.
+    if trusted_ipc {
+        // The named-pipe worker can accept the bootstrap request slightly before
+        // the HTTP listener finishes binding during automatic service startup.
+        // Retry transient connection/read failures, but never launch an interactive
+        // duplicate in a trusted build.
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            if matches!(existing_core_service_matches_token(&address, token.as_str()), Ok(true)) {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "The authenticated Windows Core Service did not expose its loopback API within 12 seconds.",
+        ).into());
+    }
     if existing_core_service_matches_token(&address, token.as_str())? {
         return Ok(());
     }
@@ -86,29 +103,6 @@ fn start_core_service(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::
         return Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             "Another process is already listening on the WebDynamite Core Service port 47821, and it did not authenticate as this installation.",
-        ).into());
-    }
-    if trusted_ipc {
-        // The named-pipe worker can accept the bootstrap request slightly before
-        // the HTTP listener finishes binding during automatic service startup.
-        // Wait for the same authenticated token, but never launch an interactive
-        // duplicate in a trusted build.
-        let deadline = Instant::now() + Duration::from_secs(12);
-        while Instant::now() < deadline {
-            if existing_core_service_matches_token(&address, token.as_str())? {
-                return Ok(());
-            }
-            if TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
-                return Err(io::Error::new(
-                    io::ErrorKind::AddrInUse,
-                    "Another process is listening on the Core Service port but did not authenticate with the token obtained from the verified SCM service.",
-                ).into());
-            }
-            thread::sleep(Duration::from_millis(150));
-        }
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "The authenticated Windows Core Service did not expose its loopback API within 12 seconds.",
         ).into());
     }
 
