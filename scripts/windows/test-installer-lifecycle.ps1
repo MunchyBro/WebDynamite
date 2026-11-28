@@ -24,6 +24,21 @@ function Invoke-Installer([string]$Path, [string]$Arguments, [string]$Operation,
         if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
             Write-Host "Last installer log lines ($LogPath):"
             Get-Content -LiteralPath $LogPath -Tail 80 | ForEach-Object { Write-Host $_ }
+        } else {
+            Write-Warning "NSIS did not create its requested log file: $LogPath"
+        }
+        $transcripts = @(Get-ChildItem -LiteralPath $env:TEMP -Filter "WebDynamite-CoreService-*.log" -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 5)
+        foreach ($transcript in $transcripts) {
+            Write-Host "Core Service lifecycle transcript ($($transcript.FullName)):"
+            Get-Content -LiteralPath $transcript.FullName -Tail 100 | ForEach-Object { Write-Host $_ }
+        }
+        $installerProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match "WebDynamite|setup|uninst" } |
+            Select-Object ProcessId, ParentProcessId, Name, CommandLine)
+        if ($installerProcesses.Count -gt 0) {
+            Write-Host "Remaining installer-related processes:"
+            $installerProcesses | Format-List | Out-String | Write-Host
         }
         throw "$Operation timed out after $TimeoutSeconds seconds. Installer log: $LogPath"
     }
