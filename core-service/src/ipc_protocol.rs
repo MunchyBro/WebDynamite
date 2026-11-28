@@ -1,4 +1,4 @@
-//! Versioned, bounded message framing for the future local desktop/service IPC channel.
+//! Versioned, bounded message framing for the authenticated local desktop/service IPC channel.
 //!
 //! This module is transport-agnostic. It does not create a named pipe or grant
 //! authorization; callers must authenticate the OS peer before dispatching requests.
@@ -87,17 +87,26 @@ pub fn write_response<W: Write>(writer: &mut W, response: &IpcResponse) -> Resul
     if response.ok == response.error_code.is_some() {
         return Err("IPC response success and error fields are inconsistent.".into());
     }
-    let payload = serde_json::to_vec(response)
-        .map_err(|_| "Could not encode IPC response.".to_string())?;
-    if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
-        return Err("IPC response exceeds the maximum frame size.".into());
+    let mut payload = Vec::new();
+    if serde_json::to_writer(&mut payload, response).is_err() {
+        payload.zeroize();
+        return Err("Could not encode IPC response.".into());
     }
-    let length = u32::try_from(payload.len())
-        .map_err(|_| "IPC response length is invalid.".to_string())?;
-    writer.write_all(&length.to_be_bytes())
-        .and_then(|_| writer.write_all(&payload))
-        .and_then(|_| writer.flush())
-        .map_err(|error| format!("Could not write IPC response: {error}"))
+    let result = (|| {
+        if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
+            return Err("IPC response exceeds the maximum frame size.".into());
+        }
+        let length = u32::try_from(payload.len())
+            .map_err(|_| "IPC response length is invalid.".to_string())?;
+        writer.write_all(&length.to_be_bytes())
+            .and_then(|_| writer.write_all(&payload))
+            .and_then(|_| writer.flush())
+            .map_err(|error| format!("Could not write IPC response: {error}"))
+    })();
+    // Responses can contain the short-lived API bootstrap token. Clear the
+    // serialized frame on success and on every I/O/validation failure.
+    payload.zeroize();
+    result
 }
 
 #[cfg(test)]

@@ -2,8 +2,8 @@
 //!
 //! The caller must obtain `TrustedServiceConfig` through the trusted loader
 //! using a service SID obtained independently from the running service token.
-//! This module never reads identity values from environment variables or
-//! activates SCM service mode by itself.
+//! This module never reads identity values from environment variables. The
+//! SCM host owns its lifecycle and keeps the authenticated pipe worker alive.
 
 use std::{
     sync::{
@@ -110,7 +110,8 @@ pub fn start_authenticated_secret_pipe_worker(
 
 /// Acquires the service SID from the current native process token, loads
 /// the ACL-validated installer configuration against that SID, then starts
-/// the authenticated IPC worker. Intended only for a future SCM service host.
+/// the authenticated IPC worker. This helper is also useful for service-host
+/// tests; production SCM startup uses the same validated configuration path.
 #[cfg(windows)]
 pub fn start_current_service_pipe_worker(
     config_path: &std::path::Path,
