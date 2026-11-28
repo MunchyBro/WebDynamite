@@ -91,8 +91,8 @@ fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
     let left = normalize(left);
     let right = normalize(right);
     left == right
-        || left.strip_prefix(&right).is_some_and(|tail| tail.starts_with('\\')
-        || right.strip_prefix(&left).is_some_and(|tail| tail.starts_with('\\')
+        || left.strip_prefix(&right).is_some_and(|tail| tail.starts_with('\\'))
+        || right.strip_prefix(&left).is_some_and(|tail| tail.starts_with('\\'))
 }
 
 fn valid_service_sid(value: &str) -> bool {
