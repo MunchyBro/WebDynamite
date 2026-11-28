@@ -18,7 +18,7 @@ fn read_secret_value(state: &AppState, id: &str, name: &str) -> Result<String, S
 }
 fn read_secret_snapshot(state: &AppState, id: &str, name: &str) -> Result<Option<String>, String> {
  if let Some(root) = &state.secret_store_root {
-  let path = root.join(format!("{}.wds", secret_storage_key(id, name)));
+  let path = root.join(format!("{}.wds", crate::secret_ipc::storage_key(id, name)));
   match std::fs::symlink_metadata(&path) {
    Ok(_) => read_secret_value(state, id, name).map(Some),
    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -34,14 +34,14 @@ fn restore_secret_snapshot(state: &AppState, id: &str, name: &str, previous: Opt
 }
 fn write_secret_value(state: &AppState, id: &str, name: &str, value: &str) -> Result<(), String> {
  if let Some(root) = &state.secret_store_root {
-  crate::secret_store::write_secret_verified(root, &secret_storage_key(id, name), value.as_bytes())
+  crate::secret_store::write_secret_verified(root, &crate::secret_ipc::storage_key(id, name), value.as_bytes())
  } else {
   credential_entry(id, name).map_err(|error| error.2)?.set_password(value).map_err(|error| error.to_string())
  }
 }
 fn delete_secret_value(state: &AppState, id: &str, name: &str) -> Result<(), String> {
  if let Some(root) = &state.secret_store_root {
-  crate::secret_store::delete_secret(root, &secret_storage_key(id, name))
+  crate::secret_store::delete_secret(root, &crate::secret_ipc::storage_key(id, name))
  } else {
   let entry = credential_entry(id, name).map_err(|error| error.2)?;
   match entry.delete_credential() { Ok(()) | Err(keyring::Error::NoEntry) => Ok(()), Err(error) => Err(error.to_string()) }

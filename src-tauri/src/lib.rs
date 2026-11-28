@@ -675,20 +675,21 @@ async fn migrate_website_environment_secrets(app: tauri::AppHandle, token: Strin
     for row in rows.into_iter().filter(|row| row.get("is_secret").and_then(Value::as_bool) == Some(true)) {
         let name = row.get("name").and_then(Value::as_str)
             .ok_or_else(|| "Website environment metadata contained an invalid secret name.".to_string())?.to_string();
+        let status = authenticated_secret_ipc(&app, "secret.verify", serde_json::json!({"website_id": id, "name": name}))?;
         let entry = Entry::new("WebDynamite", &format!("website-env:{id}:{name}"))
             .map_err(|error| api_error("Could not open the legacy website credential", error))?;
-        let mut value = match entry.get_password() {
-            Ok(value) => value,
-            Err(keyring::Error::NoEntry) => {
-                let status = authenticated_secret_ipc(&app, "secret.verify", serde_json::json!({"website_id": id, "name": name}))?;
-                if status.get("exists").and_then(Value::as_bool) == Some(true) {
-                    already_migrated += 1;
-                    continue;
-                }
-                return Err(format!("Secret {name} is missing from both the legacy credential store and the protected service store; no source was deleted."));
+        if status.get("exists").and_then(Value::as_bool) == Some(true) {
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => already_migrated += 1,
+                Err(error) => return Err(api_error("The protected secret already exists, but the stale legacy credential could not be removed", error)),
             }
-            Err(error) => return Err(api_error("Could not read the legacy website credential", error)),
-        };
+            continue;
+        }
+        let mut value = entry.get_password()
+            .map_err(|error| match error {
+                keyring::Error::NoEntry => format!("Secret {name} is missing from both the legacy credential store and the protected service store; no source was deleted."),
+                other => api_error("Could not read the legacy website credential", other),
+            })?;
         let mut payload = serde_json::json!({"website_id": id, "name": name, "value": value});
         let stored = authenticated_secret_ipc(&app, "secret.put", payload.clone());
         if let Some(Value::String(secret)) = payload.get_mut("value") { secret.zeroize(); }
