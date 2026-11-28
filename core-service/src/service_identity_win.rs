@@ -10,7 +10,7 @@ mod windows_impl {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, LocalFree, HANDLE},
         Security::{
-            GetTokenInformation, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TOKEN_USER,
+            GetTokenInformation, LookupAccountNameW, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TOKEN_USER,
             TokenGroups, TokenUser,
         },
         Security::Authorization::ConvertSidToStringSidW,
@@ -91,6 +91,56 @@ mod windows_impl {
             })
     }
 
+    /// Resolve the service SID from the canonical installed service account,
+    /// rather than trusting any syntactically valid S-1-5-80 SID in TokenGroups.
+    fn expected_webdynamite_service_sid() -> Result<String, String> {
+        let account = "NT SERVICE\\WebDynamiteCore"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut sid_length = 0u32;
+        let mut domain = vec![0u16; 256];
+        let mut domain_length = domain.len() as u32;
+        unsafe {
+            LookupAccountNameW(
+                ptr::null(),
+                account.as_ptr(),
+                ptr::null_mut(),
+                &mut sid_length,
+                domain.as_mut_ptr(),
+                &mut domain_length,
+                ptr::null_mut(),
+            );
+        }
+        if sid_length == 0 || sid_length > 1024 {
+            return Err("Could not resolve the installed WebDynamiteCore service SID.".into());
+        }
+        let mut sid_storage = vec![0u64; (sid_length as usize + 7) / 8];
+        domain_length = domain.len() as u32;
+        let resolved = unsafe {
+            LookupAccountNameW(
+                ptr::null(),
+                account.as_ptr(),
+                sid_storage.as_mut_ptr().cast(),
+                &mut sid_length,
+                domain.as_mut_ptr(),
+                &mut domain_length,
+                ptr::null_mut(),
+            )
+        };
+        if resolved == 0 {
+            return Err("Could not resolve the installed WebDynamiteCore service SID.".into());
+        }
+        sid_to_string(sid_storage.as_mut_ptr().cast())
+    }
+
+    fn validate_webdynamite_service_sid(actual: &str, expected: &str) -> Result<(), String> {
+        if !is_service_sid(actual) || !actual.eq_ignore_ascii_case(expected) {
+            return Err("The current process token does not contain the WebDynamiteCore service SID.".into());
+        }
+        Ok(())
+    }
+
     /// Reads TokenUser and the single enabled S-1-5-80 service SID from the
     /// current process token. Fails closed when run outside a service identity.
     pub fn current_service_identity() -> Result<NativeServiceIdentity, String> {
@@ -135,10 +185,13 @@ mod windows_impl {
         if service_sids.len() != 1 {
             return Err("The current process token must contain exactly one enabled WebDynamite service SID.".into());
         }
+        let service_sid = service_sids.remove(0);
+        let expected_sid = expected_webdynamite_service_sid()?;
+        validate_webdynamite_service_sid(&service_sid, &expected_sid)?;
 
         Ok(NativeServiceIdentity {
             token_user_sid,
-            service_sid: service_sids.remove(0),
+            service_sid,
         })
     }
 
@@ -152,6 +205,18 @@ mod windows_impl {
             assert!(!is_service_sid("S-1-5-21-1-2-3-1001"));
             assert!(!is_service_sid("S-1-5-80-1-2-3-4"));
             assert!(!is_service_sid("S-1-5-80-a-2-3-4-5"));
+        }
+
+        #[test]
+        fn binds_identity_to_the_canonical_webdynamite_service_sid() {
+            let expected = "S-1-5-80-1-2-3-4-5";
+            assert!(super::validate_webdynamite_service_sid(expected, expected).is_ok());
+            assert!(super::validate_webdynamite_service_sid(
+                "S-1-5-80-5-4-3-2-1", expected
+            ).is_err());
+            assert!(super::validate_webdynamite_service_sid(
+                "S-1-5-21-1-2-3-1001", expected
+            ).is_err());
         }
     }
 }
