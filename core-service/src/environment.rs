@@ -127,10 +127,10 @@ fn save_with_service_store(state: &AppState, id: &str, input: SaveEnvironmentVar
    return Err(EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_save_failed",error));
   }
  }
- let result = {
+ let result:Result<usize,EnvironmentError>=(||{
   let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
   db.execute("INSERT INTO website_environment(website_id,name,value,is_secret,updated_at) VALUES(?1,?2,?3,?4,CURRENT_TIMESTAMP) ON CONFLICT(website_id,name) DO UPDATE SET value=excluded.value,is_secret=excluded.is_secret,updated_at=CURRENT_TIMESTAMP",params![id,input.name,if input.is_secret{String::new()}else{input.value.clone()},if input.is_secret{1}else{0}]).map_err(db_error)
- };
+ })();
  if let Err(error)=result {
   if input.is_secret { let _=restore_secret_snapshot(state,id,&input.name,previous.as_deref()); }
   return Err(error);
@@ -316,7 +316,25 @@ async fn remove_batch(State(s):State<AppState>,Path(id):Path<String>,Json(input)
  }
 }
 
+fn remove_with_service_store(state:&AppState,id:&str,name:&str)->Result<StatusCode,EnvironmentError>{
+ let previous=read_secret_snapshot(state,id,name).map_err(|error|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_read_failed",error))?;
+ delete_secret_value(state,id,name).map_err(|error|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"secret_delete_failed",error))?;
+ let result:Result<usize,EnvironmentError>=(||{
+  let db=state.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
+  db.execute("DELETE FROM website_environment WHERE website_id=?1 AND name=?2",params![id,name]).map_err(db_error)
+ })();
+ match result {
+  Ok(0)=>{let _=restore_secret_snapshot(state,id,name,previous.as_deref());Err(EnvironmentError(StatusCode::NOT_FOUND,"environment_variable_not_found","Environment variable was not found.".into()))},
+  Ok(_)=>Ok(StatusCode::NO_CONTENT),
+  Err(error)=>{let restored=restore_secret_snapshot(state,id,name,previous.as_deref()).is_ok();Err(EnvironmentError(error.0,error.1,if restored{error.2}else{format!("{} Protected secret rollback was incomplete.",error.2)}))}
+ }
+}
 async fn remove(State(s):State<AppState>,Path((id,name)):Path<(String,String)>)->Result<StatusCode,EnvironmentError>{
+ if s.secret_store_root.is_some() {
+  if !valid_name(&name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Environment variable name is invalid.".into()));}
+  return remove_with_service_store(&s,&id,&name);
+ }
+
  if !valid_name(&name){return Err(EnvironmentError(StatusCode::BAD_REQUEST,"invalid_environment_name","Environment variable name is invalid.".into()));}
  let db=s.db.lock().map_err(|_|EnvironmentError(StatusCode::INTERNAL_SERVER_ERROR,"database_locked","Database lock is unavailable.".into()))?;
  let n=db.execute("DELETE FROM website_environment WHERE website_id=?1 AND name=?2",params![id,name]).map_err(db_error)?;
