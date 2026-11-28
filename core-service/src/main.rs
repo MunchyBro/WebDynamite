@@ -65,6 +65,8 @@ pub struct AppState {
     pub releases_dir: PathBuf,
     pub backups_dir: PathBuf,
     pub config_dir: PathBuf,
+    /// Installer-provisioned machine-DPAPI root; absent only in engineering interactive mode.
+    pub secret_store_root: Option<PathBuf>,
     pub caddy_bin: PathBuf,
     pub proxy_process: Arc<Mutex<Option<Child>>>,
     pub tunnel_processes: Arc<Mutex<HashMap<String, Child>>>,
@@ -233,10 +235,10 @@ pub async fn run_core_service<F>(token: String, shutdown_signal: F) -> Result<()
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    run_core_service_at(token, data_dir(), shutdown_signal).await
+    run_core_service_at(token, data_dir(), None, shutdown_signal).await
 }
 
-pub async fn run_core_service_at<F>(token: String, root: PathBuf, shutdown_signal: F) -> Result<(), Box<dyn std::error::Error>>
+pub async fn run_core_service_at<F>(token: String, root: PathBuf, secret_store_root: Option<PathBuf>, shutdown_signal: F) -> Result<(), Box<dyn std::error::Error>>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -270,6 +272,7 @@ where
         releases_dir,
         backups_dir,
         config_dir,
+        secret_store_root,
         caddy_bin: env::var_os("CADDY_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("caddy")),
         proxy_process: Arc::new(Mutex::new(None)),
         tunnel_processes: Arc::new(Mutex::new(HashMap::new())),
@@ -279,6 +282,9 @@ where
         cloudflared_bin: env::var_os("CLOUDFLARED_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("cloudflared")),
         started_at: std::time::Instant::now(),
     };
+    let (migrated_secrets, migration_failures) = environment::migrate_legacy_secrets(&state);
+    if migrated_secrets > 0 { println!("Migrated {migrated_secrets} website environment secret(s) into the protected service store."); }
+    for failure in migration_failures { eprintln!("Website environment secret migration: {failure}"); }
     supervise_processes(state.clone());
     hosting_supervisor::start(state.clone());
     backup::start_scheduler(state.clone());

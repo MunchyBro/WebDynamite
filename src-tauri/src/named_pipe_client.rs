@@ -7,6 +7,7 @@
 use crate::ipc_protocol::{read_response_for_request, write_request, IpcRequest, IpcResponse, PROTOCOL_VERSION};
 use serde_json::Value;
 use std::{path::Path, time::{Duration, Instant}};
+use zeroize::Zeroize;
 
 const PIPE_NAME: &str = r"\\.\pipe\WebDynamite.Core.v1";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -263,14 +264,20 @@ fn normalize_thumbprint(value: &str) -> Result<String, String> {
         verified.verify_still_connected(pipe.0)?;
 
         let request_id = uuid::Uuid::new_v4().simple().to_string();
-        let request = IpcRequest {
+        let mut request = IpcRequest {
             version: PROTOCOL_VERSION,
             request_id: request_id.clone(),
             operation: operation.to_string(),
             data,
         };
         let mut io = PipeIo::new(pipe.0, super::WRITE_TIMEOUT);
-        write_request(&mut io, &request)?;
+        let write_result = write_request(&mut io, &request);
+        if operation == "secret.put" {
+            if let Some(serde_json::Value::String(value)) = request.data.get_mut("value") {
+                value.zeroize();
+            }
+        }
+        write_result?;
         verified.verify_still_connected(pipe.0)?;
         io.set_deadline(super::READ_TIMEOUT);
         read_response_for_request(&mut io, &request_id)
