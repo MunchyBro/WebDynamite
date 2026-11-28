@@ -52,6 +52,8 @@ jobs:
       - name: Validate publisher pin parser
         shell: pwsh
         run: ./scripts/windows/validate-signing-certificate.ps1 -SelfTest
+      - name: Test Tauri desktop backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Check Tauri desktop backend
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
