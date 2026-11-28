@@ -87,8 +87,11 @@ pub fn write_response<W: Write>(writer: &mut W, response: &IpcResponse) -> Resul
     if response.ok == response.error_code.is_some() {
         return Err("IPC response success and error fields are inconsistent.".into());
     }
-    let mut payload = serde_json::to_vec(response)
-        .map_err(|_| "Could not encode IPC response.".to_string())?;
+    let mut payload = Vec::new();
+    if serde_json::to_writer(&mut payload, response).is_err() {
+        payload.zeroize();
+        return Err("Could not encode IPC response.".into());
+    }
     let result = (|| {
         if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
             return Err("IPC response exceeds the maximum frame size.".into());

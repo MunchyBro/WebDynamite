@@ -101,8 +101,10 @@ pub fn read_response<R: Read>(reader: &mut R) -> Result<IpcResponse, String> {
         return Err("IPC response frame length is outside the allowed range.".into());
     }
     let mut payload = vec![0u8; length];
-    reader.read_exact(&mut payload)
-        .map_err(|error| format!("Could not read complete IPC response: {error}"))?;
+    if let Err(error) = reader.read_exact(&mut payload) {
+        payload.zeroize();
+        return Err(format!("Could not read complete IPC response: {error}"));
+    }
     let parsed = serde_json::from_slice::<IpcResponse>(&payload)
         .map_err(|_| "IPC response contains invalid or unsupported JSON.".to_string());
     // The frame may contain the one-time API token handoff. Keep only the

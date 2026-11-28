@@ -55,7 +55,7 @@ fn storage_key(website_id: &str, name: &str) -> String {
     format!("{:x}", digest.finalize())
 }
 
-/// Handles only the three operations admitted by ipc_authorization.
+/// Handles only the narrowly allowlisted operations admitted by ipc_authorization.
 ///
 /// Website secret values are written directly to the protected DPAPI store
 /// and are never returned over IPC. The API bootstrap token is the sole
